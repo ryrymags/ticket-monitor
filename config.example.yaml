@@ -1,0 +1,137 @@
+# =============================================================================
+# Ticket Monitor — Example Configuration
+# =============================================================================
+# Copy this file to config.yaml and fill in your details.
+# Or just use the GUI (run app.py) — it writes config.yaml for you!
+# =============================================================================
+
+# ── Discord notifications ──────────────────────────────────────────────────
+discord:
+  webhook_url: "YOUR_WEBHOOK_URL_HERE"      # Required — paste your Discord webhook URL
+  username: "Ticket Monitor"                 # The bot name shown in Discord
+  ping_user_id: ""                           # Your Discord user ID for @mentions (optional)
+
+# ── Events to monitor ─────────────────────────────────────────────────────
+# Add one entry per event. Paste the full Ticketmaster URL.
+events:
+  - event_id: "REPLACE_WITH_EVENT_ID"        # The ID in the Ticketmaster URL (e.g. /event/01006...)
+    name: "My Concert (Night 1)"
+    date: "2026-07-28"
+    url: "https://www.ticketmaster.com/your-event-url-here"
+
+  # Add more events here:
+  # - event_id: "..."
+  #   name: "My Concert (Night 2)"
+  #   date: "2026-07-29"
+  #   url: "https://www.ticketmaster.com/..."
+
+# ── Ticket preferences ────────────────────────────────────────────────────
+# Define what counts as a "BINGO" — your ideal tickets.
+#
+# BINGO (🟢 green) fires when ALL three criteria are met:
+#   1. count >= min_tickets  (adjacent seats in the same section/row/price)
+#   2. price <= max_price_per_ticket
+#   3. section is in preferred_sections  (only when preferred_sections is non-empty)
+#
+# Orange (🟡) alert fires when tickets appear but don't fully meet criteria.
+preferences:
+  min_tickets: 2                     # Minimum adjacent tickets in same section/row/price group
+  max_price_per_ticket: 250.0        # Maximum face value per ticket (USD)
+
+  # Section names from the Ticketmaster seating chart, e.g. [LOGE, FLOOR, PIT]
+  # Check the event page for the exact abbreviations used for your venue.
+  # Leave as [] to accept any section (section won't affect BINGO).
+  preferred_sections: []
+
+  # When true: you'll ONLY receive alerts for preferred sections (suppresses orange alerts).
+  # When false (recommended): also send 🟡 orange alerts for other sections,
+  #   so you can see what's available and tune your preferences via the History tab.
+  require_preferred_only: false
+
+  # When true: send 🟡 orange alerts even when tickets don't meet all criteria.
+  # All appearances are logged to ticket_history.json for calibration.
+  alert_on_any_availability: true
+
+# ── Browser settings ─────────────────────────────────────────────────────
+# Most users won't need to change these.
+browser:
+  session_mode: "persistent_profile"   # Recommended: persistent_profile
+  user_data_dir: "secrets/tm_profile"  # Where your login session is stored
+  storage_state_path: "secrets/tm_storage_state.json"
+  channel: "chrome"
+  poll_min_seconds: 45
+  poll_max_seconds: 75
+  headless: true
+  reuse_event_tabs: true
+  poll_interval_seconds: 12
+  poll_jitter_seconds: 2
+  event_stagger_seconds: 6
+  navigation_timeout_seconds: 20
+  challenge_threshold: 5
+  challenge_retry_seconds: 60
+  cdp_endpoint_url: "http://127.0.0.1:9222"
+  cdp_connect_timeout_seconds: 10
+
+browser_host:
+  enabled: false
+  chrome_executable_path: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+  user_data_dir: "secrets/tm_chrome_profile"
+  remote_debugging_port: 9222
+
+# ── Alert tuning ──────────────────────────────────────────────────────────
+alerts:
+  ticket_cooldown_seconds: 180      # Minimum seconds between repeat ticket alerts
+  operational_heartbeat_hours: 6    # Send a heartbeat message every N hours
+  event_check_stale_seconds: 180
+  operational_state_cooldown_seconds: 1800
+
+# ── Polling & retry ───────────────────────────────────────────────────────
+polling:
+  timezone: "US/Eastern"
+  backoff_multiplier: 2.0
+  max_backoff_seconds: 120
+
+# ── Self-healing ──────────────────────────────────────────────────────────
+self_heal:
+  browser_restart_threshold: 3
+  browser_restart_window_seconds: 600
+  process_restart_threshold: 6
+  process_restart_window_seconds: 1800
+  error_alert_cooldown_seconds: 1800
+
+# ── Ticketmaster auto-login (advanced / macOS only) ───────────────────────
+auth:
+  auto_login_enabled: false
+  keychain_service: "ticket-monitor"
+  keychain_email_account: "ticketmaster-email"
+  keychain_password_account: "ticketmaster-password"
+  max_auto_login_attempts_per_hour: 3
+  auto_login_cooldown_seconds: 1800
+  session_health_check_interval_seconds: 3600
+  session_health_check_url: "https://www.ticketmaster.com/my-account"
+
+# ── Watchdog ──────────────────────────────────────────────────────────────
+watchdog:
+  enabled: true
+  interval_seconds: 120
+  stale_after_seconds: 180
+  max_fix_attempts_per_hour: 6
+
+# ── Auto-reload on code changes ───────────────────────────────────────────
+updates:
+  enabled: true
+  interval_seconds: 60
+  stability_delay_seconds: 20
+  watch_globs:
+    - "monitor.py"
+    - "src/**/*.py"
+    - "config.yaml"
+    - "requirements.txt"
+    - "pyproject.toml"
+
+# ── Logging ───────────────────────────────────────────────────────────────
+logging:
+  level: "INFO"
+  file: "logs/monitor.log"
+  max_file_size_mb: 10
+  backup_count: 3

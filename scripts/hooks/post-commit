@@ -1,0 +1,25 @@
+#!/bin/bash
+# Post-commit hook — regenerates CHANGELOG.md and README 'Recent Changes',
+# then folds the update into the just-made commit via --amend.
+#
+# Install: run  scripts/install_hooks.sh  (or re-run setup_mac.command)
+
+# Guard against re-entrancy: amend would re-trigger this hook without the guard
+LOCK=".git/.changelog_lock"
+if [ -f "$LOCK" ]; then
+    exit 0
+fi
+touch "$LOCK"
+trap 'rm -f "$LOCK"' EXIT
+
+SCRIPT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+cd "$SCRIPT_DIR" || exit 0
+
+# Regenerate changelog files
+python3 scripts/gen_changelog.py 2>/dev/null
+
+# Fold updated files into the commit silently
+git add CHANGELOG.md README.md 2>/dev/null
+git commit --amend --no-edit --no-verify --quiet 2>/dev/null
+
+exit 0

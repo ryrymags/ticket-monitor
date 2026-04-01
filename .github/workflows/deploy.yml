@@ -1,0 +1,48 @@
+name: Deploy to VM
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - name: Deploy to Oracle VM
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          script: |
+            cd ~/ticket-monitor
+            PREV_COMMIT=$(git rev-parse HEAD)
+            git pull origin main
+            venv/bin/pip install -q -r requirements.txt
+            sudo systemctl restart ticket-monitor
+            for i in 1 2 3 4 5; do
+              sleep 3
+              STATUS=$(sudo systemctl is-active ticket-monitor)
+              echo "Attempt $i: $STATUS"
+              [ "$STATUS" = "active" ] && exit 0
+            done
+            echo "Service failed to start — rolling back to $PREV_COMMIT"
+            sudo journalctl -u ticket-monitor --no-pager -n 20
+            git checkout "$PREV_COMMIT"
+            venv/bin/pip install -q -r requirements.txt
+            sudo systemctl restart ticket-monitor
+            sleep 3
+            sudo systemctl is-active ticket-monitor && echo "Rollback succeeded" || echo "Rollback also failed — manual intervention required"
+            exit 1
+
+      - name: Notify on failure
+        if: failure()
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          curl -s -H "Content-Type: application/json" \
+            -d "{\"username\": \"Ticket Monitor\", \"embeds\": [{\"title\": \"Deploy Failed\", \"color\": 15158332, \"description\": \"Auto-deploy to VM failed. [View run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})\", \"footer\": {\"text\": \"Face Value Exchange Monitor\"}}]}" \
+            "$DISCORD_WEBHOOK_URL"
