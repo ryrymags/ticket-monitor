@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `f3247b9`  2026-04-01 07:23  Fix CI: lint error, deploy guard, remove dead auto-merge workflow
+- `27aa5f6`  2026-04-01 07:26  Add PostToolUse CI check hook
+
+- `e1e69cb`  2026-04-01 07:23  Fix CI: lint error, deploy guard, remove dead auto-merge workflow
 
 - `36f6dff`  2026-04-01 07:19  Initial release: v1.3.0
 
