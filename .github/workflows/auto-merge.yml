@@ -1,0 +1,84 @@
+name: Auto-merge to main
+
+on:
+  push:
+    branches: ['claude/**']
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt && pip install pytest ruff
+
+      - name: Run lint
+        run: ruff check src tests --select E,F --ignore E501,F401
+
+      - name: Run tests
+        run: pytest tests/ -v
+
+  auto-merge:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Squash-merge to main
+        id: merge
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin
+
+          # Rebase the source branch onto current main first.
+          # This drops commits whose patches are already in main (same content,
+          # different SHA from a previous squash-merge), leaving only truly new
+          # commits. Without this step, git merge --squash would try to re-apply
+          # already-merged changes and fail with conflicts or an empty commit.
+          git checkout -b work origin/${{ github.ref_name }}
+          if ! git rebase origin/main; then
+            git rebase --abort
+            echo "Rebase onto main failed — branch has conflicts that need manual resolution"
+            exit 1
+          fi
+
+          # Squash everything now ahead of main into a single commit
+          git checkout main
+          git reset --hard origin/main
+          git merge --squash work
+
+          # Nothing new to merge — branch was already fully reflected in main
+          if git diff --cached --quiet; then
+            echo "merged=false" >> "$GITHUB_OUTPUT"
+            echo "Nothing new to merge, exiting cleanly"
+            exit 0
+          fi
+
+          COMMIT_MSG=$(git log origin/main..work --reverse --format='%s' | head -1)
+          git commit -m "${COMMIT_MSG:-Auto-merged from ${{ github.ref_name }}}"
+          git push origin main
+          echo "merged=true" >> "$GITHUB_OUTPUT"
+
+      - name: Trigger deploy
+        if: steps.merge.outputs.merged == 'true'
+        run: gh workflow run deploy.yml
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Delete branch
+        run: git push origin --delete ${{ github.ref_name }} || true

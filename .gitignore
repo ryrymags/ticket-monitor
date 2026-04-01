@@ -1,0 +1,24 @@
+__pycache__/
+*.pyc
+venv/
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# User-specific config and runtime data — never commit these
+config.yaml
+state.json
+state.json.lock
+state.json.bak.*
+ticket_history.json
+
+# Ticketmaster session data, Chrome profiles, auth files
+secrets/
+
+# Log files
+logs/
+
+# macOS cruft
+.DS_Store
+.Rhistory
+*.tmp
