@@ -11,7 +11,20 @@ jobs:
     timeout-minutes: 3
 
     steps:
+      - name: Check if VM is configured
+        id: check
+        run: |
+          if [ -z "$HOST" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "VM_HOST secret not set — skipping deploy"
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          HOST: ${{ secrets.VM_HOST }}
+
       - name: Deploy to Oracle VM
+        if: steps.check.outputs.skip == 'false'
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.VM_HOST }}
@@ -39,7 +52,7 @@ jobs:
             exit 1
 
       - name: Notify on failure
-        if: failure()
+        if: failure() && steps.check.outputs.skip == 'false'
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |

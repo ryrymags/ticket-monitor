@@ -295,7 +295,8 @@ class BrowserProbe:
                 sections=set(),
                 listing_groups={},
             )
-            response_handler = lambda response: self._capture_response(response, network_snapshot)
+            def response_handler(response):
+                self._capture_response(response, network_snapshot)
             page.on("response", response_handler)
 
             timeout_ms = self.navigation_timeout_seconds * 1000
