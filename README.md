@@ -9,7 +9,8 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 ## 📋 Recent Changes
 
 <!-- CHANGELOG_START -->
-- `f3247b9`  2026-04-01  Fix CI: lint error, deploy guard, remove dead auto-merge workflow
+- `27aa5f6`  2026-04-01  Add PostToolUse CI check hook
+- `e1e69cb`  2026-04-01  Fix CI: lint error, deploy guard, remove dead auto-merge workflow
 - `36f6dff`  2026-04-01  Initial release: v1.3.0
 
 Full history: [CHANGELOG.md](CHANGELOG.md)

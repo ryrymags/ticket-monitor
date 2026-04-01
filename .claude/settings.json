@@ -3,5 +3,18 @@
     "allow": [
       "Bash(python3 -m pytest:*)"
     ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash(git push*)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /Users/rymag/code/gui-concert-monitor/scripts/check_ci.sh"
+          }
+        ]
+      }
+    ]
   }
 }
