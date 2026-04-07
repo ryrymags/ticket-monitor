@@ -574,6 +574,82 @@ class TestBrowserProbeSessionModes:
         assert probe.cdp_connected is True
         probe.close()
 
+    def test_persistent_profile_falls_back_to_chromium_when_chrome_not_found(
+        self, monkeypatch, tmp_path
+    ):
+        """If Chrome channel is not installed, start() should retry with bundled Chromium."""
+        playwright_sync = pytest.importorskip("playwright.sync_api")
+        record: dict = {}
+
+        class _RuntimeWithMissingChrome(_FakeRuntime):
+            def _launch_persistent_context(self, user_data_dir: str, **kwargs):
+                if kwargs.get("channel") == "chrome":
+                    raise Exception(
+                        "browsertype.launch_persistent_context: "
+                        "Chromium distribution 'chrome' not found at "
+                        r"C:\Users\User\AppData\Local\Google\Chrome\Application\chrome.exe"
+                    )
+                return super()._launch_persistent_context(user_data_dir, **kwargs)
+
+        class _StarterWithMissingChrome:
+            def start(self):
+                record["started"] = True
+                return _RuntimeWithMissingChrome(record)
+
+        monkeypatch.setattr(playwright_sync, "sync_playwright", _StarterWithMissingChrome)
+        profile_dir = tmp_path / "profile"
+
+        probe = BrowserProbe(
+            storage_state_path="unused.json",
+            session_mode="persistent_profile",
+            user_data_dir=str(profile_dir),
+            channel="chrome",
+            navigation_timeout_seconds=20,
+        )
+        probe.start()  # should not raise
+
+        assert "channel" not in record.get("launch_kwargs", {}), (
+            "fallback launch should not pass a channel"
+        )
+        probe.close()
+
+    def test_storage_mode_falls_back_to_chromium_when_chrome_not_found(
+        self, monkeypatch, tmp_path
+    ):
+        """If Chrome channel is not installed, storage_state mode should also fall back."""
+        playwright_sync = pytest.importorskip("playwright.sync_api")
+        record: dict = {}
+
+        class _RuntimeWithMissingChrome(_FakeRuntime):
+            def _launch(self, **kwargs):
+                if kwargs.get("channel") == "chrome":
+                    raise Exception(
+                        "Chromium distribution 'chrome' not found at chrome.exe"
+                    )
+                return super()._launch(**kwargs)
+
+        class _StarterWithMissingChrome:
+            def start(self):
+                record["started"] = True
+                return _RuntimeWithMissingChrome(record)
+
+        monkeypatch.setattr(playwright_sync, "sync_playwright", _StarterWithMissingChrome)
+        storage_state = tmp_path / "tm_storage_state.json"
+        storage_state.write_text('{"cookies":[],"origins":[]}', encoding="utf-8")
+
+        probe = BrowserProbe(
+            storage_state_path=str(storage_state),
+            session_mode="storage_state",
+            channel="chrome",
+            navigation_timeout_seconds=20,
+        )
+        probe.start()  # should not raise
+
+        assert "channel" not in record.get("launch_kwargs", {}), (
+            "fallback launch should not pass a channel"
+        )
+        probe.close()
+
     def test_cdp_mode_reuses_same_tab_and_uses_reload(self):
         page = _FakePage(
             html="<html><body>Event</body></html>",

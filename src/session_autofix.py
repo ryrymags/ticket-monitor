@@ -12,6 +12,12 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def _is_channel_not_found_error(exc: BaseException) -> bool:
+    """Return True if the exception indicates a Playwright browser channel is not installed."""
+    msg = str(exc).lower()
+    return "not found" in msg and ("distribution" in msg or "channel" in msg or "chrome" in msg)
+
+
 class AutoFixCredentialError(Exception):
     """Raised when Keychain credentials cannot be loaded."""
 
@@ -152,10 +158,25 @@ class TicketmasterSessionAutoFixer:
                 os.makedirs(user_data_dir, exist_ok=True)
 
                 with sync_playwright() as playwright:
-                    context = playwright.chromium.launch_persistent_context(
-                        user_data_dir,
-                        **self._launch_kwargs(headless=headless, channel=channel),
-                    )
+                    launch_kwargs = self._launch_kwargs(headless=headless, channel=channel)
+                    try:
+                        context = playwright.chromium.launch_persistent_context(
+                            user_data_dir,
+                            **launch_kwargs,
+                        )
+                    except Exception as launch_exc:
+                        if channel and _is_channel_not_found_error(launch_exc):
+                            logger.warning(
+                                "Chrome channel %r not found — falling back to bundled Chromium. "
+                                "Install Google Chrome for best Ticketmaster compatibility.",
+                                channel,
+                            )
+                            context = playwright.chromium.launch_persistent_context(
+                                user_data_dir,
+                                **self._launch_kwargs(headless=headless, channel=None),
+                            )
+                        else:
+                            raise
                     pages = getattr(context, "pages", None)
                     page = pages[0] if pages else context.new_page()
 
@@ -192,9 +213,22 @@ class TicketmasterSessionAutoFixer:
             os.makedirs(output_dir, exist_ok=True)
 
             with sync_playwright() as playwright:
-                browser = playwright.chromium.launch(
-                    **self._launch_kwargs(headless=True, channel=channel),
-                )
+                try:
+                    browser = playwright.chromium.launch(
+                        **self._launch_kwargs(headless=True, channel=channel),
+                    )
+                except Exception as launch_exc:
+                    if channel and _is_channel_not_found_error(launch_exc):
+                        logger.warning(
+                            "Chrome channel %r not found — falling back to bundled Chromium. "
+                            "Install Google Chrome for best Ticketmaster compatibility.",
+                            channel,
+                        )
+                        browser = playwright.chromium.launch(
+                            **self._launch_kwargs(headless=True, channel=None),
+                        )
+                    else:
+                        raise
                 context = browser.new_context()
                 page = context.new_page()
 
