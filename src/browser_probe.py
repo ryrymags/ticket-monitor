@@ -15,8 +15,7 @@ logger = logging.getLogger(__name__)
 
 PLAYWRIGHT_IMPORT_ERROR = (
     "Playwright is not installed. Install dependencies and run: "
-    "python -m playwright install chromium "
-    "(and python -m playwright install chrome when using browser.channel=chrome)."
+    "python -m playwright install chromium"
 )
 
 
