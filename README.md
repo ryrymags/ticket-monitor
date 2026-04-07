@@ -33,7 +33,7 @@ Full history: [CHANGELOG.md](CHANGELOG.md)
 
 ### Step 1 — Install Python
 
-> **Already have Python 3.9+? Skip to Step 2.**
+> **Already have Python 3.11+? Skip to Step 2.**
 
 - **Mac:** Download from [python.org/downloads](https://www.python.org/downloads/) and run the installer
 - **Windows:** Download from [python.org/downloads](https://www.python.org/downloads/) — **make sure to check "Add Python to PATH"** during install
