@@ -821,7 +821,7 @@ class DiscordNotifier:
     @staticmethod
     def _manual_action_text(next_steps: list[str] | None) -> str:
         if not next_steps:
-            return "Manual action required now. Run `scripts/monitorctl.sh status` and `scripts/monitorctl.sh logs`."
+            return "Manual action required. Check the monitor app for status and recent logs."
         commands = "\n".join(f"`{step}`" for step in next_steps)
         return f"Run these commands now:\n{commands}"
 
