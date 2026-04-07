@@ -1001,10 +1001,21 @@ class BrowserProbe:
         os.makedirs(user_data_dir, exist_ok=True)
 
         with sync_playwright() as playwright:
-            context = playwright.chromium.launch_persistent_context(
-                user_data_dir,
-                **BrowserProbe._launch_kwargs(headless=False, channel=channel),
-            )
+            launch_kwargs = BrowserProbe._launch_kwargs(headless=False, channel=channel)
+            try:
+                context = playwright.chromium.launch_persistent_context(user_data_dir, **launch_kwargs)
+            except Exception as launch_exc:
+                if channel and _is_channel_not_found_error(launch_exc):
+                    logger.warning(
+                        "Chrome channel %r not found — falling back to bundled Chromium.",
+                        channel,
+                    )
+                    context = playwright.chromium.launch_persistent_context(
+                        user_data_dir,
+                        **BrowserProbe._launch_kwargs(headless=False, channel=None),
+                    )
+                else:
+                    raise
             page = context.new_page()
             page.goto(event_url, wait_until="domcontentloaded", timeout=navigation_timeout_seconds * 1000)
 
