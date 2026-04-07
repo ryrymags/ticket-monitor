@@ -99,8 +99,12 @@ def run_test(config_path: str):
     print("Setup checks complete.")
 
 
-def run_bootstrap_session(config_path: str):
-    """Run interactive login to generate Playwright browser session state."""
+def run_bootstrap_session(config_path: str, *, stop_event=None):
+    """Run interactive login to generate Playwright browser session state.
+
+    stop_event: optional threading.Event; when provided, the browser stays open
+    until the event is set (used by the GUI instead of waiting for stdin).
+    """
     config = load_config(config_path)
     if not config.events:
         print("No events configured; cannot open Ticketmaster page.")
@@ -114,6 +118,7 @@ def run_bootstrap_session(config_path: str):
                 event_url=event_url,
                 cdp_endpoint_url=config.browser_cdp_endpoint_url,
                 navigation_timeout_seconds=config.browser_navigation_timeout_seconds,
+                stop_event=stop_event,
             )
         elif config.browser_session_mode == "persistent_profile":
             BrowserProbe.save_persistent_profile_interactive(
@@ -121,6 +126,7 @@ def run_bootstrap_session(config_path: str):
                 user_data_dir=config.browser_user_data_dir,
                 navigation_timeout_seconds=config.browser_navigation_timeout_seconds,
                 channel=config.browser_channel,
+                stop_event=stop_event,
             )
         else:
             output_path = config.browser_storage_state_path
@@ -128,6 +134,7 @@ def run_bootstrap_session(config_path: str):
                 event_url=event_url,
                 output_path=output_path,
                 navigation_timeout_seconds=config.browser_navigation_timeout_seconds,
+                stop_event=stop_event,
             )
     except BrowserProbeError as exc:
         print(f"Bootstrap failed: {exc}")
