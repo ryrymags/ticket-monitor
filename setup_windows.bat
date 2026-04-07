@@ -57,12 +57,14 @@ echo ✅  Python packages installed.
 echo.
 
 REM ── Install Playwright browser ────────────────────────────────────────────────
-echo ⏳  Installing browser engine (Chromium)...
+echo ⏳  Installing browser engines (Chromium + Chrome)...
 python -m playwright install chromium
+python -m playwright install chrome
 if errorlevel 1 (
-    echo ⚠️   Playwright browser install had issues. The monitor may still work if Chrome is installed.
+    echo ⚠️   Chrome channel install had issues — trying system Chrome fallback.
+    echo     If login fails, make sure Google Chrome is installed on this PC.
 )
-echo ✅  Browser engine ready.
+echo ✅  Browser engines ready.
 echo.
 
 REM ── Done ──────────────────────────────────────────────────────────────────────

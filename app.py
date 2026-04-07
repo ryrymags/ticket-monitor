@@ -774,6 +774,21 @@ class TicketMonitorApp(ctk.CTk):
         self._bootstrap_stop_event = threading.Event()
         self._bootstrap_error: str | None = None
 
+        # Show the "Done" dialog first so the user sees feedback immediately.
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Complete Login")
+        dialog.geometry("480x220")
+        dialog.grab_set()
+        dialog.lift()
+
+        dialog_status = ctk.CTkLabel(
+            dialog,
+            text="Complete your Ticketmaster login in the browser\nthat just opened.",
+            font=ctk.CTkFont(size=14),
+        )
+        dialog_status.pack(pady=(24, 8))
+        ctk.CTkLabel(dialog, text="Once you can see your account page normally, come back here.", text_color="gray55").pack()
+
         def _run_bootstrap():
             try:
                 run_bootstrap_session(CONFIG_FILE, stop_event=self._bootstrap_stop_event)
@@ -781,19 +796,14 @@ class TicketMonitorApp(ctk.CTk):
                 pass
             except Exception as exc:
                 self._bootstrap_error = str(exc)
+                # Notify the GUI immediately — browser failed to open.
+                self.after(0, lambda: dialog_status.configure(
+                    text=f"⚠️  Browser failed to open:\n{self._bootstrap_error}",
+                    text_color=COLOR_ORANGE,
+                ))
 
         self._bootstrap_thread = threading.Thread(target=_run_bootstrap, daemon=True)
         self._bootstrap_thread.start()
-
-        # Show the "Done" dialog
-        dialog = ctk.CTkToplevel(self)
-        dialog.title("Complete Login")
-        dialog.geometry("480x200")
-        dialog.grab_set()
-        dialog.lift()
-
-        ctk.CTkLabel(dialog, text="Complete your Ticketmaster login in the browser\nthat just opened.", font=ctk.CTkFont(size=14)).pack(pady=(24, 8))
-        ctk.CTkLabel(dialog, text="Once you can see your account page normally, come back here.", text_color="gray55").pack()
 
         def done():
             # Signal the browser thread to save state and close the browser.
