@@ -34,10 +34,10 @@ for candidate in \
     python3.10 \
     python3; do
     if command -v "$candidate" &>/dev/null 2>&1; then
-        # Must be at least Python 3.10
+        # Must be at least Python 3.11
         PY_MINOR_CHECK=$("$candidate" -c "import sys; print(sys.version_info.minor)" 2>/dev/null)
         PY_MAJOR_CHECK=$("$candidate" -c "import sys; print(sys.version_info.major)" 2>/dev/null)
-        if [ "$PY_MAJOR_CHECK" = "3" ] && [ "${PY_MINOR_CHECK:-0}" -ge "10" ] 2>/dev/null; then
+        if [ "$PY_MAJOR_CHECK" = "3" ] && [ "${PY_MINOR_CHECK:-0}" -ge "11" ] 2>/dev/null; then
             PYTHON3="$candidate"
             break
         fi
