@@ -106,23 +106,22 @@ def run_bootstrap_session(config_path: str, *, stop_event=None):
     until the event is set (used by the GUI instead of waiting for stdin).
     """
     config = load_config(config_path)
-    if not config.events:
-        print("No events configured; cannot open Ticketmaster page.")
-        sys.exit(1)
 
-    event_url = config.events[0].url
+    # Use the homepage for login — cookies are domain-scoped, so logging in here
+    # authenticates all subsequent requests to any ticketmaster.com URL.
+    login_url = "https://www.ticketmaster.com/"
     print("Launching browser for one-time Ticketmaster session bootstrap...")
     try:
         if config.browser_session_mode == "cdp_attach":
             BrowserProbe.save_cdp_attach_interactive(
-                event_url=event_url,
+                event_url=login_url,
                 cdp_endpoint_url=config.browser_cdp_endpoint_url,
                 navigation_timeout_seconds=config.browser_navigation_timeout_seconds,
                 stop_event=stop_event,
             )
         elif config.browser_session_mode == "persistent_profile":
             BrowserProbe.save_persistent_profile_interactive(
-                event_url=event_url,
+                event_url=login_url,
                 user_data_dir=config.browser_user_data_dir,
                 navigation_timeout_seconds=config.browser_navigation_timeout_seconds,
                 channel=config.browser_channel,
@@ -131,7 +130,7 @@ def run_bootstrap_session(config_path: str, *, stop_event=None):
         else:
             output_path = config.browser_storage_state_path
             BrowserProbe.save_storage_state_interactive(
-                event_url=event_url,
+                event_url=login_url,
                 output_path=output_path,
                 navigation_timeout_seconds=config.browser_navigation_timeout_seconds,
                 stop_event=stop_event,

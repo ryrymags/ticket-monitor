@@ -394,7 +394,10 @@ class TicketmasterSessionAutoFixer:
     def _launch_kwargs(*, headless: bool, channel: str | None) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
             "headless": headless,
-            "args": ["--disable-dev-shm-usage"],
+            "args": [
+                "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",
+            ],
         }
         if channel:
             kwargs["channel"] = channel
