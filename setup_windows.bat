@@ -57,14 +57,38 @@ echo ✅  Python packages installed.
 echo.
 
 REM ── Install Playwright browser ────────────────────────────────────────────────
-echo ⏳  Installing browser engines (Chromium + Chrome)...
+echo ⏳  Installing Chromium engine...
 python -m playwright install chromium
-python -m playwright install chrome
 if errorlevel 1 (
-    echo ⚠️   Chrome channel install had issues — trying system Chrome fallback.
-    echo     If login fails, make sure Google Chrome is installed on this PC.
+    echo ❌  Chromium install failed. Check your internet connection and try again.
+    pause
+    exit /b 1
 )
-echo ✅  Browser engines ready.
+echo ✅  Chromium installed.
+echo.
+
+REM ── Check for Google Chrome (used as the default browser channel) ─────────────
+set "CHROME_FOUND=0"
+if exist "C:\Program Files\Google\Chrome\Application\chrome.exe"       set "CHROME_FOUND=1"
+if exist "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe" set "CHROME_FOUND=1"
+if exist "%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"         set "CHROME_FOUND=1"
+
+if "%CHROME_FOUND%"=="1" (
+    echo ✅  Google Chrome detected — registering with Playwright...
+    python -m playwright install chrome
+    echo ✅  Chrome channel ready.
+) else (
+    echo ⚠️   Google Chrome is NOT installed on this PC.
+    echo.
+    echo     The monitor works best with Chrome to avoid Ticketmaster bot-detection.
+    echo     You can install it any time from: https://www.google.com/chrome/
+    echo.
+    echo     For now the app will automatically fall back to the bundled Chromium
+    echo     that was just downloaded — login and monitoring will still work.
+    echo.
+    echo     After installing Chrome, run this setup file again to register it.
+)
+echo.
 echo.
 
 REM ── Done ──────────────────────────────────────────────────────────────────────

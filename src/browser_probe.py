@@ -24,6 +24,13 @@ class BrowserProbeError(Exception):
     """Raised when the browser probe cannot complete a check."""
 
 
+def _is_channel_not_found_error(exc: BaseException) -> bool:
+    """Return True if the exception indicates a Playwright browser channel (e.g. 'chrome')
+    is not installed on this machine, so a Chromium fallback is appropriate."""
+    msg = str(exc).lower()
+    return "not found" in msg and ("distribution" in msg or "channel" in msg or "chrome" in msg)
+
+
 @dataclass
 class _NetworkSnapshot:
     availability_count: int
@@ -136,10 +143,25 @@ class BrowserProbe:
                         "browser.user_data_dir is required when browser.session_mode is persistent_profile"
                     )
                 os.makedirs(self.user_data_dir, exist_ok=True)
-                self._context = self._playwright.chromium.launch_persistent_context(
-                    self.user_data_dir,
-                    **launch_kwargs,
-                )
+                try:
+                    self._context = self._playwright.chromium.launch_persistent_context(
+                        self.user_data_dir,
+                        **launch_kwargs,
+                    )
+                except Exception as launch_exc:
+                    if self.channel and _is_channel_not_found_error(launch_exc):
+                        logger.warning(
+                            "Chrome channel %r not found — falling back to bundled Chromium. "
+                            "Install Google Chrome for best Ticketmaster compatibility.",
+                            self.channel,
+                        )
+                        fallback_kwargs = self._launch_kwargs(headless=self.headless, channel=None)
+                        self._context = self._playwright.chromium.launch_persistent_context(
+                            self.user_data_dir,
+                            **fallback_kwargs,
+                        )
+                    else:
+                        raise
                 self._browser = None
             else:
                 launch_kwargs = self._launch_kwargs(headless=self.headless, channel=self.channel)
@@ -147,7 +169,19 @@ class BrowserProbe:
                     raise BrowserProbeError(
                         f"Storage state file not found: {self.storage_state_path}. Run --bootstrap-session first."
                     )
-                self._browser = self._playwright.chromium.launch(**launch_kwargs)
+                try:
+                    self._browser = self._playwright.chromium.launch(**launch_kwargs)
+                except Exception as launch_exc:
+                    if self.channel and _is_channel_not_found_error(launch_exc):
+                        logger.warning(
+                            "Chrome channel %r not found — falling back to bundled Chromium. "
+                            "Install Google Chrome for best Ticketmaster compatibility.",
+                            self.channel,
+                        )
+                        fallback_kwargs = self._launch_kwargs(headless=self.headless, channel=None)
+                        self._browser = self._playwright.chromium.launch(**fallback_kwargs)
+                    else:
+                        raise
                 self._context = self._browser.new_context(storage_state=self.storage_state_path)
 
             self._context.set_default_timeout(self.navigation_timeout_seconds * 1000)
