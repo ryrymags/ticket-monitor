@@ -160,7 +160,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "session_mode": "persistent_profile",
         "storage_state_path": "secrets/tm_storage_state.json",
         "user_data_dir": "secrets/tm_profile",
-        "channel": "chrome",
+        "channel": "",
         "poll_min_seconds": 45,
         "poll_max_seconds": 75,
         "headless": True,

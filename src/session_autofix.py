@@ -120,7 +120,7 @@ class TicketmasterSessionAutoFixer:
         *,
         session_mode: str = "storage_state",
         user_data_dir: str = "",
-        channel: str = "chrome",
+        channel: str = "",
         headless: bool = True,
         verify_event_urls: list[str] | None = None,
     ) -> AutoReauthResult:

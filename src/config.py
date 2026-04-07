@@ -190,7 +190,7 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
     storage_state_path = str(browser.get("storage_state_path", "secrets/tm_storage_state.json")).strip()
     browser_session_mode = str(browser.get("session_mode", "storage_state")).strip().lower()
     browser_user_data_dir = str(browser.get("user_data_dir", "secrets/tm_profile")).strip()
-    browser_channel = str(browser.get("channel", "chrome")).strip()
+    browser_channel = str(browser.get("channel", "")).strip()
     browser_cdp_endpoint_url = str(browser.get("cdp_endpoint_url", "http://127.0.0.1:9222")).strip()
     browser_cdp_connect_timeout_seconds = safe_int(
         browser,

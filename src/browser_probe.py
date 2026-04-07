@@ -86,7 +86,7 @@ class BrowserProbe:
         storage_state_path: str,
         session_mode: str = "storage_state",
         user_data_dir: str = "secrets/tm_profile",
-        channel: str = "chrome",
+        channel: str = "",
         cdp_endpoint_url: str = "http://127.0.0.1:9222",
         cdp_connect_timeout_seconds: int = 10,
         reuse_event_tabs: bool = True,
@@ -983,7 +983,7 @@ class BrowserProbe:
         user_data_dir: str,
         navigation_timeout_seconds: int,
         *,
-        channel: str = "chrome",
+        channel: str = "",
         stop_event=None,
     ):
         """Launch a headed persistent profile and wait for manual login/challenge completion.

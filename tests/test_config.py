@@ -82,7 +82,7 @@ class TestLoadConfig:
         assert config.browser_challenge_threshold == 5
         assert config.browser_session_mode == "storage_state"
         assert config.browser_user_data_dir == "secrets/tm_profile"
-        assert config.browser_channel == "chrome"
+        assert config.browser_channel == ""
         assert config.browser_cdp_endpoint_url == "http://127.0.0.1:9222"
         assert config.browser_cdp_connect_timeout_seconds == 10
         assert config.browser_reuse_event_tabs is True
