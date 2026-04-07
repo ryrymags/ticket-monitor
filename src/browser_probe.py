@@ -867,8 +867,13 @@ class BrowserProbe:
         event_url: str,
         cdp_endpoint_url: str,
         navigation_timeout_seconds: int,
+        *,
+        stop_event=None,
     ):
-        """Attach to an already-running Chrome instance and guide manual login in-place."""
+        """Attach to an already-running Chrome instance and guide manual login in-place.
+
+        stop_event: optional threading.Event; when set, proceeds without waiting for stdin.
+        """
         try:
             from playwright.sync_api import sync_playwright
         except Exception as exc:  # pragma: no cover - import guard
@@ -890,9 +895,12 @@ class BrowserProbe:
                 pass
             page.goto(event_url, wait_until="domcontentloaded", timeout=navigation_timeout_seconds * 1000)
 
-            print("\nComplete Ticketmaster login/challenge in the opened Chrome window.")
-            print("This uses your dedicated persistent Chrome profile; credentials should persist.")
-            input("Press Enter after login is complete...")
+            if stop_event is not None:
+                stop_event.wait()
+            else:
+                print("\nComplete Ticketmaster login/challenge in the opened Chrome window.")
+                print("This uses your dedicated persistent Chrome profile; credentials should persist.")
+                input("Press Enter after login is complete...")
 
         logger.info("CDP bootstrap completed via %s", cdp_endpoint_url)
 
@@ -901,8 +909,13 @@ class BrowserProbe:
         event_url: str,
         output_path: str,
         navigation_timeout_seconds: int,
+        *,
+        stop_event=None,
     ):
-        """Launch a headed browser for one-time manual login and persist storage state."""
+        """Launch a headed browser for one-time manual login and persist storage state.
+
+        stop_event: optional threading.Event; when set, proceeds without waiting for stdin.
+        """
         try:
             from playwright.sync_api import sync_playwright
         except Exception as exc:  # pragma: no cover - import guard
@@ -917,9 +930,12 @@ class BrowserProbe:
             page = context.new_page()
             page.goto(event_url, wait_until="domcontentloaded", timeout=navigation_timeout_seconds * 1000)
 
-            print("\nComplete Ticketmaster login/challenge in the opened browser window.")
-            print("After you can load the event page normally, return to this terminal.")
-            input("Press Enter to save session state...")
+            if stop_event is not None:
+                stop_event.wait()
+            else:
+                print("\nComplete Ticketmaster login/challenge in the opened browser window.")
+                print("After you can load the event page normally, return to this terminal.")
+                input("Press Enter to save session state...")
 
             context.storage_state(path=output_path)
             browser.close()
@@ -934,8 +950,12 @@ class BrowserProbe:
         navigation_timeout_seconds: int,
         *,
         channel: str = "chrome",
+        stop_event=None,
     ):
-        """Launch a headed persistent profile and wait for manual login/challenge completion."""
+        """Launch a headed persistent profile and wait for manual login/challenge completion.
+
+        stop_event: optional threading.Event; when set, proceeds without waiting for stdin.
+        """
         try:
             from playwright.sync_api import sync_playwright
         except Exception as exc:  # pragma: no cover - import guard
@@ -955,9 +975,12 @@ class BrowserProbe:
             page = context.new_page()
             page.goto(event_url, wait_until="domcontentloaded", timeout=navigation_timeout_seconds * 1000)
 
-            print("\nComplete Ticketmaster login/challenge in the opened browser window.")
-            print("After you can load the event page normally, return to this terminal.")
-            input("Press Enter to continue...")
+            if stop_event is not None:
+                stop_event.wait()
+            else:
+                print("\nComplete Ticketmaster login/challenge in the opened browser window.")
+                print("After you can load the event page normally, return to this terminal.")
+                input("Press Enter to continue...")
 
             context.close()
 

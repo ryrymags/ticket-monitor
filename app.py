@@ -28,6 +28,8 @@ import customtkinter as ctk
 import tkinter as tk
 from tkinter import messagebox, simpledialog
 
+from monitor import run_bootstrap_session
+
 # ── Appearance ──────────────────────────────────────────────────────────────
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -766,14 +768,22 @@ class TicketMonitorApp(ctk.CTk):
         self._bootstrap_status_label.configure(text="⏳  Opening browser…", text_color="gray55")
         self.update()
 
-        # We run bootstrap as a subprocess with stdin piped so we can send Enter later.
-        self._bootstrap_proc = subprocess.Popen(
-            [python_exe(), "monitor.py", "--bootstrap-session", "--config", CONFIG_FILE],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            cwd=os.path.dirname(os.path.abspath(__file__)),
-        )
+        # Use an in-process thread + Event so the browser opens in the same process.
+        # This avoids Windows-specific subprocess/pipe deadlocks that prevented the
+        # browser window from appearing when stdout was piped to the parent GUI process.
+        self._bootstrap_stop_event = threading.Event()
+        self._bootstrap_error: str | None = None
+
+        def _run_bootstrap():
+            try:
+                run_bootstrap_session(CONFIG_FILE, stop_event=self._bootstrap_stop_event)
+            except SystemExit:
+                pass
+            except Exception as exc:
+                self._bootstrap_error = str(exc)
+
+        self._bootstrap_thread = threading.Thread(target=_run_bootstrap, daemon=True)
+        self._bootstrap_thread.start()
 
         # Show the "Done" dialog
         dialog = ctk.CTkToplevel(self)
@@ -786,18 +796,17 @@ class TicketMonitorApp(ctk.CTk):
         ctk.CTkLabel(dialog, text="Once you can see your account page normally, come back here.", text_color="gray55").pack()
 
         def done():
-            try:
-                self._bootstrap_proc.stdin.write(b"\n")
-                self._bootstrap_proc.stdin.flush()
-                self._bootstrap_proc.stdin.close()
-            except Exception:
-                pass
-            try:
-                self._bootstrap_proc.wait(timeout=15)
-            except Exception:
-                pass
+            # Signal the browser thread to save state and close the browser.
+            self._bootstrap_stop_event.set()
+            # Wait briefly for the thread to finish saving.
+            self._bootstrap_thread.join(timeout=20)
             dialog.destroy()
-            self._bootstrap_status_label.configure(text="✅  Login saved! You can start monitoring.", text_color=COLOR_GREEN)
+            if self._bootstrap_error:
+                self._bootstrap_status_label.configure(
+                    text=f"⚠️  Bootstrap failed: {self._bootstrap_error}", text_color=COLOR_ORANGE
+                )
+            else:
+                self._bootstrap_status_label.configure(text="✅  Login saved! You can start monitoring.", text_color=COLOR_GREEN)
             self._update_login_status()
 
         ctk.CTkButton(dialog, text="✅  Done — I'm Logged In", fg_color=COLOR_GREEN, hover_color="#27ae60", command=done).pack(pady=18)
