@@ -148,7 +148,8 @@ echo ""
 echo "⏳  Installing browser engine (Chromium)..."
 python3 -m playwright install chromium 2>/dev/null
 if [ $? -ne 0 ]; then
-    echo "⚠️   Playwright browser install had issues — will try to use your system Chrome."
+    echo "⚠️   Playwright browser install had issues — the browser may not work."
+    echo "     Check your internet connection and re-run setup to try again."
 fi
 echo "✅  Browser engine ready."
 echo ""

@@ -70,7 +70,7 @@ with open("config.yaml", "r", encoding="utf-8") as f:
     raw = yaml.safe_load(f) or {}
 browser = raw.get("browser", {}) or {}
 mode = str(browser.get("session_mode", "storage_state")).strip().lower()
-channel = str(browser.get("channel", "chrome")).strip().lower()
+channel = str(browser.get("channel", "")).strip().lower()
 print("1" if mode == "persistent_profile" and channel == "chrome" else "0")
 PY
 )"
