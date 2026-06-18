@@ -802,6 +802,7 @@ class DiscordNotifier:
                     "color": COLOR_GREEN,
                     "matched_group": best,
                     "unknown_row": isinstance(best, dict) and str(best.get("row", "")) == "?",
+                    "should_notify": True,
                 }
             return {
                 "label": "Tickets may be available",
@@ -809,11 +810,32 @@ class DiscordNotifier:
                 "color": COLOR_ORANGE,
                 "matched_group": None,
                 "unknown_row": False,
+                "should_notify": True,
             }
 
         # Use one or more configurable BINGO preferences. The first BINGO in
         # config order wins, so users can make the list reflect their priorities.
         configs = cls._preference_configs(preferences)
+        if not groups and configs:
+            should_notify = any(
+                bool(getattr(pref, "alert_on_any_availability", True))
+                and not bool(getattr(pref, "require_preferred_only", False))
+                for pref in configs
+            )
+            return {
+                "label": (
+                    "Tickets may be available, but no listing details matched a BINGO config"
+                    if should_notify
+                    else "No BINGO match"
+                ),
+                "preview_status": "Available" if should_notify else "Not a match",
+                "color": COLOR_ORANGE,
+                "matched_group": None,
+                "unknown_row": False,
+                "config_name": "",
+                "should_notify": should_notify,
+            }
+
         results: list[tuple[Any, dict[str, Any]]] = []
         for pref in configs:
             results.append((pref, pref.matches(groups)))
@@ -839,6 +861,7 @@ class DiscordNotifier:
                 "matched_group": best,
                 "unknown_row": isinstance(best, dict) and str(best.get("row", "")) == "?",
                 "config_name": "",
+                "should_notify": True,
             }
 
         pref, result = selected
@@ -850,6 +873,7 @@ class DiscordNotifier:
             "matched_group": matched_group,
             "unknown_row": isinstance(matched_group, dict) and str(matched_group.get("row", "")) == "?",
             "config_name": str(getattr(pref, "name", "") or "").strip(),
+            "should_notify": bool(result.get("matched")),
         }
 
     def _ticket_preview_content(

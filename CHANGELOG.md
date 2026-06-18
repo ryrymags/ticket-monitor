@@ -9,6 +9,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Changes
 
 - Add named multi-BINGO configs and make Discord ticket alerts lead with BINGO.
+- Respect the non-BINGO alert toggle before sending Discord ticket notifications.
 
 - `27aa5f6`  2026-04-01 07:26  Add PostToolUse CI check hook
 

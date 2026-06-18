@@ -101,7 +101,7 @@ In the **Preferences** tab:
 | **Require preferred section** | If on, only BINGO when a preferred section is available |
 | **Also alert on non-matching** | Get an orange 🟡 alert even when tickets don't match your preferences |
 
-Click **Add BINGO Config** to watch for another category of tickets. The first matching config wins, so keep your highest-priority category first.
+Click **Add BINGO Config** to watch for another category of tickets. Every config is checked for a BINGO; if more than one matches at once, the first matching config is the one named in Discord.
 
 > **Tip:** Turn on "Also alert on non-matching" — you'll always know when anything is available, even if it's not exactly what you wanted.
 
