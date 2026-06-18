@@ -54,6 +54,7 @@ def _make_config(**overrides) -> MonitorConfig:
         auth_session_health_check_interval_seconds=3600,
         auth_session_health_check_url="https://www.ticketmaster.com/my-account",
         preferences=TicketPreferences(),
+        bingo_configs=[TicketPreferences()],
         watchdog_enabled=True,
         watchdog_interval_seconds=120,
         watchdog_stale_after_seconds=180,

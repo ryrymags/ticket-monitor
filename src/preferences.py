@@ -45,6 +45,9 @@ class TicketPreferences:
     # fully match your preferences — so you know something is out there.
     alert_on_any_availability: bool = True
 
+    # Human-friendly label for this BINGO category.
+    name: str = "BINGO"
+
     # ── Back-compat alias ────────────────────────────────────────────────────
     # config.yaml may still have the old key name; from_dict() handles both.
     # We store the canonical value in require_preferred_only.
@@ -180,6 +183,7 @@ class TicketPreferences:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "name": self.name,
             "min_tickets": self.min_tickets,
             "max_price_per_ticket": self.max_price_per_ticket,
             "preferred_sections": list(self.preferred_sections),
@@ -189,6 +193,7 @@ class TicketPreferences:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TicketPreferences":
+        data = data or {}
         sections_raw = data.get("preferred_sections", [])
         if isinstance(sections_raw, str):
             sections_raw = [s.strip() for s in sections_raw.split(",") if s.strip()]
@@ -197,6 +202,7 @@ class TicketPreferences:
         require = data.get("require_preferred_only", data.get("require_section_match", False))
 
         return cls(
+            name=str(data.get("name", "BINGO")).strip() or "BINGO",
             min_tickets=max(1, int(data.get("min_tickets", 1))),
             max_price_per_ticket=float(data.get("max_price_per_ticket", 9999.0)),
             preferred_sections=[str(s).strip() for s in sections_raw if str(s).strip()],

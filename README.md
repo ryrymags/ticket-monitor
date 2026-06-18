@@ -22,8 +22,8 @@ Full history: [CHANGELOG.md](CHANGELOG.md)
 
 - **GUI app** — no command-line experience needed
 - **Any event** — paste any Ticketmaster URL
-- **Configurable preferences** — set how many tickets you need, your max price, and preferred sections
-- **Discord alerts** — 🟢 BINGO when tickets match your criteria, 🟡 notice for anything else
+- **Multiple BINGO configs** — track different ticket categories, like preferred sections and budget seats
+- **Discord alerts** — 🟢 BINGO leads the message when tickets match, 🟡 notice for anything else
 - **Runs 24/7** — self-healing with automatic browser recycling and error recovery
 - **Works on Mac and Windows**
 
@@ -88,17 +88,20 @@ You can add multiple events (e.g., Night 1 and Night 2) — all checked simultan
 
 ---
 
-## 🎫 Setting Your Ticket Preferences
+## 🎫 Setting Your BINGO Configs
 
 In the **Preferences** tab:
 
 | Setting | What it does |
 |---------|-------------|
+| **Config name** | Label shown in Discord, e.g. `LOGE pairs` or `Budget triples` |
 | **Tickets needed together** | Minimum number of seats that must be available in the same group |
 | **Max price per ticket** | Only BINGO if face value is at or below this amount |
 | **Preferred sections** | Comma-separated section names, e.g. `LOGE, FLOOR, PIT` (optional) |
 | **Require preferred section** | If on, only BINGO when a preferred section is available |
 | **Also alert on non-matching** | Get an orange 🟡 alert even when tickets don't match your preferences |
+
+Click **Add BINGO Config** to watch for another category of tickets. The first matching config wins, so keep your highest-priority category first.
 
 > **Tip:** Turn on "Also alert on non-matching" — you'll always know when anything is available, even if it's not exactly what you wanted.
 
@@ -133,7 +136,7 @@ Once you've set up your events, Discord, and logged in:
 
 | Color | Meaning |
 |-------|---------|
-| 🟢 Green — **BINGO** | Tickets match all your preferences — go buy now! |
+| 🟢 Green — **BINGO** | Tickets match one of your BINGO configs — go buy now! |
 | 🟡 Orange — **Available** | Tickets are up but don't match your preferences |
 | 🔵 Blue | Monitor status updates (heartbeat, auto-fix actions) |
 | 🔴 Red | Error or sold-out again |

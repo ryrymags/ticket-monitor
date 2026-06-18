@@ -104,7 +104,34 @@ class TestLoadConfig:
         assert config.auth_auto_login_cooldown_seconds == 1800
         assert config.watchdog_interval_seconds == 120
         assert config.updates_interval_seconds == 60
+        assert len(config.bingo_configs) == 1
+        assert config.bingo_configs[0].name == "BINGO"
         assert config.timezone == "US/Eastern"
+
+    def test_loads_multiple_bingo_configs(self, tmp_path):
+        path = _write_config(
+            tmp_path,
+            {
+                "bingo_configs": [
+                    {
+                        "name": "LOGE pairs",
+                        "min_tickets": 2,
+                        "max_price_per_ticket": 220,
+                        "preferred_sections": ["LOGE"],
+                    },
+                    {
+                        "name": "Budget triples",
+                        "min_tickets": 3,
+                        "max_price_per_ticket": 125,
+                        "preferred_sections": [],
+                    },
+                ],
+            },
+        )
+        config = load_config(path)
+        assert [pref.name for pref in config.bingo_configs] == ["LOGE pairs", "Budget triples"]
+        assert config.preferences.name == "LOGE pairs"
+        assert config.bingo_configs[1].min_tickets == 3
 
     def test_auto_generates_event_url(self, tmp_path):
         config_data = {

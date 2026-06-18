@@ -136,9 +136,14 @@ class DiscordNotifier:
         # ── Build description: lead with status, then every listing ─────────
         detail_lines: list[str] = []
         is_bingo = match.get("preview_status") == "BINGO"
+        config_name = str(match.get("config_name") or "").strip()
+        status_label = "BINGO" if is_bingo else "Tickets Available"
+        if is_bingo and config_name:
+            status_label = f"BINGO: {config_name}"
 
         if is_bingo:
-            detail_lines.append(f"🟢 **{match['label']}**")
+            detail_lines.append(f"🟢 **{status_label}**")
+            detail_lines.append(f"**{match['label']}**")
         else:
             detail_lines.append(f"🟡 **{match['label']}**")
 
@@ -150,20 +155,26 @@ class DiscordNotifier:
 
         detail_lines.append("")  # blank line before listings
 
+        matched_group = match.get("matched_group")
+        if isinstance(matched_group, dict):
+            detail_lines.append("**Best match:**")
+            detail_lines.append(self._format_listing_group(matched_group))
+            detail_lines.append("")
+
         # Show every detected listing group, not just the best match.
         if groups:
             detail_lines.append("**All listings detected:**")
-            # Sort: preferred-section matches first, then by price ascending.
-            for g in sorted(groups, key=lambda x: (x.get("price", 0), x.get("section", ""))):
-                sect = g.get("section", "?")
-                row = g.get("row", "?")
-                price = g.get("price", 0.0)
-                count = g.get("count", 0)
-                row_str = f" · Row {row}" if row and row != "?" else ""
+            for g in sorted(
+                groups,
+                key=lambda x: (
+                    0 if self._same_listing_group(x, matched_group) else 1,
+                    x.get("price", 0),
+                    x.get("section", ""),
+                ),
+            ):
+                marker = "→ " if self._same_listing_group(g, matched_group) else "• "
                 detail_lines.append(
-                    f"• **{sect}**{row_str} — "
-                    f"{count} ticket{'s' if count != 1 else ''} @ "
-                    f"**${price:,.2f}** each"
+                    f"{marker}{self._format_listing_group(g)}"
                 )
         else:
             # No structured listing data — fall back to summary strings.
@@ -178,7 +189,7 @@ class DiscordNotifier:
         detail_lines.append(f"Alert trigger: {trigger_label}")
 
         embed = {
-            "title": f"{'🟢 BINGO' if is_bingo else '🟡 Tickets Available'}: {event_name}",
+            "title": f"{'🟢 ' if is_bingo else '🟡 '}{status_label}: {event_name}",
             "url": event_url,
             "color": int(match["color"]),
             "description": "\n".join(detail_lines),
@@ -197,6 +208,7 @@ class DiscordNotifier:
             mention=mention,
             event_name=event_name,
             preview_status=str(match["preview_status"]),
+            config_name=config_name,
         )
         sent = self._send(embeds=[embed], content=content, retries=2)
 
@@ -735,6 +747,38 @@ class DiscordNotifier:
             ),
         )[0]
 
+    @staticmethod
+    def _format_listing_group(group: dict[str, Any]) -> str:
+        sect = group.get("section", "?")
+        row = group.get("row", "?")
+        price = group.get("price", 0.0)
+        count = group.get("count", 0)
+        row_str = f" · Row {row}" if row and row != "?" else ""
+        return (
+            f"**{sect}**{row_str} — "
+            f"{count} ticket{'s' if count != 1 else ''} @ "
+            f"**${price:,.2f}** each"
+        )
+
+    @staticmethod
+    def _same_listing_group(left: dict[str, Any] | None, right: dict[str, Any] | None) -> bool:
+        if not isinstance(left, dict) or not isinstance(right, dict):
+            return False
+        return (
+            str(left.get("section", "")).upper() == str(right.get("section", "")).upper()
+            and str(left.get("row", "")) == str(right.get("row", ""))
+            and float(left.get("price", 0.0)) == float(right.get("price", 0.0))
+            and int(left.get("count", 0)) == int(right.get("count", 0))
+        )
+
+    @staticmethod
+    def _preference_configs(preferences) -> list[Any]:
+        if preferences is None:
+            return []
+        if isinstance(preferences, (list, tuple)):
+            return [pref for pref in preferences if pref is not None]
+        return [preferences]
+
     @classmethod
     def _ticket_match_status(
         cls,
@@ -767,8 +811,37 @@ class DiscordNotifier:
                 "unknown_row": False,
             }
 
-        # Use configurable preferences.
-        result = preferences.matches(groups)
+        # Use one or more configurable BINGO preferences. The first BINGO in
+        # config order wins, so users can make the list reflect their priorities.
+        configs = cls._preference_configs(preferences)
+        results: list[tuple[Any, dict[str, Any]]] = []
+        for pref in configs:
+            results.append((pref, pref.matches(groups)))
+
+        selected: tuple[Any, dict[str, Any]] | None = None
+        for pref, result in results:
+            if result.get("bingo"):
+                selected = (pref, result)
+                break
+        if selected is None:
+            for pref, result in results:
+                if result.get("matched"):
+                    selected = (pref, result)
+                    break
+        if selected is None and results:
+            selected = results[0]
+        if selected is None:
+            best = cls._best_match_group(groups)
+            return {
+                "label": "Tickets available",
+                "preview_status": "Available",
+                "color": COLOR_ORANGE,
+                "matched_group": best,
+                "unknown_row": isinstance(best, dict) and str(best.get("row", "")) == "?",
+                "config_name": "",
+            }
+
+        pref, result = selected
         matched_group = result.get("bingo_group")
         return {
             "label": result["label"],
@@ -776,14 +849,25 @@ class DiscordNotifier:
             "color": result["color"],
             "matched_group": matched_group,
             "unknown_row": isinstance(matched_group, dict) and str(matched_group.get("row", "")) == "?",
+            "config_name": str(getattr(pref, "name", "") or "").strip(),
         }
 
-    def _ticket_preview_content(self, *, mention: bool, event_name: str, preview_status: str) -> str:
+    def _ticket_preview_content(
+        self,
+        *,
+        mention: bool,
+        event_name: str,
+        preview_status: str,
+        config_name: str = "",
+    ) -> str:
         if not mention:
             return ""
-        line = f"Tickets Available: {event_name} — {preview_status}"
+        if preview_status == "BINGO":
+            line = f"🟢 BINGO{' — ' + config_name if config_name else ''}: {event_name}"
+        else:
+            line = f"🟡 Tickets Available: {event_name} — {preview_status}"
         if self.ping_user_id:
-            return f"{self.ping_user_id} {line}"
+            return f"{line} {self.ping_user_id}"
         return line
 
     def _build_guided_description(

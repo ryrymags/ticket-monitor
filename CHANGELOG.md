@@ -8,6 +8,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
+- Add named multi-BINGO configs and make Discord ticket alerts lead with BINGO.
+
 - `27aa5f6`  2026-04-01 07:26  Add PostToolUse CI check hook
 
 - `e1e69cb`  2026-04-01 07:23  Fix CI: lint error, deploy guard, remove dead auto-merge workflow
