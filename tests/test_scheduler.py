@@ -155,6 +155,59 @@ class TestTicketAlerting:
         kwargs = scheduler.notifier.send_ticket_available.call_args.kwargs
         assert kwargs.get("listing_groups") == listing_groups
 
+    def test_non_bingo_is_suppressed_when_orange_alerts_disabled(self, tmp_path):
+        prefs = [
+            TicketPreferences(
+                min_tickets=2,
+                max_price_per_ticket=200.0,
+                preferred_sections=["LOGE"],
+                alert_on_any_availability=False,
+                name="LOGE pairs",
+            )
+        ]
+        scheduler = _make_scheduler(
+            tmp_path,
+            _make_config(preferences=prefs[0], bingo_configs=prefs),
+        )
+        event = scheduler.config.events[0]
+        listing_groups = [{"section": "FLOOR1", "row": "A", "price": 150.0, "count": 2}]
+
+        scheduler._handle_probe_result(event, _make_result(available=True, listing_groups=listing_groups))
+
+        scheduler.notifier.send_ticket_available.assert_not_called()
+        assert scheduler.state.get_last_available_at(event.event_id) is not None
+        assert scheduler.state.get_last_alert_at(event.event_id) is None
+
+    def test_second_bingo_config_alerts_when_first_config_does_not_match(self, tmp_path):
+        prefs = [
+            TicketPreferences(
+                min_tickets=2,
+                max_price_per_ticket=200.0,
+                preferred_sections=["LOGE"],
+                alert_on_any_availability=False,
+                name="LOGE pairs",
+            ),
+            TicketPreferences(
+                min_tickets=2,
+                max_price_per_ticket=250.0,
+                preferred_sections=["FLOOR"],
+                alert_on_any_availability=False,
+                name="Floor pairs",
+            ),
+        ]
+        scheduler = _make_scheduler(
+            tmp_path,
+            _make_config(preferences=prefs[0], bingo_configs=prefs),
+        )
+        event = scheduler.config.events[0]
+        listing_groups = [{"section": "FLOOR1", "row": "A", "price": 150.0, "count": 2}]
+
+        scheduler._handle_probe_result(event, _make_result(available=True, listing_groups=listing_groups))
+
+        scheduler.notifier.send_ticket_available.assert_called_once()
+        kwargs = scheduler.notifier.send_ticket_available.call_args.kwargs
+        assert kwargs.get("preferences") == prefs
+
     def test_duplicate_signature_is_deduped(self, tmp_path):
         scheduler = _make_scheduler(tmp_path)
         event = scheduler.config.events[0]

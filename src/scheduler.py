@@ -382,11 +382,19 @@ class MonitorScheduler:
         # Availability alerting + dedupe/cooldown.
         decision = self.detector.evaluate(event_id, result, self.state, now=now)
         if result.available:
+            listing_groups = (
+                result.raw_indicators.get("listing_groups")
+                if isinstance(result.raw_indicators, dict)
+                else None
+            )
+            preferences = self._ticket_preferences()
+            match = DiscordNotifier._ticket_match_status(listing_groups, preferences=preferences)
+            should_notify_for_preferences = bool(match.get("should_notify", True))
             self._start_mention_burst_if_needed(event_id, now)
             mention_due = self._should_send_mention_burst(event_id, now)
             self.state.set_last_available_at(event_id, now)
             self.state.set_last_availability_signature(event_id, decision.signature)
-            if decision.should_alert:
+            if should_notify_for_preferences and decision.should_alert:
                 sent = self.notifier.send_ticket_available(
                     event_name=event_cfg.name,
                     event_date=event_cfg.date,
@@ -397,17 +405,9 @@ class MonitorScheduler:
                     section_summary=result.section_summary,
                     reason=decision.reason,
                     listing_summary=result.listing_summary,
-                    listing_groups=(
-                        result.raw_indicators.get("listing_groups")
-                        if isinstance(result.raw_indicators, dict)
-                        else None
-                    ),
+                    listing_groups=listing_groups,
                     mention=mention_due,
-                    preferences=getattr(
-                        self.config,
-                        "bingo_configs",
-                        getattr(self.config, "preferences", None),
-                    ),
+                    preferences=preferences,
                 )
                 if sent:
                     if mention_due:
@@ -416,7 +416,7 @@ class MonitorScheduler:
                     logger.info("[%s] ticket alert sent (%s)", event_cfg.name, decision.reason)
                 else:
                     logger.error("[%s] ticket alert failed to send", event_cfg.name)
-            elif mention_due:
+            elif should_notify_for_preferences and mention_due:
                 sent = self.notifier.send_ticket_available(
                     event_name=event_cfg.name,
                     event_date=event_cfg.date,
@@ -427,28 +427,29 @@ class MonitorScheduler:
                     section_summary=result.section_summary,
                     reason="attention_burst",
                     listing_summary=result.listing_summary,
-                    listing_groups=(
-                        result.raw_indicators.get("listing_groups")
-                        if isinstance(result.raw_indicators, dict)
-                        else None
-                    ),
+                    listing_groups=listing_groups,
                     mention=True,
-                    preferences=getattr(
-                        self.config,
-                        "bingo_configs",
-                        getattr(self.config, "preferences", None),
-                    ),
+                    preferences=preferences,
                 )
                 if sent:
                     self._record_mention_burst_sent(event_id, now)
                     logger.info("[%s] ticket alert sent (attention_burst)", event_cfg.name)
                 else:
                     logger.error("[%s] ticket alert failed to send (attention_burst)", event_cfg.name)
+            elif not should_notify_for_preferences and decision.should_alert:
+                logger.info("[%s] availability suppressed by BINGO preferences", event_cfg.name)
         else:
             # Force next availability to be treated as a new signature episode.
             if self.state.get_last_availability_signature(event_id):
                 self.state.set_last_availability_signature(event_id, "")
             self._reset_mention_burst_if_needed(event_id)
+
+    def _ticket_preferences(self):
+        return getattr(
+            self.config,
+            "bingo_configs",
+            getattr(self.config, "preferences", None),
+        )
 
     def _start_mention_burst_if_needed(self, event_id: str, now: datetime):
         started_at = self.state.get_mention_burst_started_at(event_id)
