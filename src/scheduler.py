@@ -403,7 +403,11 @@ class MonitorScheduler:
                         else None
                     ),
                     mention=mention_due,
-                    preferences=self.config.preferences if hasattr(self.config, "preferences") else None,
+                    preferences=getattr(
+                        self.config,
+                        "bingo_configs",
+                        getattr(self.config, "preferences", None),
+                    ),
                 )
                 if sent:
                     if mention_due:
@@ -429,7 +433,11 @@ class MonitorScheduler:
                         else None
                     ),
                     mention=True,
-                    preferences=self.config.preferences if hasattr(self.config, "preferences") else None,
+                    preferences=getattr(
+                        self.config,
+                        "bingo_configs",
+                        getattr(self.config, "preferences", None),
+                    ),
                 )
                 if sent:
                     self._record_mention_burst_sent(event_id, now)

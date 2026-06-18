@@ -97,6 +97,7 @@ class MonitorConfig:
 
     # Ticket preferences (configurable bingo rules)
     preferences: TicketPreferences
+    bingo_configs: list[TicketPreferences]
 
     # General
     timezone: str
@@ -347,13 +348,41 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
     else:
         errors.append("updates.watch_globs must be a list of glob strings")
 
-    # Ticket preferences (configurable bingo rules)
+    # Ticket preferences (configurable BINGO rules)
     preferences_raw = raw.get("preferences", {}) or {}
-    try:
-        preferences = TicketPreferences.from_dict(preferences_raw)
-    except Exception as pref_exc:
-        errors.append(f"preferences: invalid value — {pref_exc}")
+    bingo_configs_raw = raw.get("bingo_configs")
+    bingo_configs: list[TicketPreferences] = []
+
+    if bingo_configs_raw is None:
+        try:
+            preferences = TicketPreferences.from_dict(preferences_raw)
+            bingo_configs = [preferences]
+        except Exception as pref_exc:
+            errors.append(f"preferences: invalid value — {pref_exc}")
+            preferences = TicketPreferences()
+            bingo_configs = [preferences]
+    elif isinstance(bingo_configs_raw, list):
+        for i, pref_raw in enumerate(bingo_configs_raw):
+            if not isinstance(pref_raw, dict):
+                errors.append(f"bingo_configs[{i}] must be a mapping")
+                continue
+            try:
+                pref = TicketPreferences.from_dict(pref_raw)
+                if not pref.name or pref.name == "BINGO":
+                    pref.name = f"BINGO {i + 1}"
+                bingo_configs.append(pref)
+            except Exception as pref_exc:
+                errors.append(f"bingo_configs[{i}]: invalid value — {pref_exc}")
+        if not bingo_configs:
+            errors.append("bingo_configs must include at least one valid BINGO config")
+            preferences = TicketPreferences()
+            bingo_configs = [preferences]
+        else:
+            preferences = bingo_configs[0]
+    else:
+        errors.append("bingo_configs must be a list of BINGO config mappings")
         preferences = TicketPreferences()
+        bingo_configs = [preferences]
 
     # Logging
     log_max_file_size_mb = safe_int(logging_cfg, "max_file_size_mb", 10, "logging.max_file_size_mb")
@@ -506,6 +535,7 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
         updates_stability_delay_seconds=updates_stability_delay_seconds,
         updates_watch_globs=updates_watch_globs,
         preferences=preferences,
+        bingo_configs=bingo_configs,
         timezone=timezone_str,
         log_level=str(logging_cfg.get("level", "INFO")).upper(),
         log_file=str(logging_cfg.get("file", "logs/monitor.log")),

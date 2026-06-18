@@ -174,8 +174,35 @@ class TestTicketAvailableMention:
                 preferences=prefs,
             )
             content = mock_send.call_args[1].get("content", "")
-            assert content.startswith("<@123456789> Tickets Available: Test Event")
+            assert content.startswith("🟢 BINGO")
             assert "BINGO" in content
+            assert content.endswith("<@123456789>")
+
+    def test_ticket_available_multiple_bingo_configs_names_match(self):
+        notifier = DiscordNotifier(webhook_url="https://test", ping_user_id="123456789")
+        prefs = [
+            TicketPreferences(name="LOGE pairs", min_tickets=2, max_price_per_ticket=200.0, preferred_sections=["LOGE"]),
+            TicketPreferences(name="Budget triples", min_tickets=3, max_price_per_ticket=125.0),
+        ]
+        with patch.object(notifier, "_send", return_value=True) as mock_send:
+            notifier.send_ticket_available(
+                event_name="Test Event",
+                event_date="2030-01-01",
+                event_url="http://test",
+                signal_type="dom+network",
+                signal_confidence=0.95,
+                price_summary="$120.00 - $120.00",
+                section_summary="BALCONY301",
+                reason="signature_changed",
+                listing_groups=[{"section": "BALCONY301", "row": "6", "price": 120.0, "count": 3}],
+                mention=True,
+                preferences=prefs,
+            )
+            content = mock_send.call_args[1].get("content", "")
+            embed = mock_send.call_args[1]["embeds"][0]
+            assert content.startswith("🟢 BINGO — Budget triples")
+            assert "Budget triples" in embed["title"]
+            assert "**Best match:**" in embed["description"]
 
     def test_ticket_available_includes_listing_summary(self):
         notifier = DiscordNotifier(webhook_url="https://test")

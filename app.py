@@ -150,12 +150,23 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "events": [],
     "preferences": {
+        "name": "BINGO 1",
         "min_tickets": 1,
         "max_price_per_ticket": 500.0,
         "preferred_sections": [],
         "require_preferred_only": False,
         "alert_on_any_availability": True,
     },
+    "bingo_configs": [
+        {
+            "name": "BINGO 1",
+            "min_tickets": 1,
+            "max_price_per_ticket": 500.0,
+            "preferred_sections": [],
+            "require_preferred_only": False,
+            "alert_on_any_availability": True,
+        }
+    ],
     "browser": {
         "session_mode": "persistent_profile",
         "storage_state_path": "secrets/tm_storage_state.json",
@@ -503,104 +514,207 @@ class TicketMonitorApp(ctk.CTk):
         frame = ctk.CTkFrame(self._content, fg_color="transparent")
         self._tabs["preferences"] = frame
         frame.grid_columnconfigure(0, weight=1)
+        frame.grid_rowconfigure(2, weight=1)
 
-        _section_header(frame, "🎫  Ticket Preferences", row=0)
+        _section_header(frame, "🎫  BINGO Configs", row=0)
 
         ctk.CTkLabel(
             frame,
-            text="Define your ideal tickets. You'll get a 🟢 BINGO alert when something matches, and\n"
-                 "a 🟡 secondary alert for anything else (if enabled below).",
+            text="Define one or more ideal-ticket categories. A Discord alert leads with the first\n"
+                 "BINGO config that matches, so put your highest-priority category first.",
             text_color="gray60", justify="left",
         ).grid(row=1, column=0, padx=20, pady=(0, 12), sticky="w")
 
-        pref_frame = ctk.CTkFrame(frame, fg_color=COLOR_BG_PANEL, corner_radius=8)
-        pref_frame.grid(row=2, column=0, padx=20, pady=(0, 12), sticky="ew")
-        pref_frame.grid_columnconfigure(1, weight=1)
+        self._bingo_cards_frame = ctk.CTkScrollableFrame(frame, fg_color="transparent")
+        self._bingo_cards_frame.grid(row=2, column=0, padx=20, pady=(0, 12), sticky="nsew")
+        self._bingo_cards_frame.grid_columnconfigure(0, weight=1)
+        self._bingo_config_widgets: list[dict[str, Any]] = []
 
-        # Min tickets
-        ctk.CTkLabel(pref_frame, text="Tickets needed together", anchor="w").grid(row=0, column=0, padx=18, pady=(16, 4), sticky="w")
+        btn_row = ctk.CTkFrame(frame, fg_color="transparent")
+        btn_row.grid(row=3, column=0, padx=20, pady=(0, 14), sticky="w")
+        ctk.CTkButton(btn_row, text="＋  Add BINGO Config", command=self._add_bingo_config, fg_color=COLOR_GRAY).pack(side="left", padx=(0, 10))
+        ctk.CTkButton(btn_row, text="💾  Save Preferences", command=self._save_config, fg_color=COLOR_BLUE).pack(side="left")
+
+        self._render_bingo_config_cards(self._configured_bingo_configs())
+
+    def _blank_bingo_config(self, index: int) -> dict[str, Any]:
+        return {
+            "name": f"BINGO {index + 1}",
+            "min_tickets": 1,
+            "max_price_per_ticket": 500.0,
+            "preferred_sections": [],
+            "require_preferred_only": False,
+            "alert_on_any_availability": True,
+        }
+
+    def _configured_bingo_configs(self) -> list[dict[str, Any]]:
+        raw_configs = self._cfg.get("bingo_configs")
+        if isinstance(raw_configs, list) and raw_configs:
+            configs = [cfg for cfg in raw_configs if isinstance(cfg, dict)]
+        else:
+            legacy = self._cfg.get("preferences", {})
+            configs = [legacy if isinstance(legacy, dict) else {}]
+        if not configs:
+            configs = [self._blank_bingo_config(0)]
+        return [self._normalized_bingo_config(cfg, i) for i, cfg in enumerate(configs)]
+
+    def _normalized_bingo_config(self, cfg: dict[str, Any], index: int) -> dict[str, Any]:
+        blank = self._blank_bingo_config(index)
+        merged = {**blank, **cfg}
+        sections = merged.get("preferred_sections", [])
+        if isinstance(sections, str):
+            sections = [s.strip() for s in sections.split(",") if s.strip()]
+        elif isinstance(sections, list):
+            sections = [str(s).strip() for s in sections if str(s).strip()]
+        else:
+            sections = []
+        merged["preferred_sections"] = sections
+        merged["name"] = str(merged.get("name", "")).strip() or f"BINGO {index + 1}"
+        merged["min_tickets"] = max(1, int(merged.get("min_tickets", 1)))
+        merged["max_price_per_ticket"] = max(25.0, min(750.0, float(merged.get("max_price_per_ticket", 500.0))))
+        merged["require_preferred_only"] = bool(merged.get("require_preferred_only", merged.get("require_section_match", False)))
+        merged["alert_on_any_availability"] = bool(merged.get("alert_on_any_availability", True))
+        return merged
+
+    def _render_bingo_config_cards(self, configs: list[dict[str, Any]]):
+        for child in self._bingo_cards_frame.winfo_children():
+            child.destroy()
+        self._bingo_config_widgets = []
+        for i, cfg in enumerate(configs):
+            self._build_bingo_config_card(i, cfg, len(configs) > 1)
+
+    def _build_bingo_config_card(self, index: int, cfg: dict[str, Any], allow_remove: bool):
+        card = ctk.CTkFrame(self._bingo_cards_frame, fg_color=COLOR_BG_PANEL, corner_radius=8)
+        card.grid(row=index, column=0, padx=0, pady=(0, 12), sticky="ew")
+        card.grid_columnconfigure(1, weight=1)
+
+        name_var = ctk.StringVar(value=str(cfg.get("name", f"BINGO {index + 1}")))
+        min_var = ctk.IntVar(value=int(cfg.get("min_tickets", 1)))
+        max_price = float(cfg.get("max_price_per_ticket", 500.0))
+        max_price_var = ctk.DoubleVar(value=max_price)
+        sections_var = ctk.StringVar(value=", ".join(cfg.get("preferred_sections", [])))
+        require_var = ctk.BooleanVar(value=bool(cfg.get("require_preferred_only", False)))
+        alert_any_var = ctk.BooleanVar(value=bool(cfg.get("alert_on_any_availability", True)))
+
+        header = ctk.CTkFrame(card, fg_color="transparent")
+        header.grid(row=0, column=0, columnspan=2, padx=16, pady=(14, 8), sticky="ew")
+        header.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(header, text=f"Config {index + 1}", font=ctk.CTkFont(weight="bold"), anchor="w").grid(row=0, column=0, padx=(0, 10), sticky="w")
+        ctk.CTkEntry(header, textvariable=name_var, placeholder_text="e.g. LOGE pairs", width=220).grid(row=0, column=1, sticky="ew")
+        if allow_remove:
+            ctk.CTkButton(header, text="Remove", width=84, fg_color=COLOR_GRAY, command=lambda i=index: self._remove_bingo_config(i)).grid(row=0, column=2, padx=(10, 0), sticky="e")
+
+        ctk.CTkLabel(card, text="Tickets needed together", anchor="w").grid(row=1, column=0, padx=18, pady=(8, 4), sticky="w")
         ctk.CTkLabel(
-            pref_frame,
-            text="Minimum adjacent seats in the same section, row, and price group\n"
-                 "(i.e. seats that are guaranteed to be physically next to each other).",
+            card,
+            text="Minimum adjacent seats in the same section, row, and price group.",
             text_color="gray55", font=ctk.CTkFont(size=11), anchor="w", justify="left",
-        ).grid(row=1, column=0, columnspan=2, padx=18, pady=(0, 8), sticky="w")
-        self._min_tickets_var = ctk.IntVar(value=1)
-        ticket_row = ctk.CTkFrame(pref_frame, fg_color="transparent")
-        ticket_row.grid(row=0, column=1, padx=12, pady=(16, 4), sticky="e")
-        ctk.CTkButton(ticket_row, text="−", width=30, command=lambda: self._adjust_min_tickets(-1)).pack(side="left")
-        self._min_tickets_label = ctk.CTkLabel(ticket_row, text="1", width=30, font=ctk.CTkFont(size=14, weight="bold"))
-        self._min_tickets_label.pack(side="left", padx=6)
-        ctk.CTkButton(ticket_row, text="＋", width=30, command=lambda: self._adjust_min_tickets(1)).pack(side="left")
+        ).grid(row=2, column=0, columnspan=2, padx=18, pady=(0, 8), sticky="w")
+        ticket_row = ctk.CTkFrame(card, fg_color="transparent")
+        ticket_row.grid(row=1, column=1, padx=12, pady=(8, 4), sticky="e")
+        ctk.CTkButton(ticket_row, text="−", width=30, command=lambda i=index: self._adjust_min_tickets(i, -1)).pack(side="left")
+        min_label = ctk.CTkLabel(ticket_row, text=str(min_var.get()), width=30, font=ctk.CTkFont(size=14, weight="bold"))
+        min_label.pack(side="left", padx=6)
+        ctk.CTkButton(ticket_row, text="＋", width=30, command=lambda i=index: self._adjust_min_tickets(i, 1)).pack(side="left")
 
-        _divider(pref_frame, row=2)
+        _divider(card, row=3)
 
-        # Max price
-        ctk.CTkLabel(pref_frame, text="Max price per ticket  ($)", anchor="w").grid(row=3, column=0, padx=18, pady=(12, 4), sticky="w")
-        ctk.CTkLabel(pref_frame, text="Face value ceiling — tickets above this price won't trigger a BINGO.", text_color="gray55", font=ctk.CTkFont(size=11), anchor="w").grid(row=4, column=0, columnspan=2, padx=18, pady=(0, 6), sticky="w")
-        price_row = ctk.CTkFrame(pref_frame, fg_color="transparent")
-        price_row.grid(row=3, column=1, padx=12, pady=(12, 4), sticky="e")
-        self._max_price_var = ctk.DoubleVar(value=300.0)
-        self._max_price_label = ctk.CTkLabel(price_row, text="$300", width=55, font=ctk.CTkFont(size=13, weight="bold"))
-        self._max_price_label.pack(side="left", padx=(0, 6))
-        price_slider = ctk.CTkSlider(price_row, from_=25, to=750, number_of_steps=145, variable=self._max_price_var, command=self._on_price_slider, width=200)
-        price_slider.pack(side="left")
+        ctk.CTkLabel(card, text="Max price per ticket  ($)", anchor="w").grid(row=4, column=0, padx=18, pady=(12, 4), sticky="w")
+        ctk.CTkLabel(card, text="Face value ceiling for this BINGO config.", text_color="gray55", font=ctk.CTkFont(size=11), anchor="w").grid(row=5, column=0, columnspan=2, padx=18, pady=(0, 6), sticky="w")
+        price_row = ctk.CTkFrame(card, fg_color="transparent")
+        price_row.grid(row=4, column=1, padx=12, pady=(12, 4), sticky="e")
+        price_label = ctk.CTkLabel(price_row, text=f"${int(max_price)}", width=55, font=ctk.CTkFont(size=13, weight="bold"))
+        price_label.pack(side="left", padx=(0, 6))
+        ctk.CTkSlider(
+            price_row,
+            from_=25,
+            to=750,
+            number_of_steps=145,
+            variable=max_price_var,
+            command=lambda value, i=index: self._on_price_slider(i, value),
+            width=200,
+        ).pack(side="left")
 
-        _divider(pref_frame, row=5)
+        _divider(card, row=6)
 
-        # Preferred sections
-        ctk.CTkLabel(pref_frame, text="Preferred sections  (optional)", anchor="w").grid(row=6, column=0, padx=18, pady=(12, 4), sticky="w")
+        ctk.CTkLabel(card, text="Preferred sections  (optional)", anchor="w").grid(row=7, column=0, padx=18, pady=(12, 4), sticky="w")
         ctk.CTkLabel(
-            pref_frame,
-            text="Comma-separated section names, e.g.:  LOGE, FLOOR, PIT\n"
-                 "When sections are set, BINGO only fires for those sections.\n"
-                 "Tip: check the event's seating chart on Ticketmaster for exact abbreviations\n"
-                 "(e.g. BALC = Balcony, LOGE = Loge Level, ORCH = Orchestra).\n"
-                 "Leave blank to accept any section.",
+            card,
+            text="Comma-separated section names, e.g. LOGE, FLOOR, PIT. Leave blank to accept any section.",
             text_color="gray55", font=ctk.CTkFont(size=11), anchor="w", justify="left",
-        ).grid(row=7, column=0, columnspan=2, padx=18, pady=(0, 6), sticky="w")
-        self._sections_var = ctk.StringVar()
-        ctk.CTkEntry(pref_frame, textvariable=self._sections_var, placeholder_text="e.g. LOGE, FLOOR, PIT  — or leave blank", width=300).grid(row=6, column=1, padx=12, pady=(12, 4), sticky="e")
+        ).grid(row=8, column=0, columnspan=2, padx=18, pady=(0, 6), sticky="w")
+        ctk.CTkEntry(card, textvariable=sections_var, placeholder_text="e.g. LOGE, FLOOR, PIT", width=300).grid(row=7, column=1, padx=12, pady=(12, 4), sticky="e")
 
-        _divider(pref_frame, row=8)
+        _divider(card, row=9)
 
-        # Require preferred-section-only alerts
-        ctk.CTkLabel(pref_frame, text="Only alert for preferred sections", anchor="w").grid(row=9, column=0, padx=18, pady=(12, 4), sticky="w")
+        ctk.CTkLabel(card, text="Only alert for preferred sections", anchor="w").grid(row=10, column=0, padx=18, pady=(12, 4), sticky="w")
         ctk.CTkLabel(
-            pref_frame,
-            text="When on: you'll only ever receive alerts when tickets appear in your\n"
-                 "preferred sections (no orange alerts for other sections).\n"
-                 "When off: you'll also get 🟡 orange alerts when other sections are available,\n"
-                 "so you can see what's out there and update your criteria.",
+            card,
+            text="When on, non-preferred sections will not create orange alerts for this config.",
             text_color="gray55", font=ctk.CTkFont(size=11), anchor="w", justify="left",
-        ).grid(row=10, column=0, columnspan=2, padx=18, pady=(0, 8), sticky="w")
-        self._require_section_var = ctk.BooleanVar(value=False)
-        ctk.CTkSwitch(pref_frame, text="", variable=self._require_section_var).grid(row=9, column=1, padx=12, pady=(12, 4), sticky="e")
+        ).grid(row=11, column=0, columnspan=2, padx=18, pady=(0, 8), sticky="w")
+        ctk.CTkSwitch(card, text="", variable=require_var).grid(row=10, column=1, padx=12, pady=(12, 4), sticky="e")
 
-        _divider(pref_frame, row=11)
+        _divider(card, row=12)
 
-        # Alert on any
-        ctk.CTkLabel(pref_frame, text="Also alert when other tickets appear", anchor="w").grid(row=12, column=0, padx=18, pady=(12, 4), sticky="w")
+        ctk.CTkLabel(card, text="Also alert when other tickets appear", anchor="w").grid(row=13, column=0, padx=18, pady=(12, 4), sticky="w")
         ctk.CTkLabel(
-            pref_frame,
-            text="When on, you'll get a 🟡 orange Discord alert if tickets appear that don't\n"
-                 "fully match your criteria (wrong section, over budget, etc.).\n"
-                 "Every appearance — BINGO or not — is also saved to the History tab,\n"
-                 "which is great for calibrating your budget and section preferences.",
+            card,
+            text="When on, availability that is not a BINGO can still send an orange alert.",
             text_color="gray55", font=ctk.CTkFont(size=11), anchor="w", justify="left",
-        ).grid(row=13, column=0, columnspan=2, padx=18, pady=(0, 12), sticky="w")
-        self._alert_any_var = ctk.BooleanVar(value=True)
-        ctk.CTkSwitch(pref_frame, text="", variable=self._alert_any_var).grid(row=12, column=1, padx=12, pady=(12, 4), sticky="e")
+        ).grid(row=14, column=0, columnspan=2, padx=18, pady=(0, 12), sticky="w")
+        ctk.CTkSwitch(card, text="", variable=alert_any_var).grid(row=13, column=1, padx=12, pady=(12, 4), sticky="e")
 
-        ctk.CTkButton(frame, text="💾  Save Preferences", command=self._save_config, fg_color=COLOR_BLUE).grid(row=3, column=0, padx=20, pady=(0, 14), sticky="w")
+        self._bingo_config_widgets.append(
+            {
+                "name_var": name_var,
+                "min_var": min_var,
+                "min_label": min_label,
+                "max_price_var": max_price_var,
+                "max_price_label": price_label,
+                "sections_var": sections_var,
+                "require_var": require_var,
+                "alert_any_var": alert_any_var,
+            }
+        )
 
-    def _adjust_min_tickets(self, delta: int):
-        val = max(1, min(12, self._min_tickets_var.get() + delta))
-        self._min_tickets_var.set(val)
-        self._min_tickets_label.configure(text=str(val))
+    def _bingo_configs_from_widgets(self) -> list[dict[str, Any]]:
+        configs: list[dict[str, Any]] = []
+        for i, widget in enumerate(self._bingo_config_widgets):
+            sections_text = widget["sections_var"].get().strip()
+            sections_list = [s.strip() for s in sections_text.split(",") if s.strip()]
+            configs.append(
+                {
+                    "name": widget["name_var"].get().strip() or f"BINGO {i + 1}",
+                    "min_tickets": widget["min_var"].get(),
+                    "max_price_per_ticket": round(widget["max_price_var"].get(), 2),
+                    "preferred_sections": sections_list,
+                    "require_preferred_only": widget["require_var"].get(),
+                    "alert_on_any_availability": widget["alert_any_var"].get(),
+                }
+            )
+        return configs or [self._blank_bingo_config(0)]
 
-    def _on_price_slider(self, value):
-        self._max_price_label.configure(text=f"${int(value)}")
+    def _add_bingo_config(self):
+        configs = self._bingo_configs_from_widgets()
+        configs.append(self._blank_bingo_config(len(configs)))
+        self._render_bingo_config_cards(configs)
+
+    def _remove_bingo_config(self, index: int):
+        configs = self._bingo_configs_from_widgets()
+        if len(configs) <= 1:
+            return
+        configs.pop(index)
+        self._render_bingo_config_cards(configs)
+
+    def _adjust_min_tickets(self, index: int, delta: int):
+        widget = self._bingo_config_widgets[index]
+        val = max(1, min(12, widget["min_var"].get() + delta))
+        widget["min_var"].set(val)
+        widget["min_label"].configure(text=str(val))
+
+    def _on_price_slider(self, index: int, value):
+        self._bingo_config_widgets[index]["max_price_label"].configure(text=f"${int(value)}")
 
     # ── Notifications Tab ─────────────────────────────────────────────────────
 
@@ -1261,6 +1375,8 @@ class TicketMonitorApp(ctk.CTk):
                     loaded = _yaml.safe_load(f) or {}
                 # Deep-merge loaded into defaults
                 _deep_merge(self._cfg, loaded)
+                if "bingo_configs" not in loaded and isinstance(loaded.get("preferences"), dict):
+                    self._cfg["bingo_configs"] = [dict(self._cfg.get("preferences", {}))]
             except Exception:
                 pass
         elif os.path.exists("config.example.yaml"):
@@ -1287,24 +1403,7 @@ class TicketMonitorApp(ctk.CTk):
         self._bot_username_var.set(str(discord.get("username", "Ticket Monitor")))
         self._ping_id_var.set(str(discord.get("ping_user_id", "")))
 
-        prefs = self._cfg.get("preferences", {})
-        min_t = max(1, int(prefs.get("min_tickets", 1)))
-        self._min_tickets_var.set(min_t)
-        self._min_tickets_label.configure(text=str(min_t))
-
-        max_p = float(prefs.get("max_price_per_ticket", 300.0))
-        max_p = max(25.0, min(750.0, max_p))
-        self._max_price_var.set(max_p)
-        self._max_price_label.configure(text=f"${int(max_p)}")
-
-        sections_raw = prefs.get("preferred_sections", [])
-        if isinstance(sections_raw, list):
-            self._sections_var.set(", ".join(sections_raw))
-        else:
-            self._sections_var.set(str(sections_raw))
-
-        self._require_section_var.set(bool(prefs.get("require_preferred_only", prefs.get("require_section_match", False))))
-        self._alert_any_var.set(bool(prefs.get("alert_on_any_availability", True)))
+        self._render_bingo_config_cards(self._configured_bingo_configs())
 
         self._refresh_event_rows()
         self._update_login_status()
@@ -1330,15 +1429,10 @@ class TicketMonitorApp(ctk.CTk):
             for ev in self._events
         ]
 
-        # Preferences
-        sections_text = self._sections_var.get().strip()
-        sections_list = [s.strip() for s in sections_text.split(",") if s.strip()]
-        cfg.setdefault("preferences", {})
-        cfg["preferences"]["min_tickets"] = self._min_tickets_var.get()
-        cfg["preferences"]["max_price_per_ticket"] = round(self._max_price_var.get(), 2)
-        cfg["preferences"]["preferred_sections"] = sections_list
-        cfg["preferences"]["require_preferred_only"] = self._require_section_var.get()
-        cfg["preferences"]["alert_on_any_availability"] = self._alert_any_var.get()
+        # BINGO configs. Keep legacy preferences in sync with the first config.
+        bingo_configs = self._bingo_configs_from_widgets()
+        cfg["bingo_configs"] = bingo_configs
+        cfg["preferences"] = dict(bingo_configs[0])
 
         try:
             save_yaml_raw(CONFIG_FILE, cfg)

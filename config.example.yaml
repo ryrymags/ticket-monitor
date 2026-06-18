@@ -25,23 +25,50 @@ events:
   #   date: "2030-01-02"
   #   url: "https://www.ticketmaster.com/..."
 
-# ── Ticket preferences ────────────────────────────────────────────────────
-# Define what counts as a "BINGO" — your ideal tickets.
+# ── BINGO configs / ticket preferences ────────────────────────────────────
+# Define one or more categories of ideal tickets.
 #
 # BINGO (🟢 green) fires when ALL three criteria are met:
 #   1. count >= min_tickets  (adjacent seats in the same section/row/price)
 #   2. price <= max_price_per_ticket
 #   3. section is in preferred_sections  (only when preferred_sections is non-empty)
 #
-# Orange (🟡) alert fires when tickets appear but don't fully meet criteria.
+# The first matching config in this list wins, so put your favorite category
+# first. Orange (🟡) alerts fire when tickets appear but don't fully meet criteria.
+bingo_configs:
+  - name: "LOGE pairs"                 # Shown in Discord when this BINGO matches
+    min_tickets: 2                     # Minimum adjacent tickets in same section/row/price group
+    max_price_per_ticket: 250.0        # Maximum face value per ticket (USD)
+
+    # Section names from the Ticketmaster seating chart, e.g. [LOGE, FLOOR, PIT]
+    # Leave as [] to accept any section (section won't affect BINGO).
+    preferred_sections: ["LOGE"]
+
+    # When true: you'll ONLY receive alerts for preferred sections (suppresses orange alerts).
+    # When false (recommended): also send 🟡 orange alerts for other sections.
+    require_preferred_only: false
+
+    # When true: send 🟡 orange alerts even when tickets don't meet all criteria.
+    alert_on_any_availability: true
+
+  - name: "Budget triples"
+    min_tickets: 3
+    max_price_per_ticket: 125.0
+    preferred_sections: []
+    require_preferred_only: false
+    alert_on_any_availability: true
+
+# Legacy single-config block. The GUI keeps this synced to the first item in
+# bingo_configs for backward compatibility.
 preferences:
+  name: "LOGE pairs"
   min_tickets: 2                     # Minimum adjacent tickets in same section/row/price group
   max_price_per_ticket: 250.0        # Maximum face value per ticket (USD)
 
   # Section names from the Ticketmaster seating chart, e.g. [LOGE, FLOOR, PIT]
   # Check the event page for the exact abbreviations used for your venue.
   # Leave as [] to accept any section (section won't affect BINGO).
-  preferred_sections: []
+  preferred_sections: ["LOGE"]
 
   # When true: you'll ONLY receive alerts for preferred sections (suppresses orange alerts).
   # When false (recommended): also send 🟡 orange alerts for other sections,

@@ -373,6 +373,7 @@ def run_test_ticket_alert(config_path: str):
         price_summary="$123.45 - $234.56",
         section_summary="Section 101, Section 102",
         reason="manual_test",
+        preferences=getattr(config, "bingo_configs", getattr(config, "preferences", None)),
     )
     if not sent:
         print("FAILED: Could not send synthetic ticket alert.")
@@ -435,6 +436,7 @@ def run_test_ticket_alert_matrix(config_path: str):
             listing_summary=sample["listing_summary"],
             listing_groups=sample["listing_groups"],
             mention=True,
+            preferences=getattr(config, "bingo_configs", getattr(config, "preferences", None)),
         )
         if not sent:
             all_sent = False
