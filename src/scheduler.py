@@ -21,9 +21,13 @@ logger = logging.getLogger(__name__)
 
 PROCESS_RESTART_EXIT_CODE = 75
 BROWSER_RESTART_REQUEST_FILE = "logs/restart-browser.request"
-BURST_WINDOW_SECONDS = 300
-BURST_INTERVAL_SECONDS = 45
-BURST_MAX_MENTIONS = 7
+# Mention cadence for a single BINGO availability episode:
+#   0–120s : ping on every qualifying poll (a live drop — every second counts).
+#   120–300s: ping at most once per minute (likely lingering / pricey).
+#   after 300s: stop pinging for this episode (no hours-long ping spam).
+BURST_PHASE1_SECONDS = 120
+BURST_PHASE2_SECONDS = 300
+BURST_PHASE2_INTERVAL_SECONDS = 60
 BURST_HARD_FAILSAFE_SECONDS = 900
 REAUTH_MANUAL_STEPS = [
     "scripts/monitorctl.sh reauth",
@@ -138,6 +142,10 @@ class MonitorScheduler:
                 sleep_time = self._runtime_error_backoff()
                 self._maybe_send_error_alert(f"Unexpected monitor error: {type(exc).__name__}: {exc}")
 
+            # Decide (every cycle) whether the monitor has been stuck long enough
+            # to warrant a single manual-action ping.
+            self._evaluate_manual_action_escalation(datetime.now(timezone.utc))
+
             if not self._running:
                 break
             logger.debug("Next check in %.1f seconds", sleep_time)
@@ -152,6 +160,7 @@ class MonitorScheduler:
         self._maybe_send_heartbeat()
         self._maybe_check_session_health()
         self._run_cycle()
+        self._evaluate_manual_action_escalation(datetime.now(timezone.utc))
         self.state.set_last_cycle_completed_at()
         self.state.clear_last_error()
         self.probe.close()
@@ -243,27 +252,10 @@ class MonitorScheduler:
                 )
                 if event_id not in self._stale_event_alerted:
                     self._stale_event_alerted.add(event_id)
-                    incident = self._incident_fingerprint(
-                        alert_code="critical_attention",
-                        event_id=event_id,
-                        reason_code="event_poll_stale",
-                    )
-                    if self._should_emit_operational_alert(
-                        event_id=event_id,
-                        fingerprint=incident,
-                        now=now,
-                    ):
-                        self.notifier.send_critical_attention(
-                            f"Event polling is stale for {event_cfg.name} ({age_seconds}s since last check).",
-                            context={
-                                "event_name": event_cfg.name,
-                                "event_id": event_id,
-                                "reason_code": "event_poll_stale",
-                                "last_check_age_seconds": age_seconds,
-                                "stale_threshold_seconds": threshold_seconds,
-                            },
-                            next_steps=EVENT_STALE_MANUAL_STEPS,
-                        )
+                    # Degraded, but don't ping yet — self-healing (recycle below) gets
+                    # a chance first. The manual-action escalation pings only if this
+                    # keeps failing past the grace window.
+                    logger.error("[%s] poll staleness recorded as degraded", event_cfg.name)
                 continue
 
             if event_id in self._stale_event_alerted:
@@ -389,7 +381,19 @@ class MonitorScheduler:
             )
             preferences = self._ticket_preferences()
             match = DiscordNotifier._ticket_match_status(listing_groups, preferences=preferences)
+            is_bingo = match.get("preview_status") == "BINGO"
             should_notify_for_preferences = bool(match.get("should_notify", True))
+            # Global off-switch: never alert for non-BINGO ("not a match") availability
+            # unless explicitly enabled. This hard-gates the orange path so it cannot
+            # leak through a single permissive BINGO config.
+            if not self.config.alerts_non_bingo_enabled and not is_bingo:
+                should_notify_for_preferences = False
+
+            # A genuinely new listing (new signature) starts a fresh mention episode.
+            # The same listing reappearing does NOT restart the burst — that is what
+            # caused hours of re-pings on lingering/expensive listings.
+            if decision.reason == "signature_changed":
+                self.state.reset_mention_burst(event_id)
             self._start_mention_burst_if_needed(event_id, now)
             mention_due = self._should_send_mention_burst(event_id, now)
             self.state.set_last_available_at(event_id, now)
@@ -437,12 +441,12 @@ class MonitorScheduler:
                 else:
                     logger.error("[%s] ticket alert failed to send (attention_burst)", event_cfg.name)
             elif not should_notify_for_preferences and decision.should_alert:
-                logger.info("[%s] availability suppressed by BINGO preferences", event_cfg.name)
+                logger.info("[%s] availability suppressed (non-BINGO / preferences)", event_cfg.name)
         else:
-            # Force next availability to be treated as a new signature episode.
-            if self.state.get_last_availability_signature(event_id):
-                self.state.set_last_availability_signature(event_id, "")
-            self._reset_mention_burst_if_needed(event_id)
+            # Listing gone. Keep the last signature so the SAME listing reappearing
+            # is treated as a duplicate (no fresh ping). A genuinely new listing has
+            # a new signature and starts its own episode on arrival.
+            pass
 
     def _ticket_preferences(self):
         return getattr(
@@ -477,40 +481,24 @@ class MonitorScheduler:
             return True
 
         elapsed = (now - started_at).total_seconds()
-        if elapsed >= BURST_HARD_FAILSAFE_SECONDS:
+        # Episode is over once we pass the phase-2 window (or the hard failsafe).
+        if elapsed >= BURST_PHASE2_SECONDS or elapsed >= BURST_HARD_FAILSAFE_SECONDS:
             self.state.set_mention_burst_completed_for_episode(event_id, True)
             return False
 
-        sent_count = self.state.get_mention_burst_sent_count(event_id)
-        if sent_count >= BURST_MAX_MENTIONS:
-            self.state.set_mention_burst_completed_for_episode(event_id, True)
-            return False
+        # Phase 1: nonstop — ping on every qualifying poll.
+        if elapsed < BURST_PHASE1_SECONDS:
+            return True
 
-        if elapsed >= BURST_WINDOW_SECONDS:
-            self.state.set_mention_burst_completed_for_episode(event_id, True)
-            return False
-
+        # Phase 2: throttle to at most once per minute.
         last_mention_at = self.state.get_mention_burst_last_mention_at(event_id)
         if last_mention_at is None:
             return True
-
-        return (now - last_mention_at).total_seconds() >= BURST_INTERVAL_SECONDS
+        return (now - last_mention_at).total_seconds() >= BURST_PHASE2_INTERVAL_SECONDS
 
     def _record_mention_burst_sent(self, event_id: str, now: datetime):
         self.state.set_mention_burst_last_mention_at(event_id, now)
-        sent_count = self.state.increment_mention_burst_sent_count(event_id)
-        if sent_count >= BURST_MAX_MENTIONS:
-            self.state.set_mention_burst_completed_for_episode(event_id, True)
-
-    def _reset_mention_burst_if_needed(self, event_id: str):
-        if (
-            self.state.get_mention_burst_started_at(event_id) is None
-            and self.state.get_mention_burst_last_mention_at(event_id) is None
-            and self.state.get_mention_burst_sent_count(event_id) == 0
-            and not self.state.get_mention_burst_completed_for_episode(event_id)
-        ):
-            return
-        self.state.reset_mention_burst(event_id)
+        self.state.increment_mention_burst_sent_count(event_id)
 
     def _maybe_auto_reauth(self, event_cfg: EventConfig, result, now: datetime):
         if self.config.browser_session_mode == "cdp_attach":
@@ -536,26 +524,8 @@ class MonitorScheduler:
         if attempts_last_hour >= max_attempts:
             pause_target = now + timedelta(seconds=self.config.auth_auto_login_cooldown_seconds)
             self.state.set_auth_pause_until(pause_target)
-            incident = self._incident_fingerprint(
-                alert_code="critical_attention",
-                event_id=event_cfg.event_id,
-                reason_code="auth_attempt_limit_reached",
-            )
-            if self._should_emit_operational_alert(
-                event_id=event_cfg.event_id,
-                fingerprint=incident,
-                now=now,
-            ):
-                self.notifier.send_critical_attention(
-                    "Auto re-login paused after repeated failures. "
-                    "Manual re-login is required.",
-                    context={
-                        "event_name": event_cfg.name,
-                        "event_id": event_cfg.event_id,
-                        "reason_code": "auth_attempt_limit_reached",
-                    },
-                    next_steps=REAUTH_MANUAL_STEPS,
-                )
+            # Degraded (auth paused). The manual-action escalation will ping if the
+            # monitor stays unable to recover past the grace window.
             logger.error(
                 "[%s] auto re-auth entering cooldown until %s (%d attempts/hour limit reached)",
                 event_cfg.name,
@@ -613,50 +583,16 @@ class MonitorScheduler:
         )
 
         if reauth.reason == "challenge_detected":
-            incident = self._incident_fingerprint(
-                alert_code="critical_attention",
-                event_id=event_cfg.event_id,
-                reason_code="challenge_detected",
+            # Challenge during auto re-login — self-healing can't clear this on its own.
+            # Recorded as degraded; the manual-action escalation pings if it persists.
+            logger.error(
+                "[%s] challenge detected during auto re-login (degraded)",
+                event_cfg.name,
             )
-            if self._should_emit_operational_alert(
-                event_id=event_cfg.event_id,
-                fingerprint=incident,
-                now=now,
-            ):
-                self.notifier.send_critical_attention(
-                    "Ticketmaster challenge was detected during auto re-login. "
-                    "Manual re-login in the monitor profile is required.",
-                    context={
-                        "event_name": event_cfg.name,
-                        "event_id": event_cfg.event_id,
-                        "reason_code": "challenge_detected",
-                    },
-                    next_steps=REAUTH_MANUAL_STEPS,
-                )
 
         if attempts_after >= max_attempts:
             pause_target = now + timedelta(seconds=self.config.auth_auto_login_cooldown_seconds)
             self.state.set_auth_pause_until(pause_target)
-            incident = self._incident_fingerprint(
-                alert_code="critical_attention",
-                event_id=event_cfg.event_id,
-                reason_code="reauth_failed_repeatedly",
-            )
-            if self._should_emit_operational_alert(
-                event_id=event_cfg.event_id,
-                fingerprint=incident,
-                now=now,
-            ):
-                self.notifier.send_critical_attention(
-                    "Auto re-login failed repeatedly and is now paused. "
-                    "Manual re-login is required.",
-                    context={
-                        "event_name": event_cfg.name,
-                        "event_id": event_cfg.event_id,
-                        "reason_code": "reauth_failed_repeatedly",
-                    },
-                    next_steps=REAUTH_MANUAL_STEPS,
-                )
             logger.error(
                 "[%s] auto re-auth paused until %s after repeated failures",
                 event_cfg.name,
@@ -706,9 +642,93 @@ class MonitorScheduler:
             )
             return False
 
+    # ---- Manual-action escalation ----
+
+    def _is_monitor_degraded(self, now: datetime) -> bool:
+        """True when the monitor genuinely can't get ticket data and self-heal hasn't fixed it.
+
+        Covers: any event in outage (blind/blocked), stale event polling, or auth
+        paused after repeated re-login failures. A stale account session alone is
+        NOT degraded — Face Value Exchange listings still load without it.
+        """
+        if any(self.state.get_in_outage_state(ev.event_id) for ev in self.config.events):
+            return True
+        if self._stale_event_alerted:
+            return True
+        pause_until = self.state.get_auth_pause_until()
+        if pause_until is not None and now < pause_until:
+            return True
+        return False
+
+    def _manual_action_summary(self, now: datetime) -> tuple[str, list[str]]:
+        """Plain-English description + next steps for the current degraded state."""
+        pause_until = self.state.get_auth_pause_until()
+        if pause_until is not None and now < pause_until:
+            return (
+                "Auto re-login keeps failing, so the monitor can't refresh your "
+                "Ticketmaster session. It needs you to log in manually.",
+                REAUTH_MANUAL_STEPS,
+            )
+        if self._stale_event_alerted:
+            return (
+                "The monitor has stopped getting fresh data for your event(s) and "
+                "auto-recovery hasn't fixed it.",
+                EVENT_STALE_MANUAL_STEPS,
+            )
+        return (
+            "The monitor has been blocked from checking tickets and can't clear it "
+            "on its own.",
+            EVENT_STALE_MANUAL_STEPS,
+        )
+
+    def _evaluate_manual_action_escalation(self, now: datetime | None = None):
+        """Send a single manual-action ping only after the monitor has stayed degraded
+        past the grace window — giving self-healing time to work first."""
+        now = now or datetime.now(timezone.utc)
+
+        if not self._is_monitor_degraded(now):
+            if self.state.get_attention_since() is not None or self.state.get_attention_alerted():
+                logger.info("Monitor recovered; clearing manual-action escalation state")
+                self.state.clear_attention()
+            return
+
+        since = self.state.get_attention_since()
+        if since is None:
+            self.state.set_attention_since(now)
+            return
+
+        if self.state.get_attention_alerted():
+            return
+
+        delay = max(0, int(self.config.alerts_manual_action_after_seconds))
+        degraded_seconds = (now - since).total_seconds()
+        if degraded_seconds < delay:
+            return
+
+        message, next_steps = self._manual_action_summary(now)
+        minutes = int(degraded_seconds // 60)
+        self.notifier.send_critical_attention(
+            message,
+            context={"degraded_for": f"{minutes} min"},
+            next_steps=next_steps,
+        )
+        self.state.set_attention_alerted(True)
+        logger.critical(
+            "Manual-action ping sent after %d min degraded: %s",
+            minutes,
+            message,
+        )
+
     # ---- State/metrics ----
 
     def _maybe_send_heartbeat(self):
+        """Health-aware heartbeat: silent when healthy.
+
+        We no longer post a periodic "I'm alive" embed to Discord \u2014 that was pure
+        noise. Instead we log a health summary periodically; if the monitor is
+        actually stuck, the manual-action escalation pings on its own. So silence
+        means healthy, not dead.
+        """
         now = datetime.now(timezone.utc)
         last = self.state.get_last_heartbeat_at()
         if last is not None:
@@ -720,30 +740,27 @@ class MonitorScheduler:
         uptime_hours = (now - monitor_started).total_seconds() / 3600
 
         stale_threshold = int(self.config.alerts_event_check_stale_seconds)
-        event_statuses = []
+        statuses = []
         for event_cfg in self.config.events:
             last_check = self.state.get_last_check(event_cfg.event_id)
             in_outage = self.state.get_in_outage_state(event_cfg.event_id)
             if last_check is None:
-                status = "\U0001f534 Not yet checked"
+                status = "not-yet-checked"
             elif in_outage:
-                status = "\u26a0\ufe0f Outage"
+                status = "outage"
             elif int((now - last_check).total_seconds()) > stale_threshold:
-                status = "\U0001f534 Stale"
+                status = "stale"
             else:
-                status = "\U0001f7e2 Active"
-            event_statuses.append({
-                "name": event_cfg.name,
-                "last_check": last_check,
-                "status": status,
-            })
+                status = "active"
+            statuses.append(f"{event_cfg.name}={status}")
 
-        if self.notifier.send_heartbeat(
-            uptime_hours=uptime_hours,
-            last_check=self._last_successful_check,
-            event_statuses=event_statuses,
-        ):
-            self.state.set_last_heartbeat_at(now)
+        logger.info(
+            "Heartbeat (log-only): uptime=%.1fh degraded=%s %s",
+            uptime_hours,
+            self._is_monitor_degraded(now),
+            " ".join(statuses),
+        )
+        self.state.set_last_heartbeat_at(now)
 
     def _maybe_check_session_health(self, now: datetime | None = None):
         now = now or datetime.now(timezone.utc)
@@ -774,26 +791,15 @@ class MonitorScheduler:
         reason = result.get("reason", "unknown")
         status = result.get("status")
         challenge = result.get("challenge", False)
-        logger.warning("Session health check failed: reason=%s status=%s", reason, status)
-
-        cooldown = self.config.alerts_operational_state_cooldown_seconds
-        if (
-            self._last_session_health_alert_at is not None
-            and (now - self._last_session_health_alert_at).total_seconds() < cooldown
-        ):
-            return
-
-        if self.notifier.send_critical_attention(
-            "Ticketmaster session may be expired or blocked.",
-            context={
-                "reason_code": reason,
-                "http_status": status,
-                "challenge_detected": challenge,
-                "check_url": url,
-            },
-            next_steps=REAUTH_MANUAL_STEPS,
-        ):
-            self._last_session_health_alert_at = now
+        # Log only. A stale account session does not stop Face Value Exchange
+        # listings from loading, so this alone is not worth a ping. If it actually
+        # breaks checks, that surfaces as an outage and escalates on its own.
+        logger.warning(
+            "Session health check failed (log-only): reason=%s status=%s challenge=%s",
+            reason,
+            status,
+            challenge,
+        )
 
     # ---- Sleep/backoff helpers ----
 

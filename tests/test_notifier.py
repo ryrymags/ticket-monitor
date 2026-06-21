@@ -322,3 +322,82 @@ class TestGuidedNotifications:
             )
             embed = mock_send.call_args[1]["embeds"][0]
             assert "**Technical**" not in embed["description"]
+
+
+class TestOperationalLogOnly:
+    def test_operational_messages_are_log_only_when_disabled(self):
+        notifier = DiscordNotifier(webhook_url="https://test", operational_to_discord=False)
+        with patch.object(notifier, "_send", return_value=True) as mock_send:
+            assert notifier.send_monitor_blocked("Night 1", "blind") is True
+            assert notifier.send_monitor_recovered("Night 1", "back") is True
+            assert notifier.send_auto_fix_action(action="browser_recycled", reason="x") is True
+            assert notifier.send_error("transient blip") is True
+            mock_send.assert_not_called()
+
+    def test_manual_required_error_still_posts_when_operational_disabled(self):
+        notifier = DiscordNotifier(webhook_url="https://test", operational_to_discord=False)
+        with patch.object(notifier, "_send", return_value=True) as mock_send:
+            notifier.send_error("probe reload failed", manual_required=True, next_steps=["x"])
+            mock_send.assert_called_once()
+
+    def test_critical_attention_posts_even_when_operational_disabled(self):
+        notifier = DiscordNotifier(webhook_url="https://test", ping_user_id="1", operational_to_discord=False)
+        with patch.object(notifier, "_send", return_value=True) as mock_send:
+            notifier.send_critical_attention("manual login needed", next_steps=["scripts/monitorctl.sh reauth"])
+            mock_send.assert_called_once()
+
+    def test_critical_attention_copy_is_plain_no_technical(self):
+        notifier = DiscordNotifier(webhook_url="https://test", ping_user_id="1")
+        with patch.object(notifier, "_send", return_value=True) as mock_send:
+            notifier.send_critical_attention(
+                "Auto re-login keeps failing.",
+                context={"degraded_for": "16 min"},
+                next_steps=["scripts/monitorctl.sh reauth"],
+            )
+            embed = mock_send.call_args[1]["embeds"][0]
+            assert "Action needed" in embed["title"]
+            assert "**Technical**" not in embed["description"]
+            assert "alert_code" not in embed["description"]
+            assert "16 min" in embed["description"]
+
+
+class TestHistorySeenCount:
+    def test_repeat_listing_updates_seen_count(self, tmp_path, monkeypatch):
+        import json as _json
+        import src.notifier as notifier_mod
+        hist = tmp_path / "history.json"
+        monkeypatch.setattr(notifier_mod, "HISTORY_FILE", str(hist))
+
+        groups = [{"section": "LOGE20", "row": "5", "price": 150.0, "count": 2}]
+        for _ in range(3):
+            DiscordNotifier._write_history_entry(
+                event_name="Test", event_date="2030-01-01",
+                event_url="https://www.ticketmaster.com/event/ABC123",
+                all_groups=groups, is_bingo=True, label="BINGO!",
+            )
+        data = _json.loads(hist.read_text())
+        assert len(data) == 1
+        assert data[0]["seen_count"] == 3
+        assert data[0]["first_seen"] and data[0]["last_seen"]
+
+    def test_new_listing_creates_new_row(self, tmp_path, monkeypatch):
+        import json as _json
+        import src.notifier as notifier_mod
+        hist = tmp_path / "history.json"
+        monkeypatch.setattr(notifier_mod, "HISTORY_FILE", str(hist))
+
+        DiscordNotifier._write_history_entry(
+            event_name="Test", event_date="2030-01-01",
+            event_url="https://www.ticketmaster.com/event/ABC123",
+            all_groups=[{"section": "LOGE20", "row": "5", "price": 150.0, "count": 2}],
+            is_bingo=True, label="BINGO!",
+        )
+        DiscordNotifier._write_history_entry(
+            event_name="Test", event_date="2030-01-01",
+            event_url="https://www.ticketmaster.com/event/ABC123",
+            all_groups=[{"section": "FLOOR1", "row": "A", "price": 175.0, "count": 2}],
+            is_bingo=True, label="BINGO!",
+        )
+        data = _json.loads(hist.read_text())
+        assert len(data) == 2
+        assert all(e["seen_count"] == 1 for e in data)

@@ -68,7 +68,12 @@ def run_test(config_path: str):
     print()
 
     print("[2/3] Testing Discord webhook")
-    notifier = DiscordNotifier(config.discord_webhook_url, config.discord_username, config.discord_ping_user_id)
+    notifier = DiscordNotifier(
+        config.discord_webhook_url,
+        config.discord_username,
+        config.discord_ping_user_id,
+        operational_to_discord=config.alerts_operational_to_discord,
+    )
     if not notifier.send_test():
         print("      FAILED: Could not send Discord test notification.")
         sys.exit(1)
@@ -157,7 +162,12 @@ def run_bootstrap_session(config_path: str, *, stop_event=None):
 def run_doctor(config_path: str):
     """Run a health check that validates auth/session + probing + Discord."""
     config = load_config(config_path)
-    notifier = DiscordNotifier(config.discord_webhook_url, config.discord_username, config.discord_ping_user_id)
+    notifier = DiscordNotifier(
+        config.discord_webhook_url,
+        config.discord_username,
+        config.discord_ping_user_id,
+        operational_to_discord=config.alerts_operational_to_discord,
+    )
 
     print("Running doctor checks...\n")
 
@@ -354,7 +364,12 @@ def run_version(config_path: str):
 def run_test_ticket_alert(config_path: str):
     """Send a synthetic ticket-available alert to validate mention + payload formatting."""
     config = load_config(config_path)
-    notifier = DiscordNotifier(config.discord_webhook_url, config.discord_username, config.discord_ping_user_id)
+    notifier = DiscordNotifier(
+        config.discord_webhook_url,
+        config.discord_username,
+        config.discord_ping_user_id,
+        operational_to_discord=config.alerts_operational_to_discord,
+    )
     event = config.events[0] if config.events else None
     if event is None:
         print("No events configured.")
@@ -384,7 +399,12 @@ def run_test_ticket_alert(config_path: str):
 def run_test_ticket_alert_matrix(config_path: str):
     """Send synthetic ticket alerts for both bingo types plus a non-bingo example."""
     config = load_config(config_path)
-    notifier = DiscordNotifier(config.discord_webhook_url, config.discord_username, config.discord_ping_user_id)
+    notifier = DiscordNotifier(
+        config.discord_webhook_url,
+        config.discord_username,
+        config.discord_ping_user_id,
+        operational_to_discord=config.alerts_operational_to_discord,
+    )
     event = config.events[0] if config.events else None
     if event is None:
         print("No events configured.")
@@ -453,7 +473,12 @@ def run_monitor(config_path: str, once: bool = False):
     setup_logging(config.log_level, config.log_file, config.log_max_file_size_mb, config.log_backup_count)
     logger = logging.getLogger("monitor")
 
-    notifier = DiscordNotifier(config.discord_webhook_url, config.discord_username, config.discord_ping_user_id)
+    notifier = DiscordNotifier(
+        config.discord_webhook_url,
+        config.discord_username,
+        config.discord_ping_user_id,
+        operational_to_discord=config.alerts_operational_to_discord,
+    )
     state = MonitorState()
     start_time = datetime.now(timezone.utc)
     state.set_monitor_start_time(start_time)

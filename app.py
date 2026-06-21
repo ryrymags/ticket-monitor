@@ -196,6 +196,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "operational_heartbeat_hours": 6,
         "event_check_stale_seconds": 180,
         "operational_state_cooldown_seconds": 1800,
+        "non_bingo_enabled": False,
+        "manual_action_after_seconds": 900,
+        "operational_to_discord": False,
     },
     "polling": {
         "timezone": "US/Eastern",
@@ -593,8 +596,6 @@ class TicketMonitorApp(ctk.CTk):
         max_price = float(cfg.get("max_price_per_ticket", 500.0))
         max_price_var = ctk.DoubleVar(value=max_price)
         sections_var = ctk.StringVar(value=", ".join(cfg.get("preferred_sections", [])))
-        require_var = ctk.BooleanVar(value=bool(cfg.get("require_preferred_only", False)))
-        alert_any_var = ctk.BooleanVar(value=bool(cfg.get("alert_on_any_availability", True)))
 
         header = ctk.CTkFrame(card, fg_color="transparent")
         header.grid(row=0, column=0, columnspan=2, padx=16, pady=(14, 8), sticky="ew")
@@ -643,27 +644,7 @@ class TicketMonitorApp(ctk.CTk):
             text="Comma-separated section names, e.g. LOGE, FLOOR, PIT. Leave blank to accept any section.",
             text_color="gray55", font=ctk.CTkFont(size=11), anchor="w", justify="left",
         ).grid(row=8, column=0, columnspan=2, padx=18, pady=(0, 6), sticky="w")
-        ctk.CTkEntry(card, textvariable=sections_var, placeholder_text="e.g. LOGE, FLOOR, PIT", width=300).grid(row=7, column=1, padx=12, pady=(12, 4), sticky="e")
-
-        _divider(card, row=9)
-
-        ctk.CTkLabel(card, text="Only alert for preferred sections", anchor="w").grid(row=10, column=0, padx=18, pady=(12, 4), sticky="w")
-        ctk.CTkLabel(
-            card,
-            text="When on, non-preferred sections will not create orange alerts for this config.",
-            text_color="gray55", font=ctk.CTkFont(size=11), anchor="w", justify="left",
-        ).grid(row=11, column=0, columnspan=2, padx=18, pady=(0, 8), sticky="w")
-        ctk.CTkSwitch(card, text="", variable=require_var).grid(row=10, column=1, padx=12, pady=(12, 4), sticky="e")
-
-        _divider(card, row=12)
-
-        ctk.CTkLabel(card, text="Also alert when other tickets appear", anchor="w").grid(row=13, column=0, padx=18, pady=(12, 4), sticky="w")
-        ctk.CTkLabel(
-            card,
-            text="When on, availability that is not a BINGO can still send an orange alert.",
-            text_color="gray55", font=ctk.CTkFont(size=11), anchor="w", justify="left",
-        ).grid(row=14, column=0, columnspan=2, padx=18, pady=(0, 12), sticky="w")
-        ctk.CTkSwitch(card, text="", variable=alert_any_var).grid(row=13, column=1, padx=12, pady=(12, 4), sticky="e")
+        ctk.CTkEntry(card, textvariable=sections_var, placeholder_text="e.g. LOGE, FLOOR, PIT", width=300).grid(row=7, column=1, padx=12, pady=(12, 12), sticky="e")
 
         self._bingo_config_widgets.append(
             {
@@ -673,12 +654,14 @@ class TicketMonitorApp(ctk.CTk):
                 "max_price_var": max_price_var,
                 "max_price_label": price_label,
                 "sections_var": sections_var,
-                "require_var": require_var,
-                "alert_any_var": alert_any_var,
             }
         )
 
     def _bingo_configs_from_widgets(self) -> list[dict[str, Any]]:
+        # Non-BINGO alerts are governed by a single global switch (alerts.non_bingo_enabled),
+        # not per-config. Mirror it into each config's alert_on_any_availability so the
+        # legacy fields stay consistent; the scheduler enforces the global gate regardless.
+        non_bingo = bool(getattr(self, "_non_bingo_var", None) and self._non_bingo_var.get())
         configs: list[dict[str, Any]] = []
         for i, widget in enumerate(self._bingo_config_widgets):
             sections_text = widget["sections_var"].get().strip()
@@ -689,8 +672,8 @@ class TicketMonitorApp(ctk.CTk):
                     "min_tickets": widget["min_var"].get(),
                     "max_price_per_ticket": round(widget["max_price_var"].get(), 2),
                     "preferred_sections": sections_list,
-                    "require_preferred_only": widget["require_var"].get(),
-                    "alert_on_any_availability": widget["alert_any_var"].get(),
+                    "require_preferred_only": False,
+                    "alert_on_any_availability": non_bingo,
                 }
             )
         return configs or [self._blank_bingo_config(0)]
@@ -766,6 +749,20 @@ class TicketMonitorApp(ctk.CTk):
         ).grid(row=6, column=0, columnspan=2, padx=18, pady=(0, 8), sticky="w")
         self._ping_id_var = ctk.StringVar()
         ctk.CTkEntry(notif_frame, textvariable=self._ping_id_var, placeholder_text="e.g. 123456789012345678").grid(row=5, column=1, padx=12, pady=(12, 4), sticky="ew")
+
+        _divider(notif_frame, row=7)
+
+        # Global non-BINGO alert switch (default OFF). When off, you only get pinged
+        # for BINGO matches — never "not a match" / non-preferred-section availability.
+        ctk.CTkLabel(notif_frame, text="Alert for non-BINGO availability", anchor="w").grid(row=8, column=0, padx=18, pady=(12, 4), sticky="w")
+        ctk.CTkLabel(
+            notif_frame,
+            text="When OFF (recommended), you're only notified for true BINGO matches.\n"
+                 "When ON, you'll also get 🟡 alerts for tickets in other sections or over budget.",
+            text_color="gray55", font=ctk.CTkFont(size=11), justify="left",
+        ).grid(row=9, column=0, columnspan=2, padx=18, pady=(0, 10), sticky="w")
+        self._non_bingo_var = ctk.BooleanVar(value=False)
+        ctk.CTkSwitch(notif_frame, text="", variable=self._non_bingo_var).grid(row=8, column=1, padx=12, pady=(12, 4), sticky="e")
 
         btn_row = ctk.CTkFrame(frame, fg_color="transparent")
         btn_row.grid(row=4, column=0, padx=20, pady=(0, 14), sticky="w")
@@ -1021,7 +1018,13 @@ class TicketMonitorApp(ctk.CTk):
             badge_text = "🟢 BINGO" if is_bingo else "🟡 Available"
             event_name = entry.get("event_name", "Unknown event")
             event_date = entry.get("event_date", "")
-            ts_display = self._format_ts(entry.get("timestamp", ""))
+            # Distinguish a fresh listing from the same one lingering across re-checks.
+            seen_count = int(entry.get("seen_count", 1) or 1)
+            first_ts = entry.get("first_seen", entry.get("timestamp", ""))
+            ts_display = self._format_ts(first_ts)
+            if seen_count > 1:
+                last_disp = self._format_ts(entry.get("last_seen", first_ts))
+                ts_display += f"  · seen {seen_count}× · last {last_disp}"
 
             # Get listings — new format has "listings" array, old has single fields.
             listings = entry.get("listings", [])
@@ -1403,6 +1406,9 @@ class TicketMonitorApp(ctk.CTk):
         self._bot_username_var.set(str(discord.get("username", "Ticket Monitor")))
         self._ping_id_var.set(str(discord.get("ping_user_id", "")))
 
+        alerts = self._cfg.get("alerts", {})
+        self._non_bingo_var.set(bool(alerts.get("non_bingo_enabled", False)))
+
         self._render_bingo_config_cards(self._configured_bingo_configs())
 
         self._refresh_event_rows()
@@ -1428,6 +1434,10 @@ class TicketMonitorApp(ctk.CTk):
             }
             for ev in self._events
         ]
+
+        # Global non-BINGO alert switch.
+        cfg.setdefault("alerts", {})
+        cfg["alerts"]["non_bingo_enabled"] = bool(self._non_bingo_var.get())
 
         # BINGO configs. Keep legacy preferences in sync with the first config.
         bingo_configs = self._bingo_configs_from_widgets()

@@ -9,9 +9,16 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 ## 📋 Recent Changes
 
 <!-- CHANGELOG_START -->
-- `27aa5f6`  2026-04-01  Add PostToolUse CI check hook
-- `e1e69cb`  2026-04-01  Fix CI: lint error, deploy guard, remove dead auto-merge workflow
-- `36f6dff`  2026-04-01  Initial release: v1.3.0
+- `0541d97`  2026-06-20  Overhaul notifications: quiet, BINGO-only, ping only when manual action is truly needed
+- `035e394`  2026-06-18  Respect non-BINGO alert toggle
+- `842e0d5`  2026-06-18  Add multi-BINGO configs and clearer Discord alerts
+- `94ec911`  2026-04-07  Fix Playwright bot-detection spinner and simplify login bootstrap URL
+- `b5e4805`  2026-04-07  Fix Python version requirement in README and Mac setup script
+- `2a7c00a`  2026-04-07  Add Chrome fallback to login bootstrap flow
+- `940f77b`  2026-04-07  Fix Discord error message referencing macOS-only monitorctl.sh
+- `4adf242`  2026-04-07  Fix remaining stale Chrome channel references after default change
+- `516ee1b`  2026-04-07  Switch default browser channel to bundled Playwright Chromium
+- `6841ac0`  2026-04-07  Fix Playwright Chrome not found error on Windows
 
 Full history: [CHANGELOG.md](CHANGELOG.md)
 <!-- CHANGELOG_END -->

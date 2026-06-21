@@ -44,6 +44,9 @@ def _make_config(**overrides) -> MonitorConfig:
         alerts_operational_heartbeat_hours=6,
         alerts_event_check_stale_seconds=180,
         alerts_operational_state_cooldown_seconds=1800,
+        alerts_non_bingo_enabled=False,
+        alerts_manual_action_after_seconds=900,
+        alerts_operational_to_discord=False,
         backoff_multiplier=2.0,
         max_backoff_seconds=120,
         self_heal_browser_restart_threshold=3,
@@ -212,9 +215,13 @@ class TestTicketAlerting:
         scheduler = _make_scheduler(tmp_path)
         event = scheduler.config.events[0]
         result = _make_result(available=True)
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
-        scheduler._handle_probe_result(event, result)
-        scheduler._handle_probe_result(event, result)
+        scheduler._handle_probe_result(event, result, now=base)
+        # Once the mention episode is over, an identical signal within the cooldown
+        # window is fully deduped (no primary alert, no burst reminder).
+        scheduler.state.set_mention_burst_completed_for_episode(event.event_id, True)
+        scheduler._handle_probe_result(event, result, now=base + timedelta(seconds=30))
 
         assert scheduler.notifier.send_ticket_available.call_count == 1
 
@@ -232,27 +239,70 @@ class TestTicketAlerting:
 
 
 class TestMentionBurst:
-    def test_burst_sends_mentions_every_45s_for_up_to_7(self, tmp_path):
+    def test_phase1_pings_on_every_poll(self, tmp_path):
+        # First 2 minutes: a live drop should ping on every qualifying poll.
         scheduler = _make_scheduler(tmp_path)
         event = scheduler.config.events[0]
         result = _make_result(available=True)
         base = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
-        for step in range(7):
-            scheduler._handle_probe_result(
-                event,
-                result,
-                now=base + timedelta(seconds=45 * step),
-            )
+        for offset in (0, 5, 60, 119):
+            scheduler._handle_probe_result(event, result, now=base + timedelta(seconds=offset))
 
-        scheduler._handle_probe_result(event, result, now=base + timedelta(seconds=315))
+        assert scheduler.notifier.send_ticket_available.call_count == 4
+        mentions = [c.kwargs.get("mention") for c in scheduler.notifier.send_ticket_available.call_args_list]
+        assert mentions == [True, True, True, True]
 
-        assert scheduler.notifier.send_ticket_available.call_count == 7
-        assert scheduler.state.get_mention_burst_sent_count(event.event_id) == 7
+    def test_phase2_throttles_to_one_per_minute_then_stops(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        event = scheduler.config.events[0]
+        result = _make_result(available=True)
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        scheduler._handle_probe_result(event, result, now=base)                       # phase 1 ping
+        scheduler._handle_probe_result(event, result, now=base + timedelta(seconds=130))  # phase 2: ping
+        scheduler._handle_probe_result(event, result, now=base + timedelta(seconds=150))  # <60s later: no ping
+
+        mentions = [c.kwargs.get("mention") for c in scheduler.notifier.send_ticket_available.call_args_list]
+        assert mentions == [True, True]
+
+        # After 5 minutes the episode is over: detector reminders may still post but
+        # never with a mention.
+        scheduler._handle_probe_result(event, result, now=base + timedelta(seconds=400))
+        assert scheduler.notifier.send_ticket_available.call_args_list[-1].kwargs.get("mention") is False
+
+    def test_same_listing_reappearing_after_window_does_not_reping(self, tmp_path):
+        # The core fix: a lingering/expensive listing that flaps must not re-arm pings.
+        scheduler = _make_scheduler(tmp_path)
+        event = scheduler.config.events[0]
+        available = _make_result(available=True)
+        unavailable = _make_result(available=False, signal_type=ProbeSignalType.DOM, dom_signals=["sold_out_text"])
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        scheduler._handle_probe_result(event, available, now=base)                        # ping
+        scheduler._handle_probe_result(event, available, now=base + timedelta(seconds=310))  # post-window reminder, no ping
+        scheduler._handle_probe_result(event, unavailable, now=base + timedelta(seconds=320))
+        scheduler._handle_probe_result(event, available, now=base + timedelta(seconds=330))  # same listing back: silent
+
+        mentions = [c.kwargs.get("mention") for c in scheduler.notifier.send_ticket_available.call_args_list]
+        assert True not in mentions[1:]  # no further pings after the initial episode
         assert scheduler.state.get_mention_burst_completed_for_episode(event.event_id) is True
 
-        mentions = [call.kwargs.get("mention") for call in scheduler.notifier.send_ticket_available.call_args_list]
-        assert mentions == [True, True, True, True, True, True, True]
+    def test_new_listing_signature_starts_fresh_episode(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        event = scheduler.config.events[0]
+        listing_a = _make_result(available=True, dom_signals=["buy_ui"])
+        listing_b = _make_result(available=True, dom_signals=["buy_ui", "resale_ui"])
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        scheduler._handle_probe_result(event, listing_a, now=base)
+        scheduler.state.set_mention_burst_completed_for_episode(event.event_id, True)
+        # A genuinely different listing (new signature) re-arms the burst and pings.
+        scheduler._handle_probe_result(event, listing_b, now=base + timedelta(seconds=400))
+
+        last = scheduler.notifier.send_ticket_available.call_args_list[-1].kwargs
+        assert last.get("mention") is True
+        assert last.get("reason") == "signature_changed"
 
     def test_after_burst_window_detector_alerts_continue_without_mention(self, tmp_path):
         scheduler = _make_scheduler(tmp_path)
@@ -510,12 +560,11 @@ class TestAutoReauth:
 
         assert scheduler.session_autofixer.attempt_reauth.call_count == 2
         assert scheduler.state.get_auth_pause_until() is not None
-        assert scheduler.notifier.send_critical_attention.call_count >= 1
-        critical_kwargs = scheduler.notifier.send_critical_attention.call_args.kwargs
-        assert "next_steps" in critical_kwargs
-        assert "scripts/monitorctl.sh reauth" in critical_kwargs["next_steps"]
+        # Auth pause is recorded as degraded, but no immediate ping — the manual-action
+        # escalation only fires after the grace window (covered separately).
+        scheduler.notifier.send_critical_attention.assert_not_called()
 
-    def test_challenge_detected_failure_sends_manual_attention(self, tmp_path):
+    def test_challenge_detected_failure_does_not_ping_immediately(self, tmp_path):
         config = _make_config(
             browser_challenge_threshold=1,
             auth_auto_login_enabled=True,
@@ -546,10 +595,11 @@ class TestAutoReauth:
 
         scheduler._handle_probe_result(config.events[0], blocked)
 
-        assert scheduler.notifier.send_critical_attention.call_count >= 1
-        critical_kwargs = scheduler.notifier.send_critical_attention.call_args.kwargs
-        assert "next_steps" in critical_kwargs
-        assert "scripts/monitorctl.sh reauth" in critical_kwargs["next_steps"]
+        # A challenge during auto re-login is logged + recorded as degraded, not pinged
+        # immediately. The single manual-action ping is gated by the grace window.
+        scheduler.notifier.send_critical_attention.assert_not_called()
+        actions = [c.kwargs.get("action") for c in scheduler.notifier.send_auto_fix_action.call_args_list]
+        assert "ticketmaster_reauth_failed" in actions
 
 
 class TestCycleBehavior:
@@ -608,7 +658,9 @@ class TestCycleBehavior:
         stale = scheduler._check_event_poll_staleness(now=now)
 
         assert stale is True
-        scheduler.notifier.send_critical_attention.assert_called_once()
+        # Staleness self-heals first (recycle) and records degraded state — no immediate ping.
+        scheduler.notifier.send_critical_attention.assert_not_called()
+        assert "event-1" in scheduler._stale_event_alerted
         assert scheduler.probe.close.call_count >= 1
         assert scheduler.probe.start.call_count >= 1
 
@@ -617,7 +669,7 @@ class TestCycleBehavior:
 
         assert stale_after_recovery is False
         assert "event-1" not in scheduler._stale_event_alerted
-        assert scheduler.notifier.send_critical_attention.call_count == 1
+        scheduler.notifier.send_critical_attention.assert_not_called()
 
     def test_runtime_backoff_grows_and_caps(self, tmp_path):
         scheduler = _make_scheduler(tmp_path)
@@ -689,3 +741,97 @@ class TestSelfHealing:
             assert False, "Expected SystemExit for process restart threshold"
         except SystemExit as exc:
             assert exc.code == PROCESS_RESTART_EXIT_CODE
+
+
+class TestManualActionEscalation:
+    def test_no_ping_when_healthy(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        scheduler._evaluate_manual_action_escalation(datetime(2026, 1, 1, tzinfo=timezone.utc))
+        scheduler.notifier.send_critical_attention.assert_not_called()
+        assert scheduler.state.get_attention_since() is None
+
+    def test_no_ping_before_grace_window(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path, _make_config(alerts_manual_action_after_seconds=900))
+        event = scheduler.config.events[0]
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        scheduler.state.set_in_outage_state(event.event_id, True)
+
+        scheduler._evaluate_manual_action_escalation(base)
+        scheduler._evaluate_manual_action_escalation(base + timedelta(seconds=600))
+
+        scheduler.notifier.send_critical_attention.assert_not_called()
+        assert scheduler.state.get_attention_since() is not None
+
+    def test_single_ping_after_grace_window(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path, _make_config(alerts_manual_action_after_seconds=900))
+        event = scheduler.config.events[0]
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        scheduler.state.set_in_outage_state(event.event_id, True)
+
+        scheduler._evaluate_manual_action_escalation(base)
+        scheduler._evaluate_manual_action_escalation(base + timedelta(seconds=901))
+
+        scheduler.notifier.send_critical_attention.assert_called_once()
+        kwargs = scheduler.notifier.send_critical_attention.call_args.kwargs
+        assert "next_steps" in kwargs and kwargs["next_steps"]
+
+        # A subsequent evaluation while still degraded must not double-ping.
+        scheduler._evaluate_manual_action_escalation(base + timedelta(seconds=950))
+        assert scheduler.notifier.send_critical_attention.call_count == 1
+
+    def test_recovery_clears_escalation_state(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path, _make_config(alerts_manual_action_after_seconds=900))
+        event = scheduler.config.events[0]
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        scheduler.state.set_in_outage_state(event.event_id, True)
+        scheduler._evaluate_manual_action_escalation(base)
+        scheduler._evaluate_manual_action_escalation(base + timedelta(seconds=901))
+
+        scheduler.state.set_in_outage_state(event.event_id, False)
+        scheduler._evaluate_manual_action_escalation(base + timedelta(seconds=1000))
+
+        assert scheduler.state.get_attention_since() is None
+        assert scheduler.state.get_attention_alerted() is False
+
+
+class TestNonBingoGlobalGate:
+    def _floor_listing(self):
+        return [{"section": "FLOOR1", "row": "A", "price": 150.0, "count": 2}]
+
+    def _prefs(self):
+        # Section filter on LOGE; a FLOOR listing is count+price OK but not preferred → non-BINGO.
+        return [TicketPreferences(
+            min_tickets=2, max_price_per_ticket=200.0,
+            preferred_sections=["LOGE"], alert_on_any_availability=True, name="LOGE pairs",
+        )]
+
+    def test_non_bingo_suppressed_when_global_flag_off(self, tmp_path):
+        prefs = self._prefs()
+        scheduler = _make_scheduler(
+            tmp_path,
+            _make_config(preferences=prefs[0], bingo_configs=prefs, alerts_non_bingo_enabled=False),
+        )
+        event = scheduler.config.events[0]
+        scheduler._handle_probe_result(event, _make_result(available=True, listing_groups=self._floor_listing()))
+        scheduler.notifier.send_ticket_available.assert_not_called()
+
+    def test_non_bingo_alerts_when_global_flag_on(self, tmp_path):
+        prefs = self._prefs()
+        scheduler = _make_scheduler(
+            tmp_path,
+            _make_config(preferences=prefs[0], bingo_configs=prefs, alerts_non_bingo_enabled=True),
+        )
+        event = scheduler.config.events[0]
+        scheduler._handle_probe_result(event, _make_result(available=True, listing_groups=self._floor_listing()))
+        scheduler.notifier.send_ticket_available.assert_called_once()
+
+    def test_bingo_always_alerts_regardless_of_flag(self, tmp_path):
+        prefs = self._prefs()
+        scheduler = _make_scheduler(
+            tmp_path,
+            _make_config(preferences=prefs[0], bingo_configs=prefs, alerts_non_bingo_enabled=False),
+        )
+        event = scheduler.config.events[0]
+        loge = [{"section": "LOGE20", "row": "5", "price": 150.0, "count": 2}]
+        scheduler._handle_probe_result(event, _make_result(available=True, listing_groups=loge))
+        scheduler.notifier.send_ticket_available.assert_called_once()

@@ -61,6 +61,12 @@ class MonitorConfig:
     alerts_operational_heartbeat_hours: int
     alerts_event_check_stale_seconds: int
     alerts_operational_state_cooldown_seconds: int
+    # Non-BINGO ("not a match") availability alerts — global off-switch.
+    alerts_non_bingo_enabled: bool
+    # How long the monitor must stay degraded before pinging for manual action.
+    alerts_manual_action_after_seconds: int
+    # Whether routine operational/self-heal messages go to Discord (default: log only).
+    alerts_operational_to_discord: bool
 
     # Retry
     backoff_multiplier: float
@@ -253,6 +259,14 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
         1800,
         "alerts.operational_state_cooldown_seconds",
     )
+    alerts_non_bingo_enabled = safe_bool(alerts, "non_bingo_enabled", False)
+    alerts_manual_action_after_seconds = safe_int(
+        alerts,
+        "manual_action_after_seconds",
+        900,
+        "alerts.manual_action_after_seconds",
+    )
+    alerts_operational_to_discord = safe_bool(alerts, "operational_to_discord", False)
 
     # Retry
     backoff_multiplier = safe_float(polling, "backoff_multiplier", 2.0, "polling.backoff_multiplier")
@@ -436,6 +450,8 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
         errors.append("alerts.event_check_stale_seconds must be >= 1")
     if alerts_operational_state_cooldown_seconds < 0:
         errors.append("alerts.operational_state_cooldown_seconds must be >= 0")
+    if alerts_manual_action_after_seconds < 0:
+        errors.append("alerts.manual_action_after_seconds must be >= 0")
     if backoff_multiplier < 1:
         errors.append("polling.backoff_multiplier must be >= 1")
     if max_backoff_seconds < 1:
@@ -511,6 +527,9 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
         alerts_operational_heartbeat_hours=alerts_operational_heartbeat_hours,
         alerts_event_check_stale_seconds=alerts_event_check_stale_seconds,
         alerts_operational_state_cooldown_seconds=alerts_operational_state_cooldown_seconds,
+        alerts_non_bingo_enabled=alerts_non_bingo_enabled,
+        alerts_manual_action_after_seconds=alerts_manual_action_after_seconds,
+        alerts_operational_to_discord=alerts_operational_to_discord,
         backoff_multiplier=backoff_multiplier,
         max_backoff_seconds=max_backoff_seconds,
         self_heal_browser_restart_threshold=self_heal_browser_restart_threshold,

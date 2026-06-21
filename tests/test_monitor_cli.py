@@ -14,6 +14,7 @@ def _config() -> SimpleNamespace:
         discord_webhook_url="https://discord.test/webhook",
         discord_username="Test",
         discord_ping_user_id="123456789",
+        alerts_operational_to_discord=False,
         events=[
             SimpleNamespace(
                 name="Night 1",

@@ -109,9 +109,12 @@ browser_host:
 # ── Alert tuning ──────────────────────────────────────────────────────────
 alerts:
   ticket_cooldown_seconds: 180      # Minimum seconds between repeat ticket alerts
-  operational_heartbeat_hours: 6    # Send a heartbeat message every N hours
+  operational_heartbeat_hours: 6    # How often to log a health summary (log-only)
   event_check_stale_seconds: 180
   operational_state_cooldown_seconds: 1800
+  non_bingo_enabled: false          # Alert for non-BINGO ("not a match") availability. Off = BINGO-only.
+  manual_action_after_seconds: 900  # Only ping you for manual action after this long stuck (self-heal failed)
+  operational_to_discord: false     # Routine self-heal messages: false = log only, true = post to Discord
 
 # ── Polling & retry ───────────────────────────────────────────────────────
 polling:
