@@ -35,10 +35,19 @@ MAX_FOOTER_LEN = 200
 class DiscordNotifier:
     """Sends formatted notifications to a Discord webhook."""
 
-    def __init__(self, webhook_url: str, username: str = "Ticket Monitor", ping_user_id: str = ""):
+    def __init__(
+        self,
+        webhook_url: str,
+        username: str = "Ticket Monitor",
+        ping_user_id: str = "",
+        operational_to_discord: bool = True,
+    ):
         self.webhook_url = webhook_url
         self.username = username
         self.ping_user_id = f"<@{ping_user_id}>" if ping_user_id else ""
+        # When False, routine operational/self-heal messages are logged only and
+        # never posted to Discord. Ticket alerts and manual-action pings always post.
+        self.operational_to_discord = operational_to_discord
         self.session = requests.Session()
 
     def send_status_change(self, event_name: str, event_date: str, event_url: str,
@@ -238,6 +247,9 @@ class DiscordNotifier:
         manual_required: bool = False,
     ) -> bool:
         """Notify when the monitor is in a blind/blocked outage state."""
+        if not self.operational_to_discord:
+            logger.info("[operational/log-only] Monitor Outage (%s): %s", event_name, message)
+            return True
         monitor_doing = self._auto_fix_plan_label(auto_fix_planned) or (
             "The monitor will keep retrying checks and self-healing in the background."
         )
@@ -268,6 +280,9 @@ class DiscordNotifier:
 
     def send_monitor_recovered(self, event_name: str, message: str) -> bool:
         """Notify when monitor recovers from outage state."""
+        if not self.operational_to_discord:
+            logger.info("[operational/log-only] Monitor Recovered (%s): %s", event_name, message)
+            return True
         embed = {
             "title": f"Monitor Recovered: {event_name}",
             "color": COLOR_BLUE,
@@ -287,6 +302,9 @@ class DiscordNotifier:
         manual_required: bool = False,
     ) -> bool:
         """Notify when an automatic remediation action has been executed."""
+        if not self.operational_to_discord:
+            logger.info("[operational/log-only] Auto-fix Action %s: %s", action, reason)
+            return True
         what_happened, default_monitor_doing, default_user_action = self._auto_fix_action_guidance(action)
         monitor_doing = self._auto_fix_plan_label(auto_fix_planned) or default_monitor_doing
         description = self._build_guided_description(
@@ -317,21 +335,24 @@ class DiscordNotifier:
         manual_required: bool = True,
         next_steps: list[str] | None = None,
     ) -> bool:
-        """Notify when automation cannot recover and manual intervention is needed."""
-        description = self._build_guided_description(
-            what_happened=message,
-            monitor_doing="Automatic recovery is paused or no longer enough.",
-            user_action=self._manual_action_text(next_steps),
-            include_technical=True,
-            alert_code="critical_attention",
-            action=None,
-            reason=message,
-            context=context,
-        )
+        """Notify when automation cannot recover and manual intervention is needed.
+
+        This is the ONLY operational message that pings the user. It fires only
+        after self-healing has had time to work and failed, so the copy is plain
+        and action-oriented — no internal alert codes or debug fields.
+        """
+        ctx = context if isinstance(context, dict) else {}
+        sections = [
+            f"**What's wrong**\n{message}",
+            f"**What to do**\n{self._manual_action_text(next_steps)}",
+        ]
+        since = ctx.get("degraded_for")
+        if since:
+            sections.append(f"_The monitor has been stuck for {since} and hasn't recovered on its own._")
         embed = {
-            "title": "Critical Attention Needed",
+            "title": "⚠️ Action needed — monitor can't recover on its own",
             "color": COLOR_RED,
-            "description": description,
+            "description": "\n\n".join(sections),
             "footer": {"text": "Face Value Exchange Monitor"},
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
@@ -443,6 +464,9 @@ class DiscordNotifier:
         next_steps: list[str] | None = None,
     ) -> bool:
         """Send an error notification."""
+        if not self.operational_to_discord and not manual_required:
+            logger.info("[operational/log-only] Monitor Error: %s", message)
+            return True
         user_action = (
             self._manual_action_text(next_steps)
             if manual_required
@@ -510,8 +534,12 @@ class DiscordNotifier:
                 "count": g.get("count", 0),
             })
 
+        now_iso = datetime.now(timezone.utc).isoformat()
         entry: dict[str, Any] = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": now_iso,
+            "first_seen": now_iso,
+            "last_seen": now_iso,
+            "seen_count": 1,
             "event_name": event_name,
             "event_id": event_id,
             "event_date": event_date,
@@ -530,12 +558,19 @@ class DiscordNotifier:
             else:
                 history = []
 
-            # Dedup: skip if the last entry for this event has the same fingerprint.
+            # Distinguish a genuinely NEW listing from the SAME listing being
+            # re-detected: if the most recent entry for this event has the same
+            # fingerprint, update it in place (bump last_seen + seen_count) rather
+            # than appending a duplicate row. A different fingerprint is a new row.
             if fingerprint and history:
                 for prev in reversed(history):
                     if prev.get("event_id") == event_id:
                         if prev.get("fingerprint") == fingerprint:
-                            return  # same listings still up — don't spam
+                            prev["last_seen"] = now_iso
+                            prev["seen_count"] = int(prev.get("seen_count", 1)) + 1
+                            with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+                                json.dump(history, f, indent=2, ensure_ascii=False)
+                            return
                         break  # different listings — proceed with new entry
 
             history.append(entry)

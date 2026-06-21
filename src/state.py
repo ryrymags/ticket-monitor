@@ -262,6 +262,30 @@ class MonitorState:
         self._prune_health_windows(now=now, save=False)
         self.save()
 
+    # ---- Manual-action escalation ----
+
+    def get_attention_since(self) -> datetime | None:
+        """When the monitor first entered a degraded (manual-action-worthy) state."""
+        return _iso_to_dt(self._health().get("attention_since"))
+
+    def set_attention_since(self, dt: datetime | None):
+        self._health()["attention_since"] = _dt_to_iso(dt) if dt else None
+        self.save()
+
+    def get_attention_alerted(self) -> bool:
+        """Whether the single manual-action ping has already been sent this episode."""
+        return bool(self._health().get("attention_alerted", False))
+
+    def set_attention_alerted(self, value: bool):
+        self._health()["attention_alerted"] = bool(value)
+        self.save()
+
+    def clear_attention(self):
+        health = self._health()
+        health["attention_since"] = None
+        health["attention_alerted"] = False
+        self.save()
+
     def get_auth_pause_until(self) -> datetime | None:
         return _iso_to_dt(self._health().get("auth_pause_until"))
 
@@ -620,6 +644,8 @@ class MonitorState:
         health.setdefault("auth_reauth_attempt_events", [])
         health.setdefault("auth_reauth_attempts_last_hour", 0)
         health.setdefault("auth_pause_until", None)
+        health.setdefault("attention_since", None)
+        health.setdefault("attention_alerted", False)
 
     def _health(self) -> dict:
         health = self._state.setdefault("health", {})
