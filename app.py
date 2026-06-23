@@ -29,6 +29,9 @@ import tkinter as tk
 from tkinter import messagebox, simpledialog
 
 from monitor import run_bootstrap_session
+from src.history_stats import count_bingo_in_history
+from src.preferences import TicketPreferences
+from src.state import summarize_check_stats
 
 # ── Appearance ──────────────────────────────────────────────────────────────
 ctk.set_appearance_mode("dark")
@@ -171,9 +174,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "session_mode": "persistent_profile",
         "storage_state_path": "secrets/tm_storage_state.json",
         "user_data_dir": "secrets/tm_profile",
-        "channel": "",
-        "poll_min_seconds": 45,
-        "poll_max_seconds": 75,
+        "channel": "chrome",
+        "poll_min_seconds": 15,
+        "poll_max_seconds": 25,
         "headless": True,
         "reuse_event_tabs": True,
         "navigation_timeout_seconds": 20,
@@ -184,6 +187,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "cdp_connect_timeout_seconds": 10,
         "poll_interval_seconds": 12,
         "poll_jitter_seconds": 2,
+        "adaptive_backoff_enabled": True,
+        "adaptive_backoff_multiplier": 2.0,
+        "adaptive_recover_factor": 0.5,
+        "adaptive_max_seconds": 300,
+        "stealth_enabled": True,
+        "locale": "en-US",
+        "timezone_id": "America/New_York",
     },
     "browser_host": {
         "enabled": False,
@@ -938,7 +948,7 @@ class TicketMonitorApp(ctk.CTk):
         frame = ctk.CTkFrame(self._content, fg_color="transparent")
         self._tabs["history"] = frame
         frame.grid_columnconfigure(0, weight=1)
-        frame.grid_rowconfigure(2, weight=1)
+        frame.grid_rowconfigure(3, weight=1)
 
         _section_header(frame, "📋  Ticket History", row=0)
 
@@ -965,9 +975,16 @@ class TicketMonitorApp(ctk.CTk):
             command=self._clear_history,
         ).pack(side="left")
 
+        # BINGO-under-current-configs counter (re-scored against your current configs).
+        self._history_bingo_label = ctk.CTkLabel(
+            frame, text="🟢 BINGO under current configs: —",
+            font=ctk.CTkFont(size=12, weight="bold"), text_color=COLOR_GREEN, anchor="w",
+        )
+        self._history_bingo_label.grid(row=2, column=0, padx=20, pady=(0, 8), sticky="w")
+
         # Scrollable list of history entries
         self._history_list = ctk.CTkScrollableFrame(frame, fg_color=COLOR_BG_PANEL, corner_radius=8)
-        self._history_list.grid(row=2, column=0, padx=20, pady=(0, 14), sticky="nsew")
+        self._history_list.grid(row=3, column=0, padx=20, pady=(0, 14), sticky="nsew")
         self._history_list.grid_columnconfigure(0, weight=1)
 
         self._history_empty_label: ctk.CTkLabel | None = None
@@ -985,22 +1002,51 @@ class TicketMonitorApp(ctk.CTk):
         except Exception:
             return ts_raw[:16]
 
+    def _current_bingo_configs(self) -> list[TicketPreferences]:
+        """Current BINGO configs as TicketPreferences objects (all of them)."""
+        raw = self._cfg.get("bingo_configs", [])
+        if not isinstance(raw, list) or not raw:
+            prefs = self._cfg.get("preferences")
+            raw = [prefs] if isinstance(prefs, dict) else []
+        configs: list[TicketPreferences] = []
+        for cfg in raw:
+            if isinstance(cfg, dict):
+                try:
+                    configs.append(TicketPreferences.from_dict(cfg))
+                except Exception:
+                    continue
+        return configs
+
+    @staticmethod
+    def _load_history() -> list[dict]:
+        try:
+            if os.path.exists(HISTORY_FILE):
+                with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                    history = json.load(f)
+                return history if isinstance(history, list) else []
+        except Exception:
+            pass
+        return []
+
+    def _bingo_history_summary(self) -> dict:
+        return count_bingo_in_history(self._load_history(), self._current_bingo_configs())
+
+    def _update_history_bingo_label(self, history: list[dict]):
+        summary = count_bingo_in_history(history, self._current_bingo_configs())
+        parts = " · ".join(f"{name}: {n}" for name, n in summary["per_config"].items())
+        text = f"🟢 BINGO under current configs: {summary['total']} total"
+        if parts:
+            text += f"  —  {parts}"
+        self._history_bingo_label.configure(text=text)
+
     def _refresh_history_tab(self):
         """Reload ticket_history.json and re-render the history list."""
         for widget in self._history_list.winfo_children():
             widget.destroy()
         self._history_empty_label = None
 
-        try:
-            if os.path.exists(HISTORY_FILE):
-                with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-                    history: list[dict] = json.load(f)
-                if not isinstance(history, list):
-                    history = []
-            else:
-                history = []
-        except Exception:
-            history = []
+        history: list[dict] = self._load_history()
+        self._update_history_bingo_label(history)
 
         if not history:
             self._history_empty_label = ctk.CTkLabel(
@@ -1108,7 +1154,7 @@ class TicketMonitorApp(ctk.CTk):
         frame = ctk.CTkFrame(self._content, fg_color="transparent")
         self._tabs["monitor"] = frame
         frame.grid_columnconfigure(0, weight=1)
-        frame.grid_rowconfigure(5, weight=1)
+        frame.grid_rowconfigure(6, weight=1)
 
         _section_header(frame, "▶   Monitor", row=0)
 
@@ -1133,17 +1179,42 @@ class TicketMonitorApp(ctk.CTk):
             font=ctk.CTkFont(size=11), text_color="#c49a2a", anchor="w", justify="left",
         ).grid(row=1, column=0, padx=14, pady=(0, 10), sticky="w")
 
+        # ── Monitor health / effectiveness ────────────────────────────────────
+        health_frame = ctk.CTkFrame(frame, fg_color=COLOR_BG_PANEL, corner_radius=8)
+        health_frame.grid(row=2, column=0, padx=20, pady=(0, 8), sticky="ew")
+        health_frame.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            health_frame,
+            text="📊  Monitor Health",
+            font=ctk.CTkFont(size=12, weight="bold"), anchor="w",
+        ).grid(row=0, column=0, padx=14, pady=(10, 2), sticky="w")
+        self._health_24h_label = ctk.CTkLabel(
+            health_frame, text="Last 24h: no checks recorded yet.",
+            font=ctk.CTkFont(size=11), text_color="gray70", anchor="w", justify="left",
+        )
+        self._health_24h_label.grid(row=1, column=0, padx=14, pady=(0, 2), sticky="w")
+        self._health_alltime_label = ctk.CTkLabel(
+            health_frame, text="All-time: —",
+            font=ctk.CTkFont(size=11), text_color="gray60", anchor="w", justify="left",
+        )
+        self._health_alltime_label.grid(row=2, column=0, padx=14, pady=(0, 2), sticky="w")
+        self._health_bingo_label = ctk.CTkLabel(
+            health_frame, text="🟢 BINGOs in history (current configs): —",
+            font=ctk.CTkFont(size=11), text_color=COLOR_GREEN, anchor="w", justify="left",
+        )
+        self._health_bingo_label.grid(row=3, column=0, padx=14, pady=(0, 10), sticky="w")
+
         # ── Events status panel ───────────────────────────────────────────────
         self._monitor_events_frame = ctk.CTkScrollableFrame(
             frame, fg_color=COLOR_BG_PANEL, corner_radius=8, height=120,
         )
-        self._monitor_events_frame.grid(row=2, column=0, padx=20, pady=(0, 8), sticky="ew")
+        self._monitor_events_frame.grid(row=3, column=0, padx=20, pady=(0, 8), sticky="ew")
         self._monitor_events_frame.grid_columnconfigure(0, weight=1)
         self._monitor_event_labels: dict[str, ctk.CTkLabel] = {}
 
         # ── Self-healing info ─────────────────────────────────────────────────
         info_frame = ctk.CTkFrame(frame, fg_color=COLOR_BG_PANEL, corner_radius=8)
-        info_frame.grid(row=3, column=0, padx=20, pady=(0, 8), sticky="ew")
+        info_frame.grid(row=4, column=0, padx=20, pady=(0, 8), sticky="ew")
         info_frame.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(
             info_frame,
@@ -1166,7 +1237,7 @@ class TicketMonitorApp(ctk.CTk):
 
         # ── Log viewer ────────────────────────────────────────────────────────
         log_header = ctk.CTkFrame(frame, fg_color="transparent")
-        log_header.grid(row=4, column=0, padx=20, pady=(0, 4), sticky="ew")
+        log_header.grid(row=5, column=0, padx=20, pady=(0, 4), sticky="ew")
         log_header.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(
             log_header, text="Live Logs",
@@ -1183,7 +1254,7 @@ class TicketMonitorApp(ctk.CTk):
             font=ctk.CTkFont(family="Courier", size=11),
             fg_color=COLOR_BG_PANEL, corner_radius=8,
         )
-        self._log_text.grid(row=5, column=0, padx=20, pady=(0, 14), sticky="nsew")
+        self._log_text.grid(row=6, column=0, padx=20, pady=(0, 14), sticky="nsew")
         self._log_text.configure(state="disabled")
 
     def _clear_log(self):
@@ -1308,9 +1379,44 @@ class TicketMonitorApp(ctk.CTk):
         running = bool(self._monitor_proc and self._monitor_proc.poll() is None)
         self._update_status_bar(running)
         self._refresh_monitor_events_panel()
+        self._refresh_monitor_health_stats()
         # Auto-refresh history whenever the monitor is active.
         if running:
             self._refresh_history_tab()
+
+    def _refresh_monitor_health_stats(self):
+        """Update the live "Monitor Health" panel from state.json + history."""
+        state = load_state()
+        health = state.get("health", {}) or {}
+        stats = summarize_check_stats(health, hours=24)
+        if stats["total"]:
+            self._health_24h_label.configure(
+                text=(
+                    f"Last 24h: {stats['total']} checks · {stats['healthy_pct']}% healthy · "
+                    f"{stats['blocked']} blocked · {stats['challenge']} challenge · "
+                    f"{stats['stale']} stale · block-rate {stats['block_pct']}%"
+                )
+            )
+        else:
+            self._health_24h_label.configure(text="Last 24h: no checks recorded yet.")
+
+        totals = health.get("check_totals", {}) or {}
+        lt_total = sum(int(totals.get(k, 0)) for k in ("healthy", "blocked", "challenge", "stale"))
+        if lt_total:
+            lt_healthy = round(100.0 * int(totals.get("healthy", 0)) / lt_total, 1)
+            self._health_alltime_label.configure(
+                text=f"All-time: {lt_total} checks · {lt_healthy}% healthy"
+            )
+        else:
+            self._health_alltime_label.configure(text="All-time: —")
+
+        try:
+            summary = self._bingo_history_summary()
+            self._health_bingo_label.configure(
+                text=f"🟢 BINGOs in history (current configs): {summary['total']}"
+            )
+        except Exception:
+            pass
 
     def _refresh_monitor_events_panel(self):
         state = load_state()

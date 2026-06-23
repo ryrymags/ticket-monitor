@@ -70,6 +70,9 @@ class MonitorScheduler:
             reuse_event_tabs=config.browser_reuse_event_tabs,
             headless=config.browser_headless,
             navigation_timeout_seconds=config.browser_navigation_timeout_seconds,
+            stealth_enabled=config.browser_stealth_enabled,
+            locale=config.browser_locale,
+            timezone_id=config.browser_timezone_id,
         )
         self.detector = detector or Detector(config.alerts_ticket_cooldown_seconds)
         self._rand = rand or random.Random()
@@ -89,6 +92,9 @@ class MonitorScheduler:
         self._last_browser_recycle_at: datetime | None = None
         self._stale_event_alerted: set[str] = set()
         self._last_session_health_alert_at: datetime | None = None
+        # Adaptive cadence: multiplier (>= 1.0) applied to the random poll floor.
+        # Grows when a cycle is blocked/challenged, decays back toward 1.0 when healthy.
+        self._cadence_backoff: float = 1.0
 
     def stop(self):
         """Signal the loop to stop."""
@@ -121,10 +127,7 @@ class MonitorScheduler:
                 self.state.set_last_cycle_completed_at()
                 self.state.clear_last_error()
 
-                if needs_slow_retry:
-                    sleep_time = float(self.config.browser_challenge_retry_seconds)
-                else:
-                    sleep_time = self._normal_loop_sleep()
+                sleep_time = self._next_sleep(blocked=needs_slow_retry)
 
             except BrowserProbeError as exc:
                 logger.error("Browser probe runtime error: %s", exc)
@@ -176,7 +179,9 @@ class MonitorScheduler:
                 break
 
             if index > 0:
-                self._interruptible_sleep(float(self.config.event_stagger_seconds))
+                # Jitter the inter-event gap a little so request timing looks less robotic.
+                stagger = max(0.0, float(self.config.event_stagger_seconds) + self._rand.uniform(-2.0, 2.0))
+                self._interruptible_sleep(stagger)
 
             try:
                 probe_result = self.probe.check_event(event_cfg.event_id, event_cfg.url)
@@ -252,6 +257,7 @@ class MonitorScheduler:
                 )
                 if event_id not in self._stale_event_alerted:
                     self._stale_event_alerted.add(event_id)
+                    self.state.record_check_outcome("stale", now)
                     # Degraded, but don't ping yet — self-healing (recycle below) gets
                     # a chance first. The manual-action escalation pings only if this
                     # keeps failing past the grace window.
@@ -325,6 +331,15 @@ class MonitorScheduler:
         http_unhealthy = isinstance(status, int) and not (200 <= status < 400)
         no_signal = result.signal_type == ProbeSignalType.NONE and http_unhealthy
         blind = result.blocked or result.challenge_detected or no_signal
+
+        # Effectiveness metrics: one outcome per check, for the live GUI health panel.
+        if result.challenge_detected:
+            outcome = "challenge"
+        elif blind:
+            outcome = "blocked"
+        else:
+            outcome = "healthy"
+        self.state.record_check_outcome(outcome, now)
 
         if blind:
             count = self.state.increment_consecutive_blocked(event_id)
@@ -817,6 +832,35 @@ class MonitorScheduler:
         )
 
     # ---- Sleep/backoff helpers ----
+
+    def _next_sleep(self, *, blocked: bool) -> float:
+        """Adaptive cadence: a randomized floor, scaled by a back-off multiplier that
+        grows when the monitor is blocked/challenged and decays back toward the floor
+        when checks are healthy. Bounded by ``adaptive_max_seconds``.
+
+        When adaptive back-off is disabled, this reproduces the original behavior:
+        a fixed ``challenge_retry_seconds`` on a blocked cycle, else the random floor.
+        """
+        floor = self._normal_loop_sleep()
+        if not self.config.browser_adaptive_backoff_enabled:
+            self._cadence_backoff = 1.0
+            if blocked:
+                return float(self.config.browser_challenge_retry_seconds)
+            return floor
+
+        cap = float(self.config.browser_adaptive_max_seconds)
+        if blocked:
+            self._cadence_backoff = self._cadence_backoff * float(
+                self.config.browser_adaptive_backoff_multiplier
+            )
+        else:
+            self._cadence_backoff = max(
+                1.0, self._cadence_backoff * float(self.config.browser_adaptive_recover_factor)
+            )
+        # Clamp the multiplier so floor*multiplier never exceeds the cap.
+        max_multiplier = max(1.0, cap / max(1.0, floor))
+        self._cadence_backoff = min(self._cadence_backoff, max_multiplier)
+        return min(floor * self._cadence_backoff, cap)
 
     def _normal_loop_sleep(self) -> float:
         if self.config.browser_poll_min_seconds > 0 and self.config.browser_poll_max_seconds > 0:

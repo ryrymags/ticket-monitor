@@ -36,6 +36,13 @@ def _make_config(**overrides) -> MonitorConfig:
         browser_challenge_threshold=5,
         browser_challenge_retry_seconds=60,
         event_stagger_seconds=6,
+        browser_adaptive_backoff_enabled=True,
+        browser_adaptive_backoff_multiplier=2.0,
+        browser_adaptive_recover_factor=0.5,
+        browser_adaptive_max_seconds=300,
+        browser_stealth_enabled=False,
+        browser_locale="en-US",
+        browser_timezone_id="America/New_York",
         browser_host_enabled=False,
         browser_host_chrome_executable_path="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
         browser_host_user_data_dir="secrets/tm_chrome_profile",
@@ -864,3 +871,55 @@ class TestNonBingoGlobalGate:
         scheduler._handle_probe_result(event, _make_result(available=True, listing_groups=loge))
         scheduler.notifier.send_ticket_available.assert_called_once()
         assert scheduler.notifier.send_ticket_available.call_args.kwargs.get("mention") is True
+
+
+class TestAdaptiveCadence:
+    def _sched(self, tmp_path, **over):
+        cfg = _make_config(
+            browser_poll_min_seconds=10, browser_poll_max_seconds=10, **over
+        )
+        return _make_scheduler(tmp_path, cfg)
+
+    def test_backoff_grows_on_block_and_decays_when_healthy(self, tmp_path):
+        s = self._sched(tmp_path)
+        assert s._next_sleep(blocked=True) == 20.0   # 10 * 2
+        assert s._next_sleep(blocked=True) == 40.0   # 10 * 4
+        assert s._next_sleep(blocked=False) == 20.0  # decay -> *2
+        assert s._next_sleep(blocked=False) == 10.0  # decay -> *1 (floor)
+        assert s._next_sleep(blocked=False) == 10.0  # stays at floor
+
+    def test_backoff_clamped_to_max(self, tmp_path):
+        s = self._sched(tmp_path, browser_adaptive_max_seconds=50)
+        sleep = 0.0
+        for _ in range(10):
+            sleep = s._next_sleep(blocked=True)
+        assert sleep == 50.0
+
+    def test_disabled_uses_fixed_retry_and_floor(self, tmp_path):
+        s = self._sched(
+            tmp_path,
+            browser_adaptive_backoff_enabled=False,
+            browser_challenge_retry_seconds=60,
+        )
+        assert s._next_sleep(blocked=True) == 60.0   # fixed challenge retry
+        assert s._next_sleep(blocked=False) == 10.0  # random floor
+
+
+class TestCheckOutcomeRecording:
+    def test_records_outcome_per_branch(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        event = scheduler.config.events[0]
+        scheduler.state.record_check_outcome = MagicMock()
+
+        scheduler._handle_probe_result(event, _make_result(available=True))
+        scheduler._handle_probe_result(
+            event,
+            _make_result(available=False, blocked=True, signal_type=ProbeSignalType.NONE, dom_signals=[]),
+        )
+        scheduler._handle_probe_result(
+            event,
+            _make_result(available=False, challenge=True, signal_type=ProbeSignalType.NONE, dom_signals=[]),
+        )
+
+        outcomes = [c.args[0] for c in scheduler.state.record_check_outcome.call_args_list]
+        assert outcomes == ["healthy", "blocked", "challenge"]

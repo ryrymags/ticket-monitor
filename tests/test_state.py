@@ -297,3 +297,68 @@ class TestHealthState:
         assert "process_restart_requests_24h" in snapshot
         assert "last_auto_fix_at" in snapshot
         assert "last_code_fingerprint" in snapshot
+
+
+class TestCheckOutcomeMetrics:
+    def _state(self, tmp_path):
+        from src.state import MonitorState
+
+        return MonitorState(state_file=str(tmp_path / "state.json"))
+
+    def test_record_updates_buckets_and_totals(self, tmp_path):
+        from src.state import summarize_check_stats
+
+        st = self._state(tmp_path)
+        now = datetime(2026, 6, 23, 20, 30, tzinfo=timezone.utc)
+        st.record_check_outcome("healthy", now)
+        st.record_check_outcome("healthy", now)
+        st.record_check_outcome("blocked", now)
+        st.record_check_outcome("challenge", now)
+
+        stats = summarize_check_stats(st._health(), hours=24, now=now)
+        assert stats["healthy"] == 2
+        assert stats["blocked"] == 1
+        assert stats["challenge"] == 1
+        assert stats["total"] == 4
+        assert stats["healthy_pct"] == 50.0
+        assert stats["block_pct"] == 50.0  # (blocked + challenge) / total
+
+        totals = st._health()["check_totals"]
+        assert totals["healthy"] == 2
+        assert totals["blocked"] == 1
+        assert totals["challenge"] == 1
+
+    def test_invalid_outcome_ignored(self, tmp_path):
+        from src.state import summarize_check_stats
+
+        st = self._state(tmp_path)
+        now = datetime(2026, 6, 23, 20, 30, tzinfo=timezone.utc)
+        st.record_check_outcome("bogus", now)
+        stats = summarize_check_stats(st._health(), hours=24, now=now)
+        assert stats["total"] == 0
+
+    def test_old_buckets_excluded_from_window(self, tmp_path):
+        from src.state import summarize_check_stats
+
+        st = self._state(tmp_path)
+        now = datetime(2026, 6, 23, 20, 30, tzinfo=timezone.utc)
+        st.record_check_outcome("healthy", now - timedelta(hours=30))  # stale, pruned
+        st.record_check_outcome("healthy", now)
+
+        stats = summarize_check_stats(st._health(), hours=24, now=now)
+        assert stats["healthy"] == 1  # only the recent bucket counts
+        # ...but lifetime totals keep both.
+        assert st._health()["check_totals"]["healthy"] == 2
+
+    def test_stats_survive_reload(self, tmp_path):
+        from src.state import MonitorState, summarize_check_stats
+
+        path = str(tmp_path / "state.json")
+        now = datetime(2026, 6, 23, 20, 30, tzinfo=timezone.utc)
+        st = MonitorState(state_file=path)
+        st.record_check_outcome("healthy", now)
+        st.record_check_outcome("blocked", now)
+
+        reloaded = MonitorState(state_file=path)
+        stats = summarize_check_stats(reloaded._health(), hours=24, now=now)
+        assert stats["total"] == 2

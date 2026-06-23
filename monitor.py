@@ -197,6 +197,9 @@ def run_doctor(config_path: str):
         reuse_event_tabs=config.browser_reuse_event_tabs,
         headless=config.browser_headless,
         navigation_timeout_seconds=config.browser_navigation_timeout_seconds,
+        stealth_enabled=config.browser_stealth_enabled,
+        locale=config.browser_locale,
+        timezone_id=config.browser_timezone_id,
     )
 
     try:
@@ -266,6 +269,9 @@ def run_doctor_lite(config_path: str):
         reuse_event_tabs=config.browser_reuse_event_tabs,
         headless=config.browser_headless,
         navigation_timeout_seconds=config.browser_navigation_timeout_seconds,
+        stealth_enabled=config.browser_stealth_enabled,
+        locale=config.browser_locale,
+        timezone_id=config.browser_timezone_id,
     )
     try:
         probe.start()

@@ -62,6 +62,38 @@ def _iso_to_dt(value: str | None) -> datetime | None:
         return None
 
 
+_CHECK_OUTCOME_KEYS = ("healthy", "blocked", "challenge", "stale")
+
+
+def summarize_check_stats(
+    health: dict, hours: int = 24, now: datetime | None = None
+) -> dict:
+    """Summarize check outcomes over the last ``hours`` from a raw health dict.
+
+    Pure function (no file I/O) so the GUI can call it on a freshly-loaded
+    state.json without taking a lock. Sums the hourly ``check_buckets``.
+    Returns counts per outcome plus ``total``, ``healthy_pct`` and ``block_pct``
+    (blocked + challenge as a share of all checks).
+    """
+    now = now or datetime.now(timezone.utc)
+    counts = {k: 0 for k in _CHECK_OUTCOME_KEYS}
+    buckets = (health or {}).get("check_buckets", {})
+    if isinstance(buckets, dict):
+        cutoff_hour = (now - timedelta(hours=max(1, hours))).strftime("%Y-%m-%dT%H")
+        for hour, bucket in buckets.items():
+            if not isinstance(bucket, dict) or hour < cutoff_hour:
+                continue
+            for k in _CHECK_OUTCOME_KEYS:
+                counts[k] += int(bucket.get(k, 0))
+
+    total = sum(counts.values())
+    healthy_pct = round(100.0 * counts["healthy"] / total, 1) if total else 0.0
+    block_pct = (
+        round(100.0 * (counts["blocked"] + counts["challenge"]) / total, 1) if total else 0.0
+    )
+    return {**counts, "total": total, "healthy_pct": healthy_pct, "block_pct": block_pct}
+
+
 class MonitorState:
     """Persists monitor state to JSON to survive restarts."""
 
@@ -646,6 +678,9 @@ class MonitorState:
         health.setdefault("auth_pause_until", None)
         health.setdefault("attention_since", None)
         health.setdefault("attention_alerted", False)
+        # Effectiveness metrics: per-hour outcome buckets (last ~25h) + lifetime totals.
+        health.setdefault("check_buckets", {})
+        health.setdefault("check_totals", {"healthy": 0, "blocked": 0, "challenge": 0, "stale": 0})
 
     def _health(self) -> dict:
         health = self._state.setdefault("health", {})
@@ -689,8 +724,42 @@ class MonitorState:
         health["guardian_fix_attempts_last_hour"] = len(guardian_attempts)
         health["auth_reauth_attempts_last_hour"] = len(auth_attempts)
 
+        # Drop hourly check buckets older than ~25h (keep a full 24h window + current).
+        buckets = health.get("check_buckets", {})
+        if isinstance(buckets, dict) and buckets:
+            cutoff_hour = (now - timedelta(hours=25)).strftime("%Y-%m-%dT%H")
+            health["check_buckets"] = {
+                hour: counts for hour, counts in buckets.items() if hour >= cutoff_hour
+            }
+
         if save:
             self.save()
+
+    # ---- Check-outcome effectiveness metrics ----
+
+    _CHECK_OUTCOMES = ("healthy", "blocked", "challenge", "stale")
+
+    def record_check_outcome(self, outcome: str, dt: datetime | None = None):
+        """Tally one check outcome into the current hourly bucket + lifetime totals."""
+        if outcome not in self._CHECK_OUTCOMES:
+            return
+        now = dt or datetime.now(timezone.utc)
+        health = self._health()
+        hour_key = now.strftime("%Y-%m-%dT%H")
+
+        buckets = health.setdefault("check_buckets", {})
+        bucket = buckets.setdefault(
+            hour_key, {"healthy": 0, "blocked": 0, "challenge": 0, "stale": 0}
+        )
+        bucket[outcome] = int(bucket.get(outcome, 0)) + 1
+
+        totals = health.setdefault(
+            "check_totals", {"healthy": 0, "blocked": 0, "challenge": 0, "stale": 0}
+        )
+        totals[outcome] = int(totals.get(outcome, 0)) + 1
+
+        self._prune_health_windows(now=now, save=False)
+        self.save()
 
     @staticmethod
     def _prune_iso_list(values: list, now: datetime, window: timedelta) -> list[str]:
