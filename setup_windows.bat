@@ -66,6 +66,20 @@ if errorlevel 1 (
 )
 echo ✅  Chromium installed.
 echo.
+
+REM ── Provision real Google Chrome (for the "chrome" channel) ───────────────────
+REM The default config uses browser.channel: chrome for better bot-evasion. This
+REM installs Playwright's Google Chrome build. NON-FATAL: if it fails, the monitor
+REM falls back to bundled Chromium automatically.
+echo ⏳  Provisioning Google Chrome ^(for stealth; optional^)...
+python -m playwright install chrome
+if errorlevel 1 (
+    echo ⚠️   Could not install Google Chrome — the monitor will fall back to Chromium.
+    echo      For best results, install Chrome from https://www.google.com/chrome
+) else (
+    echo ✅  Google Chrome ready ^(channel: chrome^).
+)
+echo.
 echo.
 
 REM ── Done ──────────────────────────────────────────────────────────────────────
