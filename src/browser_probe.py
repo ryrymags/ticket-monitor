@@ -18,6 +18,16 @@ PLAYWRIGHT_IMPORT_ERROR = (
     "python -m playwright install chromium"
 )
 
+# Light stealth: hide the most obvious headless/automation tells. Runs before any
+# page script on every navigation. Kept minimal on purpose — aggressive spoofing is
+# itself detectable and not guaranteed to defeat Ticketmaster's bot wall.
+_STEALTH_INIT_SCRIPT = """
+Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+window.chrome = window.chrome || { runtime: {} };
+"""
+
 
 class BrowserProbeError(Exception):
     """Raised when the browser probe cannot complete a check."""
@@ -91,6 +101,9 @@ class BrowserProbe:
         reuse_event_tabs: bool = True,
         headless: bool = True,
         navigation_timeout_seconds: int = 20,
+        stealth_enabled: bool = False,
+        locale: str = "en-US",
+        timezone_id: str = "America/New_York",
     ):
         self.storage_state_path = storage_state_path
         self.session_mode = session_mode
@@ -101,6 +114,9 @@ class BrowserProbe:
         self.reuse_event_tabs = reuse_event_tabs
         self.headless = headless
         self.navigation_timeout_seconds = navigation_timeout_seconds
+        self.stealth_enabled = stealth_enabled
+        self.locale = locale
+        self.timezone_id = timezone_id
         self._playwright = None
         self._browser = None
         self._context = None
@@ -137,6 +153,7 @@ class BrowserProbe:
                 self._cdp_connected = True
             elif self._uses_persistent_context:
                 launch_kwargs = self._launch_kwargs(headless=self.headless, channel=self.channel)
+                launch_kwargs.update(self._context_options())
                 if not self.user_data_dir:
                     raise BrowserProbeError(
                         "browser.user_data_dir is required when browser.session_mode is persistent_profile"
@@ -155,6 +172,7 @@ class BrowserProbe:
                             self.channel,
                         )
                         fallback_kwargs = self._launch_kwargs(headless=self.headless, channel=None)
+                        fallback_kwargs.update(self._context_options())
                         self._context = self._playwright.chromium.launch_persistent_context(
                             self.user_data_dir,
                             **fallback_kwargs,
@@ -181,8 +199,12 @@ class BrowserProbe:
                         self._browser = self._playwright.chromium.launch(**fallback_kwargs)
                     else:
                         raise
-                self._context = self._browser.new_context(storage_state=self.storage_state_path)
+                self._context = self._browser.new_context(
+                    storage_state=self.storage_state_path,
+                    **self._context_options(),
+                )
 
+            self._apply_stealth()
             self._context.set_default_timeout(self.navigation_timeout_seconds * 1000)
             self._started = True
         except Exception as exc:
@@ -243,6 +265,33 @@ class BrowserProbe:
         if channel:
             kwargs["channel"] = channel
         return kwargs
+
+    def _context_options(self) -> dict[str, Any]:
+        """Realistic context options to look like a normal returning browser.
+
+        With real Chrome (channel=chrome) the User-Agent is already genuine, so we
+        deliberately do NOT spoof it — a mismatched UA increases detection. Skipped
+        entirely for cdp_attach (that's already a real external browser).
+        """
+        if not self.stealth_enabled or self.session_mode == "cdp_attach":
+            return {}
+        opts: dict[str, Any] = {"viewport": {"width": 1440, "height": 900}}
+        if self.locale:
+            opts["locale"] = self.locale
+        if self.timezone_id:
+            opts["timezone_id"] = self.timezone_id
+        return opts
+
+    def _apply_stealth(self):
+        """Harden the obvious automation tells via an init script on every page."""
+        if not self.stealth_enabled or self.session_mode == "cdp_attach":
+            return
+        if self._context is None:
+            return
+        try:
+            self._context.add_init_script(_STEALTH_INIT_SCRIPT)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("stealth init script not applied: %s", exc)
 
     def check_session_health(self, url: str = "https://www.ticketmaster.com/my-account") -> dict:
         """Proactively check whether the browser session is still authenticated.

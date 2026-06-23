@@ -86,8 +86,16 @@ class TestLoadConfig:
         assert config.browser_cdp_endpoint_url == "http://127.0.0.1:9222"
         assert config.browser_cdp_connect_timeout_seconds == 10
         assert config.browser_reuse_event_tabs is True
-        assert config.browser_poll_min_seconds == 45
-        assert config.browser_poll_max_seconds == 60
+        assert config.browser_poll_min_seconds == 15
+        assert config.browser_poll_max_seconds == 25
+        # Adaptive cadence + stealth defaults.
+        assert config.browser_adaptive_backoff_enabled is True
+        assert config.browser_adaptive_backoff_multiplier == 2.0
+        assert config.browser_adaptive_recover_factor == 0.5
+        assert config.browser_adaptive_max_seconds == 300
+        assert config.browser_stealth_enabled is True
+        assert config.browser_locale == "en-US"
+        assert config.browser_timezone_id == "America/New_York"
         assert config.browser_host_enabled is False
         assert config.browser_host_chrome_executable_path.endswith("/Google Chrome")
         assert config.browser_host_user_data_dir == "secrets/tm_chrome_profile"

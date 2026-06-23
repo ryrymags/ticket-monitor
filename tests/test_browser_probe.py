@@ -698,3 +698,34 @@ class TestBrowserProbeSessionModes:
         assert result.available is True
         assert result.listing_summary is not None
         assert result.listing_summary.endswith("(+1 more)")
+
+
+class TestStealthAndChannel:
+    def _probe(self, **over):
+        kwargs = dict(storage_state_path="secrets/x.json", session_mode="persistent_profile")
+        kwargs.update(over)
+        return BrowserProbe(**kwargs)
+
+    def test_launch_kwargs_includes_channel_when_set(self):
+        kw = BrowserProbe._launch_kwargs(headless=True, channel="chrome")
+        assert kw["channel"] == "chrome"
+        assert "--disable-blink-features=AutomationControlled" in kw["args"]
+
+    def test_launch_kwargs_omits_channel_when_none(self):
+        kw = BrowserProbe._launch_kwargs(headless=True, channel=None)
+        assert "channel" not in kw
+
+    def test_context_options_when_stealth_on(self):
+        probe = self._probe(stealth_enabled=True, locale="en-US", timezone_id="America/New_York")
+        opts = probe._context_options()
+        assert opts["locale"] == "en-US"
+        assert opts["timezone_id"] == "America/New_York"
+        assert "viewport" in opts
+
+    def test_context_options_empty_when_stealth_off(self):
+        probe = self._probe(stealth_enabled=False)
+        assert probe._context_options() == {}
+
+    def test_context_options_skipped_for_cdp(self):
+        probe = self._probe(session_mode="cdp_attach", stealth_enabled=True)
+        assert probe._context_options() == {}

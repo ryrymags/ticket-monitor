@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `c0f64a8`  2026-06-23 18:13  Fix false stall pings and stop non-BINGO @ mentions
+- `b64e83f`  2026-06-23 18:48  Add adaptive cadence, stealth, health stats, and BINGO history counter
+
+- `5bfa846`  2026-06-23 18:13  Fix false stall pings and stop non-BINGO @ mentions
 
 - `992e9e4`  2026-06-20 20:08  Overhaul notifications: quiet, BINGO-only, ping only when manual action is truly needed
 

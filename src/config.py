@@ -51,6 +51,14 @@ class MonitorConfig:
     browser_challenge_threshold: int
     browser_challenge_retry_seconds: int
     event_stagger_seconds: int
+    # Adaptive cadence + stealth (experimental — all flag-gated for easy revert)
+    browser_adaptive_backoff_enabled: bool
+    browser_adaptive_backoff_multiplier: float
+    browser_adaptive_recover_factor: float
+    browser_adaptive_max_seconds: int
+    browser_stealth_enabled: bool
+    browser_locale: str
+    browser_timezone_id: str
     browser_host_enabled: bool
     browser_host_chrome_executable_path: str
     browser_host_user_data_dir: str
@@ -206,8 +214,8 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
         "browser.cdp_connect_timeout_seconds",
     )
     browser_reuse_event_tabs = safe_bool(browser, "reuse_event_tabs", True)
-    browser_poll_min_seconds = safe_int(browser, "poll_min_seconds", 45, "browser.poll_min_seconds")
-    browser_poll_max_seconds = safe_int(browser, "poll_max_seconds", 60, "browser.poll_max_seconds")
+    browser_poll_min_seconds = safe_int(browser, "poll_min_seconds", 15, "browser.poll_min_seconds")
+    browser_poll_max_seconds = safe_int(browser, "poll_max_seconds", 25, "browser.poll_max_seconds")
 
     browser_headless = safe_bool(browser, "headless", True)
     browser_poll_interval_seconds = safe_int(
@@ -226,6 +234,22 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
         browser, "challenge_retry_seconds", 60, "browser.challenge_retry_seconds"
     )
     event_stagger_seconds = safe_int(browser, "event_stagger_seconds", 6, "browser.event_stagger_seconds")
+    # Adaptive cadence + stealth (experimental — every knob has a safe off value)
+    browser_adaptive_backoff_enabled = safe_bool(browser, "adaptive_backoff_enabled", True)
+    browser_adaptive_backoff_multiplier = safe_float(
+        browser, "adaptive_backoff_multiplier", 2.0, "browser.adaptive_backoff_multiplier"
+    )
+    browser_adaptive_recover_factor = safe_float(
+        browser, "adaptive_recover_factor", 0.5, "browser.adaptive_recover_factor"
+    )
+    browser_adaptive_max_seconds = safe_int(
+        browser, "adaptive_max_seconds", 300, "browser.adaptive_max_seconds"
+    )
+    browser_stealth_enabled = safe_bool(browser, "stealth_enabled", True)
+    browser_locale = str(browser.get("locale", "en-US")).strip() or "en-US"
+    browser_timezone_id = (
+        str(browser.get("timezone_id", "America/New_York")).strip() or "America/New_York"
+    )
     browser_host_enabled = safe_bool(browser_host, "enabled", browser_session_mode == "cdp_attach")
     browser_host_chrome_executable_path = str(
         browser_host.get(
@@ -432,6 +456,12 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
         errors.append("browser.poll_interval_seconds must be >= 1")
     if browser_poll_jitter_seconds < 0:
         errors.append("browser.poll_jitter_seconds must be >= 0")
+    if browser_adaptive_backoff_multiplier < 1.0:
+        errors.append("browser.adaptive_backoff_multiplier must be >= 1.0")
+    if not (0.0 < browser_adaptive_recover_factor <= 1.0):
+        errors.append("browser.adaptive_recover_factor must be in (0, 1]")
+    if browser_adaptive_max_seconds < 1:
+        errors.append("browser.adaptive_max_seconds must be >= 1")
     if browser_poll_jitter_seconds > browser_poll_interval_seconds:
         errors.append("browser.poll_jitter_seconds must be <= browser.poll_interval_seconds")
     if browser_navigation_timeout_seconds < 1:
@@ -519,6 +549,13 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
         browser_challenge_threshold=browser_challenge_threshold,
         browser_challenge_retry_seconds=browser_challenge_retry_seconds,
         event_stagger_seconds=event_stagger_seconds,
+        browser_adaptive_backoff_enabled=browser_adaptive_backoff_enabled,
+        browser_adaptive_backoff_multiplier=browser_adaptive_backoff_multiplier,
+        browser_adaptive_recover_factor=browser_adaptive_recover_factor,
+        browser_adaptive_max_seconds=browser_adaptive_max_seconds,
+        browser_stealth_enabled=browser_stealth_enabled,
+        browser_locale=browser_locale,
+        browser_timezone_id=browser_timezone_id,
         browser_host_enabled=browser_host_enabled,
         browser_host_chrome_executable_path=browser_host_chrome_executable_path,
         browser_host_user_data_dir=browser_host_user_data_dir,

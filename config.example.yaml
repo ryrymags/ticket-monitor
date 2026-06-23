@@ -85,10 +85,10 @@ browser:
   session_mode: "persistent_profile"   # Recommended: persistent_profile
   user_data_dir: "secrets/tm_profile"  # Where your login session is stored
   storage_state_path: "secrets/tm_storage_state.json"
-  channel: ""                           # "" = bundled Chromium (default, works on all PCs)
-                                        # "chrome" = use system Google Chrome (better bot-evasion, but Chrome must be installed)
-  poll_min_seconds: 45
-  poll_max_seconds: 75
+  channel: "chrome"                     # "" = bundled Chromium (works on all PCs)
+                                        # "chrome" = use system Google Chrome (better bot-evasion; falls back to Chromium if not installed)
+  poll_min_seconds: 15                  # Adaptive-fast floor; raise toward 45/75 if you get blocked a lot
+  poll_max_seconds: 25
   headless: true
   reuse_event_tabs: true
   poll_interval_seconds: 12
@@ -99,6 +99,16 @@ browser:
   challenge_retry_seconds: 60
   cdp_endpoint_url: "http://127.0.0.1:9222"
   cdp_connect_timeout_seconds: 10
+  # Adaptive cadence: poll near the floor when healthy, multiply the interval on
+  # each blocked/challenged cycle (up to adaptive_max_seconds), decay back when healthy.
+  adaptive_backoff_enabled: true        # false = old behavior (fixed challenge_retry_seconds on block)
+  adaptive_backoff_multiplier: 2.0      # interval ×= this on a blocked cycle
+  adaptive_recover_factor: 0.5          # interval ×= this on a healthy cycle (toward the floor)
+  adaptive_max_seconds: 300             # cap on the backed-off interval
+  # Stealth: look like a normal returning Chrome user (no UA spoofing — real Chrome's UA is genuine).
+  stealth_enabled: true                 # false = no init script / context options
+  locale: "en-US"
+  timezone_id: "America/New_York"
 
 browser_host:
   enabled: false
