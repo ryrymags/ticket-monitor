@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `b64e83f`  2026-06-23 18:48  Add adaptive cadence, stealth, health stats, and BINGO history counter
+- `2816b7a`  2026-06-23 18:52  Provision Google Chrome in GUI setup scripts for the chrome channel
+
+- `d8b7e01`  2026-06-23 18:48  Add adaptive cadence, stealth, health stats, and BINGO history counter
 
 - `5bfa846`  2026-06-23 18:13  Fix false stall pings and stop non-BINGO @ mentions
 

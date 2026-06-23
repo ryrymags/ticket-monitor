@@ -154,6 +154,20 @@ fi
 echo "✅  Browser engine ready."
 echo ""
 
+# ── Provision real Google Chrome (for the "chrome" channel) ───────────────────
+# The default config uses browser.channel: chrome — real Chrome resists
+# Ticketmaster's bot detection better than bundled Chromium. This installs
+# Playwright's Google Chrome build so that channel is available. NON-FATAL: if it
+# fails (offline, unsupported), the monitor automatically falls back to Chromium.
+echo "⏳  Provisioning Google Chrome (for stealth; optional)..."
+if python3 -m playwright install chrome 2>/dev/null; then
+    echo "✅  Google Chrome ready (channel: chrome)."
+else
+    echo "⚠️   Could not install Google Chrome — the monitor will fall back to Chromium."
+    echo "     That's fine. For best results, install Chrome from https://www.google.com/chrome"
+fi
+echo ""
+
 # ── Make launch script executable ────────────────────────────────────────────
 chmod +x "$SCRIPT_DIR/launch_mac.command" 2>/dev/null
 
