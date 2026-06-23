@@ -4,11 +4,13 @@ All notable changes to Ticket Monitor are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 <!-- CHANGELOG_START -->
-## [Unreleased] — 2026-06-20
+## [Unreleased] — 2026-06-23
 
 ### Changes
 
-- `0541d97`  2026-06-20 20:08  Overhaul notifications: quiet, BINGO-only, ping only when manual action is truly needed
+- `c0f64a8`  2026-06-23 18:13  Fix false stall pings and stop non-BINGO @ mentions
+
+- `992e9e4`  2026-06-20 20:08  Overhaul notifications: quiet, BINGO-only, ping only when manual action is truly needed
 
 - `035e394`  2026-06-18 14:08  Respect non-BINGO alert toggle
 

@@ -1344,12 +1344,19 @@ class TicketMonitorApp(ctk.CTk):
         for i, ev in enumerate(self._events):
             eid = ev.get("event_id", "")
             name = ev.get("name", ev.get("url", "Unknown"))
-            last_ts = events_state.get(eid, {}).get("last_check")
+            ev_state = events_state.get(eid, {})
+            last_ts = ev_state.get("last_check")
+            in_outage = bool(ev_state.get("in_outage_state"))
             if last_ts:
                 try:
                     dt = datetime.fromisoformat(last_ts)
                     age_s = int((now - dt).total_seconds())
-                    if age_s < 120:
+                    if in_outage:
+                        # Checks are still running, but the page keeps coming back
+                        # blocked / no usable data. Match the manual-action alert so
+                        # the GUI never shows green while a "go fix it" ping is live.
+                        status = f"🔴  Blocked / no data — recovering (last check {age_s}s ago)"
+                    elif age_s < 120:
                         status = f"🟢  Last check: {age_s}s ago"
                     elif age_s < 300:
                         status = f"🟡  Last check: {age_s//60}m ago"
@@ -1357,6 +1364,8 @@ class TicketMonitorApp(ctk.CTk):
                         status = f"🔴  Last check: {age_s//60}m ago (stale)"
                 except Exception:
                     status = "⚪  Status unknown"
+            elif in_outage:
+                status = "🔴  Blocked / no data — recovering"
             else:
                 status = "⚪  Not yet checked"
 
