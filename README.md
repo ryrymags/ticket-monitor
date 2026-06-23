@@ -9,7 +9,8 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 ## 📋 Recent Changes
 
 <!-- CHANGELOG_START -->
-- `2816b7a`  2026-06-23  Provision Google Chrome in GUI setup scripts for the chrome channel
+- `93fb791`  2026-06-23  Dedup repeat detections in BINGO counter and ticket history
+- `94e965e`  2026-06-23  Provision Google Chrome in GUI setup scripts for the chrome channel
 - `d8b7e01`  2026-06-23  Add adaptive cadence, stealth, health stats, and BINGO history counter
 - `5bfa846`  2026-06-23  Fix false stall pings and stop non-BINGO @ mentions
 - `992e9e4`  2026-06-20  Overhaul notifications: quiet, BINGO-only, ping only when manual action is truly needed
@@ -18,7 +19,6 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 - `94ec911`  2026-04-07  Fix Playwright bot-detection spinner and simplify login bootstrap URL
 - `b5e4805`  2026-04-07  Fix Python version requirement in README and Mac setup script
 - `2a7c00a`  2026-04-07  Add Chrome fallback to login bootstrap flow
-- `940f77b`  2026-04-07  Fix Discord error message referencing macOS-only monitorctl.sh
 
 Full history: [CHANGELOG.md](CHANGELOG.md)
 <!-- CHANGELOG_END -->
