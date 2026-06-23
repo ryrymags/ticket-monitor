@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `f040e96`  2026-06-23 19:08  Add re-runnable ticket-history dedupe cleanup
+- `bd397ab`  2026-06-23 19:12  Make history de-duper runnable from terminal anywhere + add Mac launcher
+
+- `6e53adc`  2026-06-23 19:08  Add re-runnable ticket-history dedupe cleanup
 
 - `61fb6c4`  2026-06-23 19:01  Dedup repeat detections in BINGO counter and ticket history
 

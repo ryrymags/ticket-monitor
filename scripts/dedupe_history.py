@@ -20,11 +20,13 @@ import shutil
 import sys
 from datetime import datetime
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO_ROOT)
 
 from src.history_stats import collapse_history  # noqa: E402
 
-HISTORY_FILE = "ticket_history.json"
+# Resolve relative to the repo root so the script works from ANY directory.
+HISTORY_FILE = os.path.join(REPO_ROOT, "ticket_history.json")
 
 
 def main() -> int:
@@ -37,7 +39,9 @@ def main() -> int:
         print(f"{HISTORY_FILE} is not a list — aborting (no changes made).")
         return 1
 
-    backup = f"ticket_history.backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+    backup = os.path.join(
+        REPO_ROOT, f"ticket_history.backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+    )
     shutil.copy2(HISTORY_FILE, backup)
 
     collapsed = collapse_history(history)
