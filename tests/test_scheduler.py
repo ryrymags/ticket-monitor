@@ -158,7 +158,7 @@ class TestTicketAlerting:
         kwargs = scheduler.notifier.send_ticket_available.call_args.kwargs
         assert kwargs.get("listing_groups") == listing_groups
 
-    def test_non_bingo_is_suppressed_when_orange_alerts_disabled(self, tmp_path):
+    def test_non_bingo_sends_message_without_mention(self, tmp_path):
         prefs = [
             TicketPreferences(
                 min_tickets=2,
@@ -173,13 +173,16 @@ class TestTicketAlerting:
             _make_config(preferences=prefs[0], bingo_configs=prefs),
         )
         event = scheduler.config.events[0]
+        # FLOOR1 meets count+price for the LOGE config but is the wrong section →
+        # non-BINGO. With non_bingo_enabled off it still posts a webhook message +
+        # History, but must NOT @-mention.
         listing_groups = [{"section": "FLOOR1", "row": "A", "price": 150.0, "count": 2}]
 
         scheduler._handle_probe_result(event, _make_result(available=True, listing_groups=listing_groups))
 
-        scheduler.notifier.send_ticket_available.assert_not_called()
+        scheduler.notifier.send_ticket_available.assert_called_once()
+        assert scheduler.notifier.send_ticket_available.call_args.kwargs.get("mention") is False
         assert scheduler.state.get_last_available_at(event.event_id) is not None
-        assert scheduler.state.get_last_alert_at(event.event_id) is None
 
     def test_second_bingo_config_alerts_when_first_config_does_not_match(self, tmp_path):
         prefs = [
@@ -384,6 +387,28 @@ class TestMentionBurst:
 
 
 class TestOutageTracking:
+    def test_no_inventory_healthy_page_does_not_enter_outage(self, tmp_path):
+        """A healthy 2xx page that just lists no tickets must not be counted as
+        blind — otherwise empty events trip the outage → manual-action ping while
+        the GUI (which reads last_check) shows green."""
+        scheduler = _make_scheduler(tmp_path, _make_config(browser_challenge_threshold=3))
+        event = scheduler.config.events[0]
+        empty = _make_result(
+            available=False,
+            blocked=False,
+            challenge=False,
+            signal_type=ProbeSignalType.NONE,
+            dom_signals=[],
+        )
+        empty.raw_indicators["response_status"] = 200
+
+        for _ in range(5):
+            scheduler._handle_probe_result(event, empty)
+
+        scheduler.notifier.send_monitor_blocked.assert_not_called()
+        assert scheduler.state.get_in_outage_state(event.event_id) is False
+        assert scheduler.state.get_consecutive_blocked(event.event_id) == 0
+
     def test_threshold_triggers_blocked_alert(self, tmp_path):
         scheduler = _make_scheduler(tmp_path, _make_config(browser_challenge_threshold=3))
         event = scheduler.config.events[0]
@@ -805,7 +830,7 @@ class TestNonBingoGlobalGate:
             preferred_sections=["LOGE"], alert_on_any_availability=True, name="LOGE pairs",
         )]
 
-    def test_non_bingo_suppressed_when_global_flag_off(self, tmp_path):
+    def test_non_bingo_sends_without_mention_when_global_flag_off(self, tmp_path):
         prefs = self._prefs()
         scheduler = _make_scheduler(
             tmp_path,
@@ -813,9 +838,11 @@ class TestNonBingoGlobalGate:
         )
         event = scheduler.config.events[0]
         scheduler._handle_probe_result(event, _make_result(available=True, listing_groups=self._floor_listing()))
-        scheduler.notifier.send_ticket_available.assert_not_called()
+        # Webhook message + History still post for the detection — but no @-mention.
+        scheduler.notifier.send_ticket_available.assert_called_once()
+        assert scheduler.notifier.send_ticket_available.call_args.kwargs.get("mention") is False
 
-    def test_non_bingo_alerts_when_global_flag_on(self, tmp_path):
+    def test_non_bingo_mentions_when_global_flag_on(self, tmp_path):
         prefs = self._prefs()
         scheduler = _make_scheduler(
             tmp_path,
@@ -824,8 +851,9 @@ class TestNonBingoGlobalGate:
         event = scheduler.config.events[0]
         scheduler._handle_probe_result(event, _make_result(available=True, listing_groups=self._floor_listing()))
         scheduler.notifier.send_ticket_available.assert_called_once()
+        assert scheduler.notifier.send_ticket_available.call_args.kwargs.get("mention") is True
 
-    def test_bingo_always_alerts_regardless_of_flag(self, tmp_path):
+    def test_bingo_always_mentions_regardless_of_flag(self, tmp_path):
         prefs = self._prefs()
         scheduler = _make_scheduler(
             tmp_path,
@@ -835,3 +863,4 @@ class TestNonBingoGlobalGate:
         loge = [{"section": "LOGE20", "row": "5", "price": 150.0, "count": 2}]
         scheduler._handle_probe_result(event, _make_result(available=True, listing_groups=loge))
         scheduler.notifier.send_ticket_available.assert_called_once()
+        assert scheduler.notifier.send_ticket_available.call_args.kwargs.get("mention") is True

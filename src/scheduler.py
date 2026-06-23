@@ -313,9 +313,17 @@ class MonitorScheduler:
         event_id = event_cfg.event_id
         now = now or datetime.now(timezone.utc)
 
-        # Blindness/outage tracking:
-        # blocked, explicit challenge, or no usable signals at all.
-        no_signal = result.signal_type == ProbeSignalType.NONE
+        # Blindness/outage tracking: an explicit block (401/403/429 → result.blocked),
+        # a bot challenge, or a no-signal probe on an UNHEALTHY HTTP response. A page
+        # that loaded fine (2xx/3xx) but lists no tickets is just "no inventory right
+        # now" — NOT blind — so empty events never trip the outage/manual-action ping.
+        status = (
+            result.raw_indicators.get("response_status")
+            if isinstance(result.raw_indicators, dict)
+            else None
+        )
+        http_unhealthy = isinstance(status, int) and not (200 <= status < 400)
+        no_signal = result.signal_type == ProbeSignalType.NONE and http_unhealthy
         blind = result.blocked or result.challenge_detected or no_signal
 
         if blind:
@@ -382,23 +390,27 @@ class MonitorScheduler:
             preferences = self._ticket_preferences()
             match = DiscordNotifier._ticket_match_status(listing_groups, preferences=preferences)
             is_bingo = match.get("preview_status") == "BINGO"
-            should_notify_for_preferences = bool(match.get("should_notify", True))
-            # Global off-switch: never alert for non-BINGO ("not a match") availability
-            # unless explicitly enabled. This hard-gates the orange path so it cannot
-            # leak through a single permissive BINGO config.
-            if not self.config.alerts_non_bingo_enabled and not is_bingo:
-                should_notify_for_preferences = False
 
-            # A genuinely new listing (new signature) starts a fresh mention episode.
-            # The same listing reappearing does NOT restart the burst — that is what
-            # caused hours of re-pings on lingering/expensive listings.
-            if decision.reason == "signature_changed":
-                self.state.reset_mention_burst(event_id)
-            self._start_mention_burst_if_needed(event_id, now)
-            mention_due = self._should_send_mention_burst(event_id, now)
+            # @-mention policy: a BINGO always pings. A non-BINGO detection pings only
+            # when the "alert on all tickets" toggle is on. The webhook message + local
+            # History entry are posted for EVERY detection regardless — only the ping is
+            # gated. The mention burst (which governs ping cadence) is therefore armed
+            # only when a mention is actually allowed.
+            mention_allowed = is_bingo or self.config.alerts_non_bingo_enabled
+            if mention_allowed:
+                # A genuinely new listing (new signature) starts a fresh mention episode.
+                # The same listing reappearing does NOT restart the burst — that is what
+                # caused hours of re-pings on lingering/expensive listings.
+                if decision.reason == "signature_changed":
+                    self.state.reset_mention_burst(event_id)
+                self._start_mention_burst_if_needed(event_id, now)
+                mention_due = self._should_send_mention_burst(event_id, now)
+            else:
+                mention_due = False
+
             self.state.set_last_available_at(event_id, now)
             self.state.set_last_availability_signature(event_id, decision.signature)
-            if should_notify_for_preferences and decision.should_alert:
+            if decision.should_alert:
                 sent = self.notifier.send_ticket_available(
                     event_name=event_cfg.name,
                     event_date=event_cfg.date,
@@ -417,10 +429,15 @@ class MonitorScheduler:
                     if mention_due:
                         self._record_mention_burst_sent(event_id, now)
                     self.state.set_last_alert_at(event_id, now)
-                    logger.info("[%s] ticket alert sent (%s)", event_cfg.name, decision.reason)
+                    logger.info(
+                        "[%s] ticket alert sent (%s, mention=%s)",
+                        event_cfg.name,
+                        decision.reason,
+                        mention_due,
+                    )
                 else:
                     logger.error("[%s] ticket alert failed to send", event_cfg.name)
-            elif should_notify_for_preferences and mention_due:
+            elif mention_due:
                 sent = self.notifier.send_ticket_available(
                     event_name=event_cfg.name,
                     event_date=event_cfg.date,
@@ -440,8 +457,6 @@ class MonitorScheduler:
                     logger.info("[%s] ticket alert sent (attention_burst)", event_cfg.name)
                 else:
                     logger.error("[%s] ticket alert failed to send (attention_burst)", event_cfg.name)
-            elif not should_notify_for_preferences and decision.should_alert:
-                logger.info("[%s] availability suppressed (non-BINGO / preferences)", event_cfg.name)
         else:
             # Listing gone. Keep the last signature so the SAME listing reappearing
             # is treated as a duplicate (no fresh ping). A genuinely new listing has
