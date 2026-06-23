@@ -82,3 +82,35 @@ def test_repeat_listings_without_fingerprint_counted_once():
     history = [dict(entry), dict(entry)]  # derived key from listings dedups them
     res = count_bingo_in_history(history, [cfg])
     assert res["total"] == 1
+
+
+def test_collapse_history_merges_repeats():
+    from src.history_stats import collapse_history
+
+    history = [
+        {"event_id": "E1", "fingerprint": "fpA", "seen_count": 1,
+         "first_seen": "2026-06-23T10:00:00+00:00", "last_seen": "2026-06-23T10:00:00+00:00",
+         "bingo": True, "listings": [{"section": "LOGE", "row": "1", "price": 150.0, "count": 2}]},
+        {"event_id": "E1", "fingerprint": "fpB", "seen_count": 1,
+         "first_seen": "2026-06-23T10:01:00+00:00", "last_seen": "2026-06-23T10:01:00+00:00",
+         "bingo": False, "listings": [{"section": "FLOOR", "row": "A", "price": 175.0, "count": 2}]},
+        {"event_id": "E1", "fingerprint": "fpA", "seen_count": 3,
+         "first_seen": "2026-06-23T10:02:00+00:00", "last_seen": "2026-06-23T10:05:00+00:00",
+         "bingo": True, "listings": [{"section": "LOGE", "row": "1", "price": 150.0, "count": 2}]},
+    ]
+    rows = collapse_history(history)
+    assert len(rows) == 2  # fpA collapsed, fpB separate
+    a = next(r for r in rows if r["fingerprint"] == "fpA")
+    assert a["seen_count"] == 4  # 1 + 3
+    assert a["first_seen"] == "2026-06-23T10:00:00+00:00"
+    assert a["last_seen"] == "2026-06-23T10:05:00+00:00"
+
+
+def test_collapse_history_distinct_events_kept_separate():
+    from src.history_stats import collapse_history
+
+    history = [
+        {"event_id": "E1", "fingerprint": "fp", "listings": [{"section": "LOGE", "row": "1", "price": 150.0, "count": 2}]},
+        {"event_id": "E2", "fingerprint": "fp", "listings": [{"section": "LOGE", "row": "1", "price": 150.0, "count": 2}]},
+    ]
+    assert len(collapse_history(history)) == 2  # same fingerprint, different events

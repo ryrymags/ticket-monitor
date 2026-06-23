@@ -11,6 +11,7 @@ state.json
 state.json.lock
 state.json.bak.*
 ticket_history.json
+ticket_history.backup-*.json
 
 # Ticketmaster session data, Chrome profiles, auth files
 secrets/

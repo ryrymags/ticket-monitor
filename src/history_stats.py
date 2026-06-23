@@ -56,6 +56,44 @@ def _entry_key(entry: dict[str, Any]) -> tuple:
     return (event_id, sig)
 
 
+def collapse_history(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse repeat detections of the same (event, listing-set) into one row.
+
+    Re-detections of identical seats+price (no one bought it yet) are merged:
+    seen_count is summed, first_seen is the earliest and last_seen the latest.
+    The earliest entry's descriptive fields are kept; bingo is OR-ed. Returns rows
+    sorted by first_seen. Mirrors the going-forward write-path dedup so the stored
+    history and the BINGO counter agree.
+    """
+    merged: dict[tuple, dict[str, Any]] = {}
+    order: list[tuple] = []
+    for entry in history or []:
+        if not isinstance(entry, dict):
+            continue
+        key = _entry_key(entry)
+        first = entry.get("first_seen") or entry.get("timestamp") or ""
+        last = entry.get("last_seen") or entry.get("timestamp") or first
+        seen = int(entry.get("seen_count", 1) or 1)
+        if key not in merged:
+            row = dict(entry)
+            row["seen_count"] = seen
+            row["first_seen"] = first
+            row["last_seen"] = last
+            merged[key] = row
+            order.append(key)
+        else:
+            row = merged[key]
+            row["seen_count"] = int(row.get("seen_count", 1) or 1) + seen
+            if first and (not row.get("first_seen") or first < row["first_seen"]):
+                row["first_seen"] = first
+            if last and (not row.get("last_seen") or last > row["last_seen"]):
+                row["last_seen"] = last
+            row["bingo"] = bool(row.get("bingo")) or bool(entry.get("bingo"))
+    rows = [merged[k] for k in order]
+    rows.sort(key=lambda r: r.get("first_seen") or "")
+    return rows
+
+
 def count_bingo_in_history(history: list[dict[str, Any]], configs: list) -> dict[str, Any]:
     """Count history entries that are a BINGO under the current configs.
 

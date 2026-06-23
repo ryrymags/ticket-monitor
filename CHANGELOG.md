@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `93fb791`  2026-06-23 19:01  Dedup repeat detections in BINGO counter and ticket history
+- `f040e96`  2026-06-23 19:08  Add re-runnable ticket-history dedupe cleanup
+
+- `61fb6c4`  2026-06-23 19:01  Dedup repeat detections in BINGO counter and ticket history
 
 - `94e965e`  2026-06-23 18:52  Provision Google Chrome in GUI setup scripts for the chrome channel
 
