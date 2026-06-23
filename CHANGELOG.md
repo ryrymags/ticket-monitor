@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `2816b7a`  2026-06-23 18:52  Provision Google Chrome in GUI setup scripts for the chrome channel
+- `93fb791`  2026-06-23 19:01  Dedup repeat detections in BINGO counter and ticket history
+
+- `94e965e`  2026-06-23 18:52  Provision Google Chrome in GUI setup scripts for the chrome channel
 
 - `d8b7e01`  2026-06-23 18:48  Add adaptive cadence, stealth, health stats, and BINGO history counter
 

@@ -401,3 +401,24 @@ class TestHistorySeenCount:
         data = _json.loads(hist.read_text())
         assert len(data) == 2
         assert all(e["seen_count"] == 1 for e in data)
+
+    def test_reappearing_listing_collapses_not_duplicates(self, tmp_path, monkeypatch):
+        import json as _json
+        import src.notifier as notifier_mod
+        hist = tmp_path / "history.json"
+        monkeypatch.setattr(notifier_mod, "HISTORY_FILE", str(hist))
+
+        a = [{"section": "LOGE20", "row": "5", "price": 150.0, "count": 2}]
+        b = [{"section": "FLOOR1", "row": "A", "price": 175.0, "count": 2}]
+        # A, then B, then A again — the SECOND A must collapse into the first row,
+        # not create a third (it isn't the immediately-previous entry).
+        for groups in (a, b, a):
+            DiscordNotifier._write_history_entry(
+                event_name="Test", event_date="2026-07-28",
+                event_url="https://www.ticketmaster.com/event/ABC123",
+                all_groups=groups, is_bingo=True, label="BINGO!",
+            )
+        data = _json.loads(hist.read_text())
+        assert len(data) == 2  # one row for A, one for B
+        a_row = next(e for e in data if e["listings"][0]["section"] == "LOGE20")
+        assert a_row["seen_count"] == 2

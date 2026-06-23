@@ -58,3 +58,27 @@ def test_no_configs_returns_zero():
 
 def test_empty_history():
     assert count_bingo_in_history([], [_cfg_a()]) == {"total": 0, "per_config": {"A": 0}}
+
+
+def test_repeat_listings_with_fingerprint_counted_once():
+    cfg = _cfg_a()
+    entry = {
+        "event_id": "E1",
+        "fingerprint": "fp-loge",
+        "listings": [{"section": "LOGE 5", "row": "1", "price": 150.0, "count": 2}],
+    }
+    history = [dict(entry), dict(entry), dict(entry)]  # 3 repeat detections
+    res = count_bingo_in_history(history, [cfg])
+    assert res["total"] == 1
+    assert res["per_config"]["A"] == 1
+
+
+def test_repeat_listings_without_fingerprint_counted_once():
+    cfg = _cfg_a()
+    entry = {
+        "event_id": "E1",
+        "listings": [{"section": "LOGE 5", "row": "1", "price": 150.0, "count": 2}],
+    }
+    history = [dict(entry), dict(entry)]  # derived key from listings dedups them
+    res = count_bingo_in_history(history, [cfg])
+    assert res["total"] == 1

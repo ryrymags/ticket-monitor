@@ -558,20 +558,23 @@ class DiscordNotifier:
             else:
                 history = []
 
-            # Distinguish a genuinely NEW listing from the SAME listing being
-            # re-detected: if the most recent entry for this event has the same
-            # fingerprint, update it in place (bump last_seen + seen_count) rather
-            # than appending a duplicate row. A different fingerprint is a new row.
+            # Distinguish a genuinely NEW listing-set from the SAME one being
+            # re-detected. The same listings can reappear repeatedly over minutes
+            # (no one bought them yet) with OTHER inventory churning in between, so
+            # we collapse on ANY prior entry for this event with the same
+            # fingerprint — not just the immediately-previous one — bumping its
+            # last_seen + seen_count instead of writing a duplicate row.
             if fingerprint and history:
-                for prev in reversed(history):
-                    if prev.get("event_id") == event_id:
-                        if prev.get("fingerprint") == fingerprint:
-                            prev["last_seen"] = now_iso
-                            prev["seen_count"] = int(prev.get("seen_count", 1)) + 1
-                            with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-                                json.dump(history, f, indent=2, ensure_ascii=False)
-                            return
-                        break  # different listings — proceed with new entry
+                for prev in history:
+                    if (
+                        prev.get("event_id") == event_id
+                        and prev.get("fingerprint") == fingerprint
+                    ):
+                        prev["last_seen"] = now_iso
+                        prev["seen_count"] = int(prev.get("seen_count", 1)) + 1
+                        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+                            json.dump(history, f, indent=2, ensure_ascii=False)
+                        return
 
             history.append(entry)
             if len(history) > MAX_HISTORY_ENTRIES:

@@ -21,13 +21,39 @@ def _entry_listings(entry: dict[str, Any]) -> list[dict[str, Any]]:
     if section and section != "?":
         return [
             {
-                "section": section,
+                "section": entry.get("section", "?"),
                 "row": entry.get("row", "?"),
                 "price": entry.get("price", 0),
                 "count": entry.get("count", 0),
             }
         ]
     return []
+
+
+def _entry_key(entry: dict[str, Any]) -> tuple:
+    """A dedup key identifying a unique listing-set for an event.
+
+    The same listing re-detected over minutes (no one bought it yet) can be written
+    as several rows because the full-set fingerprint flips as surrounding inventory
+    churns. Collapsing on (event_id, listing-set) ensures each distinct set counts
+    once. Prefers the stored fingerprint; derives one from the listings otherwise.
+    """
+    event_id = entry.get("event_id", "")
+    fingerprint = entry.get("fingerprint")
+    if fingerprint:
+        return (event_id, fingerprint)
+    sig = tuple(
+        sorted(
+            (
+                str(g.get("section", "")),
+                str(g.get("row", "")),
+                float(g.get("price", 0) or 0),
+                int(g.get("count", 0) or 0),
+            )
+            for g in _entry_listings(entry)
+        )
+    )
+    return (event_id, sig)
 
 
 def count_bingo_in_history(history: list[dict[str, Any]], configs: list) -> dict[str, Any]:
@@ -45,9 +71,15 @@ def count_bingo_in_history(history: list[dict[str, Any]], configs: list) -> dict
         per_config.setdefault(name, 0)
 
     total = 0
+    seen_keys: set = set()
     for entry in history or []:
         if not isinstance(entry, dict):
             continue
+        # Count each distinct listing-set once, ignoring repeat detections.
+        key = _entry_key(entry)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
         listings = _entry_listings(entry)
         if not listings:
             continue
