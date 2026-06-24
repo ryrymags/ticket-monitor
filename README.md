@@ -9,7 +9,8 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 ## 📋 Recent Changes
 
 <!-- CHANGELOG_START -->
-- `a337a28`  2026-06-24  Add ntfy.sh push notifications with iOS app deep-linking
+- `e3ad7b5`  2026-06-24  Document ntfy push setup and iOS app deep-link mechanism in README
+- `4d73db2`  2026-06-24  Add ntfy.sh push notifications with iOS app deep-linking
 - `9ea780a`  2026-06-23  Make history de-duper runnable from terminal anywhere + add Mac launcher
 - `6e53adc`  2026-06-23  Add re-runnable ticket-history dedupe cleanup
 - `61fb6c4`  2026-06-23  Dedup repeat detections in BINGO counter and ticket history
@@ -18,7 +19,6 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 - `5bfa846`  2026-06-23  Fix false stall pings and stop non-BINGO @ mentions
 - `992e9e4`  2026-06-20  Overhaul notifications: quiet, BINGO-only, ping only when manual action is truly needed
 - `035e394`  2026-06-18  Respect non-BINGO alert toggle
-- `842e0d5`  2026-06-18  Add multi-BINGO configs and clearer Discord alerts
 
 Full history: [CHANGELOG.md](CHANGELOG.md)
 <!-- CHANGELOG_END -->
@@ -80,6 +80,52 @@ You need a free Discord server and a Webhook URL.
 3. Paste the URL in the app's **Notifications** tab
 4. (Optional) Add your Discord User ID for @mention pings when tickets appear
    - Enable **User Settings → Advanced → Developer Mode** in Discord, then right-click your name → **Copy User ID**
+
+---
+
+## 📲 Setting Up Phone Push Alerts for Friends (ntfy.sh)
+
+Want friends notified too — without making them use Discord? The monitor can also push
+ticket alerts to **[ntfy.sh](https://ntfy.sh)**, a free push app. Anyone who subscribes
+to your topic gets a phone notification the moment tickets are detected.
+
+**You (once):** in `config.yaml`, set the `ntfy:` block:
+```yaml
+ntfy:
+  enabled: true
+  topic: "bingo-tix-SOMETHING-UNGUESSABLE"   # treat like a password — anyone with it can read alerts
+  priority: "high"
+  app_deep_link: "https://ticketmaster.onelink.me/7u25/edpUS?deep_link_value={url_encoded}&af_force_deeplink=true&is_retargeting=true"
+```
+
+**Your friends (once each):** install **ntfy** ([iOS](https://apps.apple.com/us/app/ntfy/id1625396347) /
+[Android](https://play.google.com/store/apps/details?id=io.heckel.ntfy)) → tap **＋ Subscribe to topic**
+→ enter your exact topic name → allow notifications.
+
+**Test it:** double-click `test_notifications.command` (or run `python monitor.py --test-ticket-alert`).
+It sends a sample alert to Discord **and** everyone subscribed.
+
+Friends' pushes are throttled to match Discord's @-mention burst (loud at first, then quiet) —
+so a lingering listing won't spam their phones.
+
+### How the "open the Ticketmaster app" link works (the finicky part)
+
+iOS makes this harder than it should be — notes so we don't re-derive it:
+
+- **ntfy opens links in its own in-app browser**, which silently bypasses iOS
+  **Universal Links**. So a plain `ticketmaster.com/event/...` URL never hands off to the app.
+- **`ticketmaster://` only opens the app to its home screen** — there's no working event-path
+  custom scheme.
+- **The thing that works** is Ticketmaster's **AppsFlyer OneLink** (`ticketmaster.onelink.me/...`):
+  its JS redirect + `af_force_deeplink=true` can open the app *on the specific event*.
+- **But only from real Safari, not ntfy's in-app browser.** The trick: the notification's
+  **body tap (`click`) opens in real Safari**, whereas the action **buttons** open the in-app
+  browser. So the OneLink is wired to the **body tap**, and the **🌐 Open in Safari button** is
+  the plain event URL (a reliable fallback that also works without the app / on Android).
+- Net result: **tap the notification body → Ticketmaster app on the event** (occasionally needs a
+  second tap — that's AppsFlyer being flaky, not the monitor). The OneLink template lives in
+  `config.yaml` (`app_deep_link`), so if Ticketmaster ever changes it you can update it there with
+  no code changes.
 
 ---
 
