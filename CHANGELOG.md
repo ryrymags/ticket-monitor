@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `a337a28`  2026-06-24 11:16  Add ntfy.sh push notifications with iOS app deep-linking
+- `e3ad7b5`  2026-06-24 11:18  Document ntfy push setup and iOS app deep-link mechanism in README
+
+- `4d73db2`  2026-06-24 11:16  Add ntfy.sh push notifications with iOS app deep-linking
 
 - `9ea780a`  2026-06-23 19:12  Make history de-duper runnable from terminal anywhere + add Mac launcher
 
