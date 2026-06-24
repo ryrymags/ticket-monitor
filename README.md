@@ -9,7 +9,8 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 ## 📋 Recent Changes
 
 <!-- CHANGELOG_START -->
-- `bd397ab`  2026-06-23  Make history de-duper runnable from terminal anywhere + add Mac launcher
+- `a337a28`  2026-06-24  Add ntfy.sh push notifications with iOS app deep-linking
+- `9ea780a`  2026-06-23  Make history de-duper runnable from terminal anywhere + add Mac launcher
 - `6e53adc`  2026-06-23  Add re-runnable ticket-history dedupe cleanup
 - `61fb6c4`  2026-06-23  Dedup repeat detections in BINGO counter and ticket history
 - `94e965e`  2026-06-23  Provision Google Chrome in GUI setup scripts for the chrome channel
@@ -18,7 +19,6 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 - `992e9e4`  2026-06-20  Overhaul notifications: quiet, BINGO-only, ping only when manual action is truly needed
 - `035e394`  2026-06-18  Respect non-BINGO alert toggle
 - `842e0d5`  2026-06-18  Add multi-BINGO configs and clearer Discord alerts
-- `94ec911`  2026-04-07  Fix Playwright bot-detection spinner and simplify login bootstrap URL
 
 Full history: [CHANGELOG.md](CHANGELOG.md)
 <!-- CHANGELOG_END -->

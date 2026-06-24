@@ -15,6 +15,10 @@ def _config() -> SimpleNamespace:
         discord_username="Test",
         discord_ping_user_id="123456789",
         alerts_operational_to_discord=False,
+        ntfy_enabled=False,
+        ntfy_topics=[],
+        ntfy_server="https://ntfy.sh",
+        ntfy_priority="high",
         events=[
             SimpleNamespace(
                 name="Night 1",

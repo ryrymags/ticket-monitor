@@ -9,6 +9,7 @@ import re
 import time
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import quote
 
 from dateutil import tz
 
@@ -32,6 +33,143 @@ MAX_FIELD_NAME_LEN = 256
 MAX_FIELD_VALUE_LEN = 1000
 MAX_FOOTER_LEN = 200
 
+class NtfyNotifier:
+    """Sends ticket push alerts to one or more ntfy.sh topics.
+
+    A lightweight second channel so friends (who don't want Discord) can be
+    pinged on their phones when tickets are detected. Anyone subscribed to the
+    topic gets the push — no account required. Only ticket alerts fan out here;
+    operational/heartbeat noise stays on Discord.
+    """
+
+    def __init__(
+        self,
+        topics: list[str] | None = None,
+        server: str = "https://ntfy.sh",
+        priority: str = "high",
+        enabled: bool = True,
+        app_deep_link: str = "",
+    ):
+        self.topics = [t.strip() for t in (topics or []) if t and t.strip()]
+        self.server = server.rstrip("/")
+        self.priority = priority or "high"
+        self.enabled = bool(enabled) and bool(self.topics)
+        # Optional deep-link template that opens the native app. For Ticketmaster this
+        # is an AppsFlyer OneLink (https://ticketmaster.onelink.me/...) whose JS redirect
+        # + af_force_deeplink opens the app even from ntfy's in-app browser — something a
+        # plain Universal Link can't do there. Supports {url_encoded}, {url}, {event_id}.
+        self.app_deep_link = (app_deep_link or "").strip()
+        self.session = requests.Session()
+
+    # ntfy JSON-format priority is an int 1-5; we accept friendly string names.
+    _PRIORITY_MAP = {"urgent": 5, "max": 5, "high": 4, "default": 3, "low": 2, "min": 1}
+
+    def send_ticket(
+        self,
+        *,
+        title: str,
+        message: str,
+        event_url: str,
+        is_bingo: bool,
+    ) -> bool:
+        """Push a ticket alert to every configured topic. No-op if disabled.
+
+        Default action — body tap (``click``) — targets the app deep link (OneLink)
+        when configured: ntfy opens the body tap in real Safari, where the OneLink's
+        redirect hands off to the Ticketmaster app on the event. The ``view`` button
+        is the plain event URL as a normal "open in browser" fallback (works without
+        the app and on Android).
+        """
+        priority = "urgent" if is_bingo else self.priority
+        tags = ["tickets", "green_circle"] if is_bingo else ["tickets", "yellow_circle"]
+        click_url = self._build_deep_link(event_url) or event_url
+        actions = [{
+            "action": "view",
+            "label": "🌐 Open in Safari",
+            "url": event_url,
+            "clear": False,
+        }]
+        return self._post(title=title, message=message, priority=priority,
+                          tags=tags, click=click_url, actions=actions)
+
+    def _build_deep_link(self, event_url: str) -> str:
+        """Render the configured deep-link template, or "" if unconfigured/invalid.
+
+        Placeholders: {url_encoded} (percent-encoded event URL, for OneLink
+        deep_link_value), {url} (raw event URL), {event_id} (parsed from the URL).
+        """
+        if not self.app_deep_link:
+            return ""
+        m = re.search(r"/event/([A-Za-z0-9]+)", event_url)
+        event_id = m.group(1) if m else ""
+        try:
+            return self.app_deep_link.format(
+                url_encoded=quote(event_url, safe=""),
+                url=event_url,
+                event_id=event_id,
+            )
+        except (KeyError, IndexError, ValueError):
+            logger.warning("Invalid ntfy app_deep_link template: %s", self.app_deep_link)
+            return ""
+
+    def send_test(self) -> bool:
+        """Post a test push to confirm friends' subscriptions work."""
+        return self._post(
+            title="Ticket Monitor connected",
+            message=(
+                "You're subscribed. You'll get a push here the moment tickets "
+                "are detected for the monitored events."
+            ),
+            priority=self.priority,
+            tags=["white_check_mark"],
+            click="",
+            actions=None,
+        )
+
+    def _post(self, *, title: str, message: str, priority: str,
+              tags: list[str], click: str, actions: list[dict] | None = None) -> bool:
+        """Publish via ntfy's JSON format (one POST to the base URL per topic).
+
+        JSON avoids the comma/semicolon escaping pitfalls of the header form when
+        URLs are embedded in click/actions.
+        """
+        if not self.enabled:
+            return True
+        priority_int = self._PRIORITY_MAP.get(str(priority).lower(), 4)
+        all_ok = True
+        for topic in self.topics:
+            payload: dict[str, Any] = {
+                "topic": topic,
+                "title": title,
+                "message": message,
+                "priority": priority_int,
+                "tags": tags,
+            }
+            if click:
+                payload["click"] = click
+            if actions:
+                payload["actions"] = actions
+            try:
+                resp = self.session.post(self.server, json=payload, timeout=10)
+                if resp.status_code >= 400:
+                    logger.error("ntfy error %d for topic: %s",
+                                 resp.status_code, resp.text[:200])
+                    all_ok = False
+                else:
+                    logger.debug("ntfy push sent to topic")
+            except requests.RequestException:
+                # One retry on transient failure, then give up (never raise).
+                try:
+                    time.sleep(1)
+                    resp = self.session.post(self.server, json=payload, timeout=10)
+                    if resp.status_code >= 400:
+                        all_ok = False
+                except requests.RequestException as e2:
+                    logger.error("ntfy push failed for topic: %s", e2)
+                    all_ok = False
+        return all_ok
+
+
 class DiscordNotifier:
     """Sends formatted notifications to a Discord webhook."""
 
@@ -41,6 +179,7 @@ class DiscordNotifier:
         username: str = "Ticket Monitor",
         ping_user_id: str = "",
         operational_to_discord: bool = True,
+        ntfy: NtfyNotifier | None = None,
     ):
         self.webhook_url = webhook_url
         self.username = username
@@ -48,6 +187,8 @@ class DiscordNotifier:
         # When False, routine operational/self-heal messages are logged only and
         # never posted to Discord. Ticket alerts and manual-action pings always post.
         self.operational_to_discord = operational_to_discord
+        # Optional second channel for friends — fans out on ticket alerts only.
+        self.ntfy = ntfy
         self.session = requests.Session()
 
     def send_status_change(self, event_name: str, event_date: str, event_url: str,
@@ -234,6 +375,23 @@ class DiscordNotifier:
                 )
             except Exception as _hist_exc:
                 logger.debug("History write skipped: %s", _hist_exc)
+
+        # Fan out to ntfy (friends' phones). Gated on `mention` so friends get the
+        # same burst cadence as the Discord @-ping (loud at first, ≤1/min, then quiet
+        # after the episode) instead of an urgent push on every cooldown reminder.
+        # Guarded so a push failure can never break the Discord path.
+        if self.ntfy is not None and mention:
+            try:
+                ntfy_title = f"{'🟢 ' if is_bingo else '🟡 '}{status_label}: {event_name}"
+                ntfy_body = self._ntfy_body(match.get("label", ""), groups, matched_group)
+                self.ntfy.send_ticket(
+                    title=ntfy_title,
+                    message=ntfy_body,
+                    event_url=event_url,
+                    is_bingo=bool(is_bingo),
+                )
+            except Exception as _ntfy_exc:
+                logger.debug("ntfy push skipped: %s", _ntfy_exc)
 
         return sent
 
@@ -797,6 +955,39 @@ class DiscordNotifier:
             f"{count} ticket{'s' if count != 1 else ''} @ "
             f"**${price:,.2f}** each"
         )
+
+    @classmethod
+    def _ntfy_body(
+        cls,
+        label: str,
+        groups: list[dict[str, Any]],
+        matched_group: dict[str, Any] | None,
+    ) -> str:
+        """Build a plain-text (no markdown) ntfy push body from listing groups."""
+        lines: list[str] = []
+        if label:
+            lines.append(str(label))
+        ordered = sorted(
+            groups,
+            key=lambda x: (
+                0 if cls._same_listing_group(x, matched_group) else 1,
+                x.get("price", 0),
+                x.get("section", ""),
+            ),
+        )
+        for g in ordered[:8]:  # cap so the push stays readable
+            sect = g.get("section", "?")
+            row = g.get("row", "?")
+            price = g.get("price", 0.0)
+            count = g.get("count", 0)
+            row_str = f" Row {row}" if row and row != "?" else ""
+            marker = "→ " if cls._same_listing_group(g, matched_group) else "• "
+            lines.append(
+                f"{marker}{sect}{row_str} — {count} @ ${price:,.2f} ea"
+            )
+        if not groups:
+            lines.append("Open Ticketmaster to check availability.")
+        return "\n".join(lines) if lines else "Tickets detected."
 
     @staticmethod
     def _same_listing_group(left: dict[str, Any] | None, right: dict[str, Any] | None) -> bool:
