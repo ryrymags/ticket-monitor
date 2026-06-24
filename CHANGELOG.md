@@ -4,11 +4,13 @@ All notable changes to Ticket Monitor are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 <!-- CHANGELOG_START -->
-## [Unreleased] — 2026-06-23
+## [Unreleased] — 2026-06-24
 
 ### Changes
 
-- `bd397ab`  2026-06-23 19:12  Make history de-duper runnable from terminal anywhere + add Mac launcher
+- `a337a28`  2026-06-24 11:16  Add ntfy.sh push notifications with iOS app deep-linking
+
+- `9ea780a`  2026-06-23 19:12  Make history de-duper runnable from terminal anywhere + add Mac launcher
 
 - `6e53adc`  2026-06-23 19:08  Add re-runnable ticket-history dedupe cleanup
 

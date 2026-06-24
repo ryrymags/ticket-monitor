@@ -422,3 +422,172 @@ class TestHistorySeenCount:
         assert len(data) == 2  # one row for A, one for B
         a_row = next(e for e in data if e["listings"][0]["section"] == "LOGE20")
         assert a_row["seen_count"] == 2
+
+
+class TestNtfyNotifier:
+    """Verify the ntfy.sh push channel and its fan-out from ticket alerts."""
+
+    def test_send_ticket_posts_json_to_base_url_with_action(self):
+        from src.notifier import NtfyNotifier
+        ntfy = NtfyNotifier(topics=["secret-topic"], server="https://ntfy.sh")
+        with patch.object(ntfy.session, "post") as mock_post:
+            mock_post.return_value = MagicMock(status_code=200)
+            ok = ntfy.send_ticket(
+                title="BINGO: Tame Impala",
+                message="LOGE Row A - 4 @ $200.00 ea",
+                event_url="https://www.ticketmaster.com/event/ABC",
+                is_bingo=True,
+            )
+        assert ok is True
+        args, kwargs = mock_post.call_args
+        assert args[0] == "https://ntfy.sh"  # base URL, topic in JSON body
+        body = kwargs["json"]
+        assert body["topic"] == "secret-topic"
+        assert body["priority"] == 5  # bingo escalates to urgent/max
+        assert body["click"] == "https://www.ticketmaster.com/event/ABC"
+        assert body["actions"][0] == {
+            "action": "view",
+            "label": "🌐 Open in Safari",
+            "url": "https://www.ticketmaster.com/event/ABC",
+            "clear": False,
+        }
+
+    def test_app_deep_link_drives_body_tap_click(self):
+        from src.notifier import NtfyNotifier
+        onelink = ("https://ticketmaster.onelink.me/7u25/edpUS"
+                   "?deep_link_value={url_encoded}&af_force_deeplink=true")
+        ntfy = NtfyNotifier(topics=["t"], app_deep_link=onelink)
+        event_url = "https://www.ticketmaster.com/foo/event/ABC123"
+        with patch.object(ntfy.session, "post") as mock_post:
+            mock_post.return_value = MagicMock(status_code=200)
+            ntfy.send_ticket(title="BINGO", message="m",
+                             event_url=event_url, is_bingo=True)
+        body = mock_post.call_args[1]["json"]
+        # Body tap (click) carries the OneLink with the percent-encoded event URL.
+        assert body["click"].startswith("https://ticketmaster.onelink.me/7u25/edpUS")
+        assert "https%3A%2F%2Fwww.ticketmaster.com%2Ffoo%2Fevent%2FABC123" in body["click"]
+        # The single button remains the plain event URL (reliable fallback).
+        assert len(body["actions"]) == 1
+        assert body["actions"][0]["label"] == "🌐 Open in Safari"
+        assert body["actions"][0]["url"] == event_url
+
+    def test_no_deep_link_click_is_plain_event_url(self):
+        from src.notifier import NtfyNotifier
+        ntfy = NtfyNotifier(topics=["t"])  # no app_deep_link
+        with patch.object(ntfy.session, "post") as mock_post:
+            mock_post.return_value = MagicMock(status_code=200)
+            ntfy.send_ticket(title="t", message="m",
+                             event_url="https://x/event/ABC", is_bingo=True)
+        body = mock_post.call_args[1]["json"]
+        assert body["click"] == "https://x/event/ABC"
+        assert len(body["actions"]) == 1
+        assert body["actions"][0]["label"] == "🌐 Open in Safari"
+
+    def test_non_bingo_uses_configured_priority(self):
+        from src.notifier import NtfyNotifier
+        ntfy = NtfyNotifier(topics=["t"], priority="high")
+        with patch.object(ntfy.session, "post") as mock_post:
+            mock_post.return_value = MagicMock(status_code=200)
+            ntfy.send_ticket(title="t", message="m", event_url="u", is_bingo=False)
+        assert mock_post.call_args[1]["json"]["priority"] == 4  # high
+
+    def test_send_test_has_no_click_or_actions(self):
+        from src.notifier import NtfyNotifier
+        ntfy = NtfyNotifier(topics=["t"])
+        with patch.object(ntfy.session, "post") as mock_post:
+            mock_post.return_value = MagicMock(status_code=200)
+            ntfy.send_test()
+        body = mock_post.call_args[1]["json"]
+        assert "actions" not in body
+        assert "click" not in body
+
+    def test_disabled_when_no_topics_is_noop(self):
+        from src.notifier import NtfyNotifier
+        ntfy = NtfyNotifier(topics=[])
+        with patch.object(ntfy.session, "post") as mock_post:
+            assert ntfy.send_ticket(title="t", message="m", event_url="u", is_bingo=True) is True
+            assert ntfy.send_test() is True
+            mock_post.assert_not_called()
+
+    def test_explicitly_disabled_is_noop(self):
+        from src.notifier import NtfyNotifier
+        ntfy = NtfyNotifier(topics=["t"], enabled=False)
+        with patch.object(ntfy.session, "post") as mock_post:
+            assert ntfy.send_ticket(title="t", message="m", event_url="u", is_bingo=True) is True
+            mock_post.assert_not_called()
+
+    def test_posts_to_every_topic(self):
+        from src.notifier import NtfyNotifier
+        ntfy = NtfyNotifier(topics=["a", "b"])
+        with patch.object(ntfy.session, "post") as mock_post:
+            mock_post.return_value = MagicMock(status_code=200)
+            ntfy.send_test()
+        assert mock_post.call_count == 2
+
+    def test_ticket_alert_fans_out_to_ntfy(self):
+        from src.notifier import NtfyNotifier
+        ntfy = NtfyNotifier(topics=["t"])
+        notifier = DiscordNotifier(webhook_url="https://test", ntfy=ntfy)
+        with patch.object(notifier, "_send", return_value=True), \
+             patch.object(ntfy, "send_ticket", return_value=True) as mock_ntfy:
+            notifier.send_ticket_available(
+                event_name="Tame Impala",
+                event_date="2026-07-28",
+                event_url="https://www.ticketmaster.com/event/ABC",
+                signal_type="synthetic",
+                signal_confidence=1.0,
+                price_summary=None,
+                section_summary=None,
+                reason="manual_test",
+                listing_groups=[{"section": "LOGE", "row": "A", "price": 200.0, "count": 4}],
+            )
+        mock_ntfy.assert_called_once()
+        assert mock_ntfy.call_args[1]["event_url"] == "https://www.ticketmaster.com/event/ABC"
+
+    def test_ntfy_failure_does_not_break_discord(self):
+        from src.notifier import NtfyNotifier
+        ntfy = NtfyNotifier(topics=["t"])
+        notifier = DiscordNotifier(webhook_url="https://test", ntfy=ntfy)
+        with patch.object(notifier, "_send", return_value=True), \
+             patch.object(ntfy, "send_ticket", side_effect=RuntimeError("boom")):
+            sent = notifier.send_ticket_available(
+                event_name="E", event_date="2026-07-28",
+                event_url="http://x", signal_type="synthetic",
+                signal_confidence=1.0, price_summary=None,
+                section_summary=None, reason="manual_test",
+                listing_groups=[{"section": "A", "row": "1", "price": 10.0, "count": 1}],
+            )
+        assert sent is True  # discord path unaffected
+
+    def test_no_ntfy_push_when_mention_false(self):
+        from src.notifier import NtfyNotifier
+        ntfy = NtfyNotifier(topics=["t"])
+        notifier = DiscordNotifier(webhook_url="https://test", ntfy=ntfy)
+        with patch.object(notifier, "_send", return_value=True) as mock_send, \
+             patch.object(ntfy, "send_ticket", return_value=True) as mock_ntfy:
+            notifier.send_ticket_available(
+                event_name="E", event_date="2026-07-28",
+                event_url="http://x", signal_type="dom",
+                signal_confidence=1.0, price_summary=None,
+                section_summary=None, reason="cooldown_elapsed",
+                listing_groups=[{"section": "A", "row": "1", "price": 10.0, "count": 1}],
+                mention=False,
+            )
+        mock_ntfy.assert_not_called()      # friends are NOT pushed off-burst
+        mock_send.assert_called_once()     # Discord message still posts
+
+    def test_ntfy_push_when_mention_true(self):
+        from src.notifier import NtfyNotifier
+        ntfy = NtfyNotifier(topics=["t"])
+        notifier = DiscordNotifier(webhook_url="https://test", ntfy=ntfy)
+        with patch.object(notifier, "_send", return_value=True), \
+             patch.object(ntfy, "send_ticket", return_value=True) as mock_ntfy:
+            notifier.send_ticket_available(
+                event_name="E", event_date="2026-07-28",
+                event_url="http://x", signal_type="dom",
+                signal_confidence=1.0, price_summary=None,
+                section_summary=None, reason="signature_changed",
+                listing_groups=[{"section": "A", "row": "1", "price": 10.0, "count": 1}],
+                mention=True,
+            )
+        mock_ntfy.assert_called_once()

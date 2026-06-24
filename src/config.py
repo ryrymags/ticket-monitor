@@ -31,6 +31,12 @@ class MonitorConfig:
     discord_username: str
     discord_ping_user_id: str
 
+    # ntfy.sh push (optional second channel for friends)
+    ntfy_enabled: bool
+    ntfy_topics: list[str]
+    ntfy_server: str
+    ntfy_priority: str
+
     # Events
     events: list[EventConfig]
 
@@ -120,6 +126,11 @@ class MonitorConfig:
     log_max_file_size_mb: int
     log_backup_count: int
 
+    # ntfy app deep link (optional; defaulted so existing constructions are unaffected).
+    # Template that opens the native app — for Ticketmaster, an AppsFlyer OneLink.
+    # Supports {url_encoded}, {url}, {event_id}. Empty = no "Open in App" button.
+    ntfy_app_deep_link: str = ""
+
 
 def load_config(path: str = "config.yaml") -> MonitorConfig:
     """Load and validate configuration from a YAML file."""
@@ -134,6 +145,7 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
 
     # Required top-level keys
     discord = raw.get("discord", {})
+    ntfy = raw.get("ntfy", {})
     events_raw = raw.get("events", [])
     browser = raw.get("browser", {})
     alerts = raw.get("alerts", {})
@@ -154,6 +166,24 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
     webhook_url = (os.environ.get("DISCORD_WEBHOOK_URL") or discord.get("webhook_url", "")).strip()
     if not webhook_url or webhook_url == "YOUR_WEBHOOK_URL_HERE":
         errors.append("discord.webhook_url is required — create one in Server Settings > Integrations > Webhooks")
+
+    # ntfy.sh — optional. Env NTFY_TOPIC (comma-separated) overrides config.
+    # Accept either `topic:` (string) or `topics:` (list). Opt-in: never blocks
+    # startup, so it is intentionally excluded from required-field validation.
+    env_topics = os.environ.get("NTFY_TOPIC", "")
+    if env_topics.strip():
+        ntfy_topics = [t.strip() for t in env_topics.split(",") if t.strip()]
+    else:
+        raw_topics = ntfy.get("topics")
+        if isinstance(raw_topics, list):
+            ntfy_topics = [str(t).strip() for t in raw_topics if str(t).strip()]
+        else:
+            single = str(ntfy.get("topic", "")).strip()
+            ntfy_topics = [single] if single else []
+    ntfy_enabled = bool(ntfy.get("enabled", True)) and bool(ntfy_topics)
+    ntfy_server = str(ntfy.get("server", "https://ntfy.sh")).strip() or "https://ntfy.sh"
+    ntfy_priority = str(ntfy.get("priority", "high")).strip() or "high"
+    ntfy_app_deep_link = str(ntfy.get("app_deep_link", "")).strip()
 
     if not events_raw:
         errors.append("events: at least one event must be configured")
@@ -532,6 +562,11 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
         discord_webhook_url=webhook_url,
         discord_username=str(discord.get("username", "Ticket Monitor")),
         discord_ping_user_id=str(discord.get("ping_user_id", "")).strip(),
+        ntfy_enabled=ntfy_enabled,
+        ntfy_topics=ntfy_topics,
+        ntfy_server=ntfy_server,
+        ntfy_priority=ntfy_priority,
+        ntfy_app_deep_link=ntfy_app_deep_link,
         events=events,
         browser_storage_state_path=storage_state_path,
         browser_session_mode=browser_session_mode,

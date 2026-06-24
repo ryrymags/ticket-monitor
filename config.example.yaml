@@ -11,6 +11,19 @@ discord:
   username: "Ticket Monitor"                 # The bot name shown in Discord
   ping_user_id: ""                           # Your Discord user ID for @mentions (optional)
 
+# ── ntfy.sh push notifications (optional) ──────────────────────────────────
+# A second channel so friends get phone pushes without Discord. They install the
+# free ntfy app and subscribe to your topic (no account needed). Only ticket
+# alerts fan out here, throttled to match Discord's @-mention burst (no spam).
+ntfy:
+  enabled: false                             # Set true to turn on phone pushes
+  topic: "bingo-tix-CHANGE-ME"               # UNGUESSABLE name — anyone who knows it can read alerts
+  priority: "high"                           # urgent/high/default/low/min
+  # "Open in Safari" button uses the plain event URL; the notification BODY tap uses
+  # this deep link to open the Ticketmaster APP on the event (AppsFlyer OneLink —
+  # {url_encoded} is the percent-encoded event URL). Leave blank to disable the deep link.
+  app_deep_link: "https://ticketmaster.onelink.me/7u25/edpUS?deep_link_value={url_encoded}&af_force_deeplink=true&is_retargeting=true"
+
 # ── Events to monitor ─────────────────────────────────────────────────────
 # Add one entry per event. Paste the full Ticketmaster URL.
 events:
