@@ -29,15 +29,23 @@ BURST_PHASE1_SECONDS = 120
 BURST_PHASE2_SECONDS = 300
 BURST_PHASE2_INTERVAL_SECONDS = 60
 BURST_HARD_FAILSAFE_SECONDS = 900
+# Absolute path so the fallback terminal commands work from any directory — the old
+# relative "scripts/monitorctl.sh" only worked if you'd already cd'd into the repo.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_MONITORCTL = os.path.join(_REPO_ROOT, "scripts", "monitorctl.sh")
+
+# App-first guidance: the GUI already has a one-click re-login (Login tab → "Log In to
+# Ticketmaster"), so point there before any terminal commands.
 REAUTH_MANUAL_STEPS = [
-    "scripts/monitorctl.sh reauth",
-    "python3 monitor.py --bootstrap-session --config config.yaml",
-    "scripts/monitorctl.sh doctor",
+    "Open the Ticket Monitor app → Login tab → click “Log In to Ticketmaster” (easiest fix).",
+    "Or, from a terminal:",
+    f"{_MONITORCTL} reauth",
 ]
 EVENT_STALE_MANUAL_STEPS = [
-    "scripts/monitorctl.sh status",
-    "scripts/monitorctl.sh doctor",
-    "scripts/monitorctl.sh reauth",
+    "Open the Ticket Monitor app, then check the Monitor tab and Live Logs.",
+    "If it doesn’t clear on its own, from a terminal:",
+    f"{_MONITORCTL} doctor",
+    f"{_MONITORCTL} reauth",
 ]
 
 
@@ -95,6 +103,9 @@ class MonitorScheduler:
         # Adaptive cadence: multiplier (>= 1.0) applied to the random poll floor.
         # Grows when a cycle is blocked/challenged, decays back toward 1.0 when healthy.
         self._cadence_backoff: float = 1.0
+        # Challenge circuit-breaker: consecutive captcha/challenge (or 429) checks drive
+        # an exponential cooldown so we stop hammering a fingerprint that's being blocked.
+        self._consecutive_challenges: int = 0
 
     def stop(self):
         """Signal the loop to stop."""
@@ -147,7 +158,11 @@ class MonitorScheduler:
 
             # Decide (every cycle) whether the monitor has been stuck long enough
             # to warrant a single manual-action ping.
-            self._evaluate_manual_action_escalation(datetime.now(timezone.utc))
+            now = datetime.now(timezone.utc)
+            self._evaluate_manual_action_escalation(now)
+            # A live challenge cooldown overrides the normal cadence so we stop probing
+            # a fingerprint that's being actively blocked.
+            sleep_time = self._apply_challenge_cooldown(sleep_time, now)
 
             if not self._running:
                 break
@@ -340,6 +355,10 @@ class MonitorScheduler:
         else:
             outcome = "healthy"
         self.state.record_check_outcome(outcome, now)
+
+        # Challenge circuit-breaker: back fully off on captcha/challenge or 429 so we
+        # stop feeding the block; clear it the moment a check comes back clean.
+        self._update_challenge_cooldown(result=result, status=status, now=now)
 
         if blind:
             count = self.state.increment_consecutive_blocked(event_id)
@@ -674,32 +693,36 @@ class MonitorScheduler:
 
     # ---- Manual-action escalation ----
 
-    def _is_monitor_degraded(self, now: datetime) -> bool:
-        """True when the monitor genuinely can't get ticket data and self-heal hasn't fixed it.
+    def _monitor_degraded_reason(self, now: datetime) -> str | None:
+        """Return WHY the monitor is degraded (or None if healthy).
 
-        Covers: any event in outage (blind/blocked), stale event polling, or auth
-        paused after repeated re-login failures. A stale account session alone is
-        NOT degraded — Face Value Exchange listings still load without it.
+        One of: ``outage`` (any event blind/blocked), ``stale`` (event polling has
+        gone stale), or ``auth_paused`` (auto re-login paused after repeated failures).
+        A stale account session alone is NOT degraded — Face Value Exchange listings
+        still load without it. This single function backs both the manual-action ping
+        and the persisted health state the GUI renders, so the two can never drift.
         """
         if any(self.state.get_in_outage_state(ev.event_id) for ev in self.config.events):
-            return True
+            return "outage"
         if self._stale_event_alerted:
-            return True
+            return "stale"
         pause_until = self.state.get_auth_pause_until()
         if pause_until is not None and now < pause_until:
-            return True
-        return False
+            return "auth_paused"
+        return None
 
-    def _manual_action_summary(self, now: datetime) -> tuple[str, list[str]]:
+    def _is_monitor_degraded(self, now: datetime) -> bool:
+        return self._monitor_degraded_reason(now) is not None
+
+    def _manual_action_summary(self, reason: str | None) -> tuple[str, list[str]]:
         """Plain-English description + next steps for the current degraded state."""
-        pause_until = self.state.get_auth_pause_until()
-        if pause_until is not None and now < pause_until:
+        if reason == "auth_paused":
             return (
                 "Auto re-login keeps failing, so the monitor can't refresh your "
                 "Ticketmaster session. It needs you to log in manually.",
                 REAUTH_MANUAL_STEPS,
             )
-        if self._stale_event_alerted:
+        if reason == "stale":
             return (
                 "The monitor has stopped getting fresh data for your event(s) and "
                 "auto-recovery hasn't fixed it.",
@@ -716,16 +739,21 @@ class MonitorScheduler:
         past the grace window — giving self-healing time to work first."""
         now = now or datetime.now(timezone.utc)
 
-        if not self._is_monitor_degraded(now):
+        reason = self._monitor_degraded_reason(now)
+        if reason is None:
             if self.state.get_attention_since() is not None or self.state.get_attention_alerted():
                 logger.info("Monitor recovered; clearing manual-action escalation state")
                 self.state.clear_attention()
+            self.state.set_degraded_state(False)
             return
 
         since = self.state.get_attention_since()
         if since is None:
             self.state.set_attention_since(now)
-            return
+            since = now
+        # Mirror the ping's exact condition into state.json so the GUI shows the same
+        # thing (incl. auth-pause/stale, which were previously invisible to the GUI).
+        self.state.set_degraded_state(True, reason=reason, since=since)
 
         if self.state.get_attention_alerted():
             return
@@ -735,7 +763,7 @@ class MonitorScheduler:
         if degraded_seconds < delay:
             return
 
-        message, next_steps = self._manual_action_summary(now)
+        message, next_steps = self._manual_action_summary(reason)
         minutes = int(degraded_seconds // 60)
         self.notifier.send_critical_attention(
             message,
@@ -884,6 +912,48 @@ class MonitorScheduler:
         exponent = max(0, self._consecutive_runtime_errors - 1)
         candidate = base * (self.config.backoff_multiplier ** exponent)
         return float(min(candidate, self.config.max_backoff_seconds))
+
+    def _update_challenge_cooldown(self, *, result, status, now: datetime):
+        """Grow/clear the challenge cooldown based on the latest probe.
+
+        Captcha/challenge or HTTP 429 → exponential cooldown (base * 2^(n-1), capped),
+        with the server's Retry-After honored as a floor. A clean check resets it.
+        """
+        is_challenge = bool(result.challenge_detected) or status == 429
+        if not is_challenge:
+            if self._consecutive_challenges or self.state.get_challenge_cooldown_until() is not None:
+                self._consecutive_challenges = 0
+                self.state.set_challenge_cooldown_until(None)
+            return
+
+        self._consecutive_challenges += 1
+        base = max(1, int(self.config.browser_challenge_cooldown_base_seconds))
+        cap = max(base, int(self.config.browser_challenge_cooldown_max_seconds))
+        cooldown = min(base * (2 ** (self._consecutive_challenges - 1)), cap)
+
+        retry_after = None
+        if isinstance(result.raw_indicators, dict):
+            retry_after = result.raw_indicators.get("retry_after_seconds")
+        if isinstance(retry_after, int) and retry_after > 0:
+            cooldown = max(cooldown, min(retry_after, cap))
+
+        self.state.set_challenge_cooldown_until(now + timedelta(seconds=cooldown))
+        logger.warning(
+            "Challenge circuit-breaker: cooling down %ds (consecutive=%d, retry_after=%s)",
+            cooldown,
+            self._consecutive_challenges,
+            retry_after,
+        )
+
+    def _apply_challenge_cooldown(self, sleep_time: float, now: datetime) -> float:
+        """Extend this cycle's sleep to cover an active challenge cooldown."""
+        until = self.state.get_challenge_cooldown_until()
+        if until is not None and now < until:
+            remaining = (until - now).total_seconds()
+            if remaining > sleep_time:
+                logger.info("Challenge cooldown active: sleeping %.0fs before next probe", remaining)
+                return remaining
+        return sleep_time
 
     def _interruptible_sleep(self, seconds: float):
         end = time.monotonic() + seconds

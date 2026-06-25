@@ -397,8 +397,11 @@ class BrowserProbe:
             else:
                 response = page.goto(event_url, wait_until="domcontentloaded", timeout=timeout_ms)
 
+            retry_after_seconds: int | None = None
             if response is not None:
                 response_status = response.status
+                if response_status == 429:
+                    retry_after_seconds = self._parse_retry_after(response)
 
             page.wait_for_timeout(1200)
             html = page.content()
@@ -446,6 +449,7 @@ class BrowserProbe:
                     "availability_count": network_snapshot.availability_count,
                     "listing_groups": self._listing_groups_debug(network_snapshot.listing_groups),
                     "page_title": page_title,
+                    "retry_after_seconds": retry_after_seconds,
                 },
                 listing_summary=self._listing_summary(network_snapshot.listing_groups),
             )
@@ -684,6 +688,23 @@ class BrowserProbe:
     @staticmethod
     def _contains_any(text: str, values: Iterable[str]) -> bool:
         return any(v in text for v in values)
+
+    @staticmethod
+    def _parse_retry_after(response) -> int | None:
+        """Extract a delay (seconds) from a 429's Retry-After header. Supports the
+        delta-seconds form (e.g. "120"); returns None for absent/unparseable values
+        or the HTTP-date form (rare here, not worth the dependency)."""
+        try:
+            raw = response.headers.get("retry-after")
+        except Exception:
+            return None
+        if not raw:
+            return None
+        raw = str(raw).strip()
+        if raw.isdigit():
+            value = int(raw)
+            return value if value > 0 else None
+        return None
 
     def _detect_challenge(self, body_text_lower: str, html_lower: str, page_title: str) -> bool:
         # Prefer visible text + title, not raw HTML token noise.

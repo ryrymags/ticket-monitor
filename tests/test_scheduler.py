@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from src.browser_probe import BrowserProbeError
@@ -39,6 +40,8 @@ def _make_config(**overrides) -> MonitorConfig:
         browser_navigation_timeout_seconds=20,
         browser_challenge_threshold=5,
         browser_challenge_retry_seconds=60,
+        browser_challenge_cooldown_base_seconds=60,
+        browser_challenge_cooldown_max_seconds=1800,
         event_stagger_seconds=6,
         browser_adaptive_backoff_enabled=True,
         browser_adaptive_backoff_multiplier=2.0,
@@ -829,6 +832,15 @@ class TestManualActionEscalation:
         assert scheduler.state.get_attention_since() is None
         assert scheduler.state.get_attention_alerted() is False
 
+    def test_auth_pause_copy_points_at_app_and_absolute_path(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        message, steps = scheduler._manual_action_summary("auth_paused")
+        assert "log in" in message.lower()
+        joined = " ".join(steps)
+        assert "Login tab" in joined
+        # Fallback terminal command uses an absolute monitorctl.sh path, not a relative one.
+        assert any(s.startswith("/") and s.endswith("monitorctl.sh reauth") for s in steps)
+
 
 class TestNonBingoGlobalGate:
     def _floor_listing(self):
@@ -927,3 +939,126 @@ class TestCheckOutcomeRecording:
 
         outcomes = [c.args[0] for c in scheduler.state.record_check_outcome.call_args_list]
         assert outcomes == ["healthy", "blocked", "challenge"]
+
+
+class TestDegradedStatePersistence:
+    """The GUI reads health.degraded* from state.json; it must match the exact
+    condition that drives the manual-action ping (single source of truth)."""
+
+    def test_outage_persists_degraded_reason(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        event = scheduler.config.events[0]
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        scheduler.state.set_in_outage_state(event.event_id, True)
+
+        scheduler._evaluate_manual_action_escalation(base)
+
+        snap = scheduler.state.get_degraded_state()
+        assert snap["degraded"] is True
+        assert snap["reason"] == "outage"
+        assert snap["since"] is not None
+
+    def test_auth_pause_persists_degraded_even_when_checks_fresh(self, tmp_path):
+        # The discrepancy bug: auth paused → ping fires, but the GUI used to show green
+        # because Face Value Exchange listings still load. Now it's persisted as degraded.
+        scheduler = _make_scheduler(tmp_path)
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        scheduler.state.set_auth_pause_until(base + timedelta(hours=1))
+
+        scheduler._evaluate_manual_action_escalation(base)
+
+        snap = scheduler.state.get_degraded_state()
+        assert snap["degraded"] is True
+        assert snap["reason"] == "auth_paused"
+
+    def test_recovery_clears_degraded_state(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        event = scheduler.config.events[0]
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        scheduler.state.set_in_outage_state(event.event_id, True)
+        scheduler._evaluate_manual_action_escalation(base)
+        assert scheduler.state.get_degraded_state()["degraded"] is True
+
+        scheduler.state.set_in_outage_state(event.event_id, False)
+        scheduler._evaluate_manual_action_escalation(base + timedelta(seconds=10))
+
+        assert scheduler.state.get_degraded_state()["degraded"] is False
+        assert scheduler.state.get_degraded_state()["reason"] is None
+
+
+class TestChallengeCircuitBreaker:
+    @staticmethod
+    def _result(*, challenge=False, retry_after=None):
+        return SimpleNamespace(
+            challenge_detected=challenge,
+            raw_indicators={"retry_after_seconds": retry_after},
+        )
+
+    def test_cooldown_grows_exponentially(self, tmp_path):
+        scheduler = _make_scheduler(
+            tmp_path,
+            _make_config(
+                browser_challenge_cooldown_base_seconds=60,
+                browser_challenge_cooldown_max_seconds=1800,
+            ),
+        )
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        for expected in (60, 120, 240):
+            scheduler._update_challenge_cooldown(
+                result=self._result(challenge=True), status=None, now=base
+            )
+            assert scheduler.state.get_challenge_cooldown_until() == base + timedelta(seconds=expected)
+
+    def test_cooldown_is_capped(self, tmp_path):
+        scheduler = _make_scheduler(
+            tmp_path,
+            _make_config(
+                browser_challenge_cooldown_base_seconds=600,
+                browser_challenge_cooldown_max_seconds=1800,
+            ),
+        )
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        for _ in range(6):
+            scheduler._update_challenge_cooldown(
+                result=self._result(challenge=True), status=None, now=base
+            )
+        assert scheduler.state.get_challenge_cooldown_until() == base + timedelta(seconds=1800)
+
+    def test_clean_check_resets_cooldown(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        scheduler._update_challenge_cooldown(
+            result=self._result(challenge=True), status=None, now=base
+        )
+        assert scheduler.state.get_challenge_cooldown_until() is not None
+
+        scheduler._update_challenge_cooldown(
+            result=self._result(challenge=False), status=200, now=base
+        )
+        assert scheduler.state.get_challenge_cooldown_until() is None
+        assert scheduler._consecutive_challenges == 0
+
+    def test_429_with_retry_after_sets_floor(self, tmp_path):
+        scheduler = _make_scheduler(
+            tmp_path,
+            _make_config(
+                browser_challenge_cooldown_base_seconds=60,
+                browser_challenge_cooldown_max_seconds=1800,
+            ),
+        )
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        # 429 counts as a challenge even without the challenge flag; Retry-After (300s)
+        # exceeds the base 60s cooldown and becomes the floor.
+        scheduler._update_challenge_cooldown(
+            result=self._result(challenge=False, retry_after=300), status=429, now=base
+        )
+        assert scheduler.state.get_challenge_cooldown_until() == base + timedelta(seconds=300)
+
+    def test_apply_cooldown_extends_sleep(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        scheduler.state.set_challenge_cooldown_until(base + timedelta(seconds=400))
+        assert scheduler._apply_challenge_cooldown(30.0, base) == 400.0
+
+        scheduler.state.set_challenge_cooldown_until(None)
+        assert scheduler._apply_challenge_cooldown(30.0, base) == 30.0

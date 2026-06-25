@@ -35,6 +35,8 @@ def _make_config(**overrides) -> MonitorConfig:
         browser_navigation_timeout_seconds=20,
         browser_challenge_threshold=5,
         browser_challenge_retry_seconds=60,
+        browser_challenge_cooldown_base_seconds=60,
+        browser_challenge_cooldown_max_seconds=1800,
         event_stagger_seconds=6,
         browser_adaptive_backoff_enabled=True,
         browser_adaptive_backoff_multiplier=2.0,

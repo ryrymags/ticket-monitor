@@ -325,6 +325,37 @@ class MonitorState:
         self._health()["auth_pause_until"] = _dt_to_iso(dt) if dt else None
         self.save()
 
+    def set_degraded_state(
+        self,
+        degraded: bool,
+        *,
+        reason: str | None = None,
+        since: datetime | None = None,
+    ):
+        """Persist the SAME degraded condition that drives the manual-action ping so
+        the GUI can mirror it exactly (single source of truth). ``reason`` is one of
+        ``outage`` / ``stale`` / ``auth_paused`` when degraded, else None."""
+        health = self._health()
+        health["degraded"] = bool(degraded)
+        health["degraded_reason"] = reason if degraded else None
+        health["degraded_since"] = _dt_to_iso(since) if (degraded and since) else None
+        self.save()
+
+    def get_degraded_state(self) -> dict:
+        health = self._health()
+        return {
+            "degraded": bool(health.get("degraded", False)),
+            "reason": health.get("degraded_reason"),
+            "since": _iso_to_dt(health.get("degraded_since")),
+        }
+
+    def get_challenge_cooldown_until(self) -> datetime | None:
+        return _iso_to_dt(self._health().get("challenge_cooldown_until"))
+
+    def set_challenge_cooldown_until(self, dt: datetime | None):
+        self._health()["challenge_cooldown_until"] = _dt_to_iso(dt) if dt else None
+        self.save()
+
     def record_guardian_fix_attempt(self, dt: datetime | None = None):
         now = dt or datetime.now(timezone.utc)
         health = self._health()

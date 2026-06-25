@@ -56,6 +56,11 @@ class MonitorConfig:
     browser_navigation_timeout_seconds: int
     browser_challenge_threshold: int
     browser_challenge_retry_seconds: int
+    # Challenge circuit-breaker: on a captcha/challenge (or honoring Retry-After), the
+    # loop backs fully off for an exponentially-growing cooldown instead of hammering at
+    # the capped cadence (which sustains the block). Resets on a clean check.
+    browser_challenge_cooldown_base_seconds: int
+    browser_challenge_cooldown_max_seconds: int
     event_stagger_seconds: int
     # Adaptive cadence + stealth (experimental — all flag-gated for easy revert)
     browser_adaptive_backoff_enabled: bool
@@ -262,6 +267,12 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
     )
     browser_challenge_retry_seconds = safe_int(
         browser, "challenge_retry_seconds", 60, "browser.challenge_retry_seconds"
+    )
+    browser_challenge_cooldown_base_seconds = safe_int(
+        browser, "challenge_cooldown_base_seconds", 60, "browser.challenge_cooldown_base_seconds"
+    )
+    browser_challenge_cooldown_max_seconds = safe_int(
+        browser, "challenge_cooldown_max_seconds", 1800, "browser.challenge_cooldown_max_seconds"
     )
     event_stagger_seconds = safe_int(browser, "event_stagger_seconds", 6, "browser.event_stagger_seconds")
     # Adaptive cadence + stealth (experimental — every knob has a safe off value)
@@ -583,6 +594,8 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
         browser_navigation_timeout_seconds=browser_navigation_timeout_seconds,
         browser_challenge_threshold=browser_challenge_threshold,
         browser_challenge_retry_seconds=browser_challenge_retry_seconds,
+        browser_challenge_cooldown_base_seconds=browser_challenge_cooldown_base_seconds,
+        browser_challenge_cooldown_max_seconds=browser_challenge_cooldown_max_seconds,
         event_stagger_seconds=event_stagger_seconds,
         browser_adaptive_backoff_enabled=browser_adaptive_backoff_enabled,
         browser_adaptive_backoff_multiplier=browser_adaptive_backoff_multiplier,
