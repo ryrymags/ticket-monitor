@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `e3ad7b5`  2026-06-24 11:18  Document ntfy push setup and iOS app deep-link mechanism in README
+- `a64e4f1`  2026-06-24 22:50  Sync GUI/ping degraded state, add in-app fixes, challenge cooldown
+
+- `4416213`  2026-06-24 11:18  Document ntfy push setup and iOS app deep-link mechanism in README
 
 - `4d73db2`  2026-06-24 11:16  Add ntfy.sh push notifications with iOS app deep-linking
 

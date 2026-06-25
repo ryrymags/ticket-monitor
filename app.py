@@ -182,6 +182,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "navigation_timeout_seconds": 20,
         "challenge_threshold": 5,
         "challenge_retry_seconds": 60,
+        "challenge_cooldown_base_seconds": 60,
+        "challenge_cooldown_max_seconds": 1800,
         "event_stagger_seconds": 6,
         "cdp_endpoint_url": "http://127.0.0.1:9222",
         "cdp_connect_timeout_seconds": 10,
@@ -1233,7 +1235,28 @@ class TicketMonitorApp(ctk.CTk):
                 "   If heartbeats stop, open the app and check the Live Logs."
             ),
             font=ctk.CTkFont(size=11), text_color="gray60", anchor="w", justify="left",
-        ).grid(row=1, column=0, padx=14, pady=(0, 10), sticky="w")
+        ).grid(row=1, column=0, padx=14, pady=(0, 6), sticky="w")
+
+        # One-click fixes — no terminal needed. These mirror scripts/monitorctl.sh.
+        fix_row = ctk.CTkFrame(info_frame, fg_color="transparent")
+        fix_row.grid(row=2, column=0, padx=14, pady=(0, 6), sticky="w")
+        ctk.CTkButton(
+            fix_row, text="🔑  Re-authenticate", fg_color=COLOR_BLUE, hover_color="#2980b9",
+            command=self._start_bootstrap_session,
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            fix_row, text="🩺  Run Doctor", fg_color=COLOR_GRAY,
+            command=lambda: self._run_monitorctl("doctor"),
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            fix_row, text="📋  Status", fg_color=COLOR_GRAY,
+            command=lambda: self._run_monitorctl("status"),
+        ).pack(side="left")
+        self._fix_status_label = ctk.CTkLabel(
+            info_frame, text="", font=ctk.CTkFont(size=11), text_color="gray55",
+            anchor="w", justify="left",
+        )
+        self._fix_status_label.grid(row=3, column=0, padx=14, pady=(0, 10), sticky="w")
 
         # ── Log viewer ────────────────────────────────────────────────────────
         log_header = ctk.CTkFrame(frame, fg_color="transparent")
@@ -1267,6 +1290,36 @@ class TicketMonitorApp(ctk.CTk):
         self._log_text.insert("end", line)
         self._log_text.see("end")
         self._log_text.configure(state="disabled")
+
+    def _run_monitorctl(self, sub: str):
+        """Run scripts/monitorctl.sh <sub> from the GUI so the user never needs a
+        terminal. Output goes to the status label + Live Logs. Threaded so the UI
+        stays responsive (doctor stops/restarts services and can take a while)."""
+        repo_root = os.path.dirname(os.path.abspath(__file__))
+        script = os.path.join(repo_root, "scripts", "monitorctl.sh")
+        if not os.path.exists(script):
+            self._fix_status_label.configure(text=f"❌  Not found: {script}", text_color=COLOR_RED)
+            return
+        self._fix_status_label.configure(text=f"⏳  Running {sub}…", text_color="gray55")
+        self.update()
+
+        def run():
+            try:
+                result = subprocess.run(
+                    ["bash", script, sub],
+                    capture_output=True, text=True, timeout=180, cwd=repo_root,
+                )
+                out = (result.stdout + result.stderr).strip()
+                ok = result.returncode == 0
+                msg = f"{'✅' if ok else '❌'}  {sub}: {'done' if ok else f'exit {result.returncode}'}"
+                color = COLOR_GREEN if ok else COLOR_RED
+                self.after(0, lambda: self._append_log(f"\n$ monitorctl.sh {sub}\n{out}\n"))
+            except Exception as exc:
+                msg = f"❌  {sub} error: {exc}"
+                color = COLOR_RED
+            self.after(0, lambda: self._fix_status_label.configure(text=msg, text_color=color))
+
+        threading.Thread(target=run, daemon=True).start()
 
     # ── Monitor process management ────────────────────────────────────────────
 
@@ -1418,13 +1471,57 @@ class TicketMonitorApp(ctk.CTk):
         except Exception:
             pass
 
+    def _degraded_banner_text(self, health: dict) -> tuple[str, str] | None:
+        """Render the SAME degraded condition that drives the manual-action ping
+        (persisted by the scheduler) so the GUI never shows green while a 'go fix it'
+        ping is live. Returns (text, color) or None when healthy."""
+        if not health.get("degraded"):
+            return None
+        reason = health.get("reason")
+        alerted = bool(health.get("attention_alerted"))
+        if reason == "auth_paused":
+            head = "🔴  Login expired — auto re-login failed."
+            fix = "Open the Login tab and click 'Log In to Ticketmaster', or use Re-authenticate below."
+        elif reason == "stale":
+            head = "🔴  No fresh data for your event(s) — auto-recovery is working on it."
+            fix = "If this persists, try Run Doctor / Re-authenticate below."
+        else:
+            head = "🔴  Monitor blocked — Ticketmaster keeps returning blocked / no data."
+            fix = "Self-healing is backing off and retrying automatically."
+        tail = (
+            "An action alert has been sent to Discord."
+            if alerted
+            else "Self-healing for up to 15 min before alerting you."
+        )
+        return (f"{head}\n{fix}\n{tail}", COLOR_RED)
+
     def _refresh_monitor_events_panel(self):
         state = load_state()
         events_state = state.get("events", {})
+        health = state.get("health", {}) if isinstance(state.get("health"), dict) else {}
         now = datetime.now(timezone.utc)
+        try:
+            stale_threshold = int(self._cfg.get("alerts", {}).get("event_check_stale_seconds", 180))
+        except (TypeError, ValueError):
+            stale_threshold = 180
 
         for w in self._monitor_events_frame.winfo_children():
             w.destroy()
+
+        # Top-level health banner mirrors the persisted degraded state (incl. auth-pause
+        # and staleness, which the per-event rows below can't see on their own).
+        base_row = 0
+        banner = self._degraded_banner_text(health)
+        if banner is not None:
+            text, color = banner
+            bf = ctk.CTkFrame(self._monitor_events_frame, fg_color="#3a1416", corner_radius=8)
+            bf.grid(row=0, column=0, padx=10, pady=(10, 6), sticky="ew")
+            bf.grid_columnconfigure(0, weight=1)
+            ctk.CTkLabel(
+                bf, text=text, text_color=color, anchor="w", justify="left",
+                font=ctk.CTkFont(size=12, weight="bold"),
+            ).grid(row=0, column=0, padx=12, pady=10, sticky="w")
+            base_row = 1
 
         if not self._events:
             # Detect first-run: no events AND no webhook configured yet.
@@ -1442,9 +1539,9 @@ class TicketMonitorApp(ctk.CTk):
                     ),
                     text_color=COLOR_BLUE, anchor="w", justify="left",
                     font=ctk.CTkFont(size=12),
-                ).grid(row=0, column=0, padx=16, pady=16, sticky="w")
+                ).grid(row=base_row, column=0, padx=16, pady=16, sticky="w")
             else:
-                ctk.CTkLabel(self._monitor_events_frame, text="No events added yet. Go to the Events tab to add a Ticketmaster URL.", text_color="gray50").grid(row=0, column=0, padx=16, pady=16)
+                ctk.CTkLabel(self._monitor_events_frame, text="No events added yet. Go to the Events tab to add a Ticketmaster URL.", text_color="gray50").grid(row=base_row, column=0, padx=16, pady=16)
             return
 
         for i, ev in enumerate(self._events):
@@ -1462,11 +1559,13 @@ class TicketMonitorApp(ctk.CTk):
                         # blocked / no usable data. Match the manual-action alert so
                         # the GUI never shows green while a "go fix it" ping is live.
                         status = f"🔴  Blocked / no data — recovering (last check {age_s}s ago)"
-                    elif age_s < 120:
+                    elif age_s < stale_threshold // 2:
                         status = f"🟢  Last check: {age_s}s ago"
-                    elif age_s < 300:
+                    elif age_s < stale_threshold:
                         status = f"🟡  Last check: {age_s//60}m ago"
                     else:
+                        # Matches alerts.event_check_stale_seconds — the moment the
+                        # manual-action clock starts — so 🔴 and the ping stay in sync.
                         status = f"🔴  Last check: {age_s//60}m ago (stale)"
                 except Exception:
                     status = "⚪  Status unknown"
@@ -1475,8 +1574,8 @@ class TicketMonitorApp(ctk.CTk):
             else:
                 status = "⚪  Not yet checked"
 
-            ctk.CTkLabel(self._monitor_events_frame, text=name[:55], anchor="w", font=ctk.CTkFont(weight="bold")).grid(row=i*2, column=0, padx=16, pady=(10 if i==0 else 2, 0), sticky="w")
-            ctk.CTkLabel(self._monitor_events_frame, text=status, anchor="w", text_color="gray55", font=ctk.CTkFont(size=11)).grid(row=i*2+1, column=0, padx=16, pady=(0, 2), sticky="w")
+            ctk.CTkLabel(self._monitor_events_frame, text=name[:55], anchor="w", font=ctk.CTkFont(weight="bold")).grid(row=base_row + i*2, column=0, padx=16, pady=(10 if i==0 else 2, 0), sticky="w")
+            ctk.CTkLabel(self._monitor_events_frame, text=status, anchor="w", text_color="gray55", font=ctk.CTkFont(size=11)).grid(row=base_row + i*2+1, column=0, padx=16, pady=(0, 2), sticky="w")
 
     # ── Config I/O ────────────────────────────────────────────────────────────
 

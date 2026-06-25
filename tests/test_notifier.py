@@ -292,8 +292,8 @@ class TestGuidedNotifications:
             )
             payload = mock_send.call_args[1]
             embed = payload["embeds"][0]
-            assert "Run these commands now" in embed["description"]
-            assert "`scripts/monitorctl.sh reauth`" in embed["description"]
+            # Commands render as backticked bullets under the "What to do" section.
+            assert "• `scripts/monitorctl.sh reauth`" in embed["description"]
             assert "`python3 monitor.py --bootstrap-session --config config.yaml`" in embed["description"]
             assert payload.get("content", "").startswith("<@")
 
