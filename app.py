@@ -222,9 +222,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "storage_state_path": "secrets/tm_storage_state.json",
         "user_data_dir": "secrets/tm_profile",
         "channel": "chrome",
-        "poll_min_seconds": 15,
-        "poll_max_seconds": 25,
-        "headless": True,
+        "poll_min_seconds": 6,
+        "poll_max_seconds": 12,
+        "headless": False,
         "reuse_event_tabs": True,
         "navigation_timeout_seconds": 20,
         "challenge_threshold": 5,
@@ -1295,7 +1295,10 @@ class TicketMonitorApp(ctk.CTk):
                 "💚 A heartbeat message is sent to Discord every few hours to confirm the monitor is alive.\n"
                 "   If heartbeats stop, open the app and check the Live Logs.\n\n"
                 "🌐 Run on your normal home internet. VPNs (incl. Proton) usually get blocked MORE by\n"
-                "   Ticketmaster, and some blocks are normal for the first few minutes after starting."
+                "   Ticketmaster, and some blocks are normal for the first few minutes after starting.\n\n"
+                "🪟 A Chrome window will open while monitoring — that's intentional (a real, visible\n"
+                "   browser is far less likely to be blocked than a hidden one). You can minimize it;\n"
+                "   just don't close it or open Chrome on the monitor's profile yourself."
             ),
             font=ctk.CTkFont(size=11), text_color="gray60", anchor="w", justify="left",
         ).grid(row=1, column=0, padx=14, pady=(0, 6), sticky="w")

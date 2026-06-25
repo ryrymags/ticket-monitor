@@ -366,6 +366,12 @@ class MonitorScheduler:
         # stop feeding the block; clear it the moment a check comes back clean.
         self._update_challenge_cooldown(result=result, status=status, now=now)
 
+        # Any sign of life → force max-speed polling (reset adaptive backoff) so we catch
+        # the rest of a live ~2-min drop window at the floor cadence instead of a backed-off
+        # one. Blind checks are excluded — those should keep backing off.
+        if not blind and self._has_activity_signal(result):
+            self._cadence_backoff = 1.0
+
         if blind:
             count = self.state.increment_consecutive_blocked(event_id)
             logger.warning("[%s] blind check #%d", event_cfg.name, count)
@@ -658,6 +664,20 @@ class MonitorScheduler:
                 event_cfg.name,
                 pause_target.isoformat(),
             )
+
+    @staticmethod
+    def _has_activity_signal(result) -> bool:
+        """Any sign of life on the page — availability, a positive probe signal, or an
+        offer/CTA DOM hit — used to snap the cadence back to max speed for a live drop."""
+        if getattr(result, "available", False):
+            return True
+        if result.signal_type != ProbeSignalType.NONE:
+            return True
+        indicators = result.raw_indicators if isinstance(result.raw_indicators, dict) else {}
+        dom = indicators.get("dom_signals") or []
+        # Only STRONG inventory signals — generic Buy/Find CTAs are noisy and present
+        # even while offsale (see BrowserProbe._is_available), so they don't count.
+        return any(sig in {"offer_card_ui", "tickets_available_text"} for sig in dom)
 
     @staticmethod
     def _is_auth_like_failure(result) -> bool:

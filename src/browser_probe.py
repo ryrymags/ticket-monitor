@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 import re
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
@@ -51,6 +53,12 @@ class _NetworkSnapshot:
 
 class BrowserProbe:
     """Probe that uses a persisted browser session to inspect event availability."""
+
+    # Human-like navigation: occasionally land on the TM homepage before the event page
+    # so traffic looks like browsing (not a bot hitting a resale endpoint cold), which
+    # also keeps the DataDome cookie warm.
+    WARMUP_URL = "https://www.ticketmaster.com/"
+    WARMUP_INTERVAL_SECONDS = 1800
 
     CTA_SELECTORS = [
         "button:has-text('Find Tickets')",
@@ -122,6 +130,7 @@ class BrowserProbe:
         self._context = None
         self._uses_persistent_context = False
         self._event_pages: dict[str, Any] = {}
+        self._last_warmup_at: dict[str, float] = {}
         self._cdp_connected = False
         self._started = False
 
@@ -366,7 +375,7 @@ class BrowserProbe:
         response_handler = None
 
         try:
-            if self.session_mode == "cdp_attach":
+            if self.session_mode == "cdp_attach" or self.reuse_event_tabs:
                 page, first_visit = self._get_or_create_event_page(event_id=event_id, event_url=event_url)
                 close_page = False
             else:
@@ -386,16 +395,16 @@ class BrowserProbe:
 
             timeout_ms = self.navigation_timeout_seconds * 1000
             response_status: int | None = None
-            if self.session_mode == "cdp_attach":
-                if first_visit:
-                    response = page.goto(event_url, wait_until="domcontentloaded", timeout=timeout_ms)
-                else:
-                    try:
-                        response = page.reload(wait_until="domcontentloaded", timeout=timeout_ms)
-                    except Exception:
-                        response = page.goto(event_url, wait_until="domcontentloaded", timeout=timeout_ms)
-            else:
+            # Occasionally browse the homepage first so traffic looks human; if we did,
+            # the page is now on the homepage so we must goto (not reload) the event.
+            warmed = self._maybe_warmup(page, event_id, first_visit, timeout_ms)
+            if first_visit or warmed:
                 response = page.goto(event_url, wait_until="domcontentloaded", timeout=timeout_ms)
+            else:
+                try:
+                    response = page.reload(wait_until="domcontentloaded", timeout=timeout_ms)
+                except Exception:
+                    response = page.goto(event_url, wait_until="domcontentloaded", timeout=timeout_ms)
 
             retry_after_seconds: int | None = None
             if response is not None:
@@ -403,7 +412,9 @@ class BrowserProbe:
                 if response_status == 429:
                     retry_after_seconds = self._parse_retry_after(response)
 
-            page.wait_for_timeout(1200)
+            # Jittered settle + occasional light scroll — avoids a robotic fixed rhythm.
+            page.wait_for_timeout(random.randint(900, 2200))
+            self._human_jitter(page)
             html = page.content()
             html_lower = html.lower()
             body_text = self._safe_inner_text(page, "body")
@@ -475,8 +486,52 @@ class BrowserProbe:
         self.close()
         self.start()
 
+    def _maybe_warmup(self, page: Any, event_id: str, first_visit: bool, timeout_ms: int) -> bool:
+        """On a fresh tab (and periodically thereafter) browse the TM homepage before the
+        event page so traffic looks like a person navigating. Returns True if it navigated.
+        Skipped for cdp_attach (that's the user's own external browser — don't hijack it)."""
+        if self.session_mode == "cdp_attach":
+            return False
+        now = time.monotonic()
+        last = self._last_warmup_at.get(event_id)
+        due = first_visit or last is None or (now - last) >= self.WARMUP_INTERVAL_SECONDS
+        if not due:
+            return False
+        try:
+            page.goto(self.WARMUP_URL, wait_until="domcontentloaded", timeout=timeout_ms)
+            page.wait_for_timeout(random.randint(400, 1200))
+            self._last_warmup_at[event_id] = now
+            return True
+        except Exception:
+            # Warm-up is best-effort; fall through to the normal event navigation.
+            return False
+
+    @staticmethod
+    def _human_jitter(page: Any):
+        """A small, random scroll some of the time so interaction isn't perfectly static."""
+        if random.random() < 0.5:
+            try:
+                page.mouse.wheel(0, random.randint(200, 1200))
+                page.wait_for_timeout(random.randint(150, 600))
+            except Exception:
+                pass
+
     def _get_or_create_event_page(self, event_id: str, event_url: str) -> tuple[Any, bool]:
         if self.session_mode != "cdp_attach":
+            # We own this context (persistent/storage). Keep one tab per event open and
+            # reload it instead of opening a fresh deep-link each check — more human-like
+            # and it preserves the in-page session / DataDome cookie continuity.
+            if self.reuse_event_tabs:
+                cached = self._event_pages.get(event_id)
+                if cached is not None:
+                    try:
+                        if not cached.is_closed():
+                            return cached, False
+                    except Exception:
+                        pass
+                page = self._context.new_page()
+                self._event_pages[event_id] = page
+                return page, True
             return self._context.new_page(), True
 
         if self.reuse_event_tabs:
