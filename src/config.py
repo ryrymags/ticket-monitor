@@ -61,6 +61,10 @@ class MonitorConfig:
     # the capped cadence (which sustains the block). Resets on a clean check.
     browser_challenge_cooldown_base_seconds: int
     browser_challenge_cooldown_max_seconds: int
+    # Startup/recycle warmup: Ticketmaster blocks heavily right after launch. During this
+    # window blind checks don't trip outage/degraded and the challenge cooldown stays at
+    # its base, so the monitor can break in instead of flagging a false "blocked".
+    browser_startup_grace_seconds: int
     event_stagger_seconds: int
     # Adaptive cadence + stealth (experimental — all flag-gated for easy revert)
     browser_adaptive_backoff_enabled: bool
@@ -273,6 +277,9 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
     )
     browser_challenge_cooldown_max_seconds = safe_int(
         browser, "challenge_cooldown_max_seconds", 1800, "browser.challenge_cooldown_max_seconds"
+    )
+    browser_startup_grace_seconds = safe_int(
+        browser, "startup_grace_seconds", 180, "browser.startup_grace_seconds"
     )
     event_stagger_seconds = safe_int(browser, "event_stagger_seconds", 6, "browser.event_stagger_seconds")
     # Adaptive cadence + stealth (experimental — every knob has a safe off value)
@@ -596,6 +603,7 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
         browser_challenge_retry_seconds=browser_challenge_retry_seconds,
         browser_challenge_cooldown_base_seconds=browser_challenge_cooldown_base_seconds,
         browser_challenge_cooldown_max_seconds=browser_challenge_cooldown_max_seconds,
+        browser_startup_grace_seconds=browser_startup_grace_seconds,
         event_stagger_seconds=event_stagger_seconds,
         browser_adaptive_backoff_enabled=browser_adaptive_backoff_enabled,
         browser_adaptive_backoff_multiplier=browser_adaptive_backoff_multiplier,

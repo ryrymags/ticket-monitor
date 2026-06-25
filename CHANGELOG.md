@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `a64e4f1`  2026-06-24 22:50  Sync GUI/ping degraded state, add in-app fixes, challenge cooldown
+- `5c2ef86`  2026-06-24 23:28  Honest alert delivery, startup warmup grace, real login verification
+
+- `f1b7054`  2026-06-24 22:50  Sync GUI/ping degraded state, add in-app fixes, challenge cooldown
 
 - `4416213`  2026-06-24 11:18  Document ntfy push setup and iOS app deep-link mechanism in README
 
