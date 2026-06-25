@@ -42,6 +42,7 @@ def _make_config(**overrides) -> MonitorConfig:
         browser_challenge_retry_seconds=60,
         browser_challenge_cooldown_base_seconds=60,
         browser_challenge_cooldown_max_seconds=1800,
+        browser_startup_grace_seconds=0,
         event_stagger_seconds=6,
         browser_adaptive_backoff_enabled=True,
         browser_adaptive_backoff_multiplier=2.0,
@@ -1054,11 +1055,129 @@ class TestChallengeCircuitBreaker:
         )
         assert scheduler.state.get_challenge_cooldown_until() == base + timedelta(seconds=300)
 
-    def test_apply_cooldown_extends_sleep(self, tmp_path):
+    def test_apply_cooldown_extends_sleep_but_clamps(self, tmp_path):
+        from src.scheduler import CHALLENGE_COOLDOWN_SLEEP_CAP_SECONDS
+
         scheduler = _make_scheduler(tmp_path)
         base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        # A long cooldown is clamped to the per-sleep cap so the loop keeps re-evaluating
+        # the manual-action escalation (the cooldown itself persists in state).
         scheduler.state.set_challenge_cooldown_until(base + timedelta(seconds=400))
-        assert scheduler._apply_challenge_cooldown(30.0, base) == 400.0
+        assert scheduler._apply_challenge_cooldown(30.0, base) == CHALLENGE_COOLDOWN_SLEEP_CAP_SECONDS
+
+        # A short remaining cooldown is honored as-is.
+        scheduler.state.set_challenge_cooldown_until(base + timedelta(seconds=45))
+        assert scheduler._apply_challenge_cooldown(30.0, base) == 45.0
 
         scheduler.state.set_challenge_cooldown_until(None)
         assert scheduler._apply_challenge_cooldown(30.0, base) == 30.0
+
+
+class TestCriticalAlertDelivery:
+    """The banner must reflect ACTUAL Discord delivery; a failed send must retry."""
+
+    @staticmethod
+    def _degraded(tmp_path, *, delivered: bool):
+        scheduler = _make_scheduler(tmp_path, _make_config(alerts_manual_action_after_seconds=900))
+        event = scheduler.config.events[0]
+        scheduler.state.set_in_outage_state(event.event_id, True)
+        scheduler.notifier.send_critical_attention.return_value = delivered
+        return scheduler
+
+    def test_failed_send_does_not_claim_delivery_and_retries(self, tmp_path):
+        scheduler = self._degraded(tmp_path, delivered=False)
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        scheduler._evaluate_manual_action_escalation(base)  # arm attention_since
+        scheduler._evaluate_manual_action_escalation(base + timedelta(seconds=901))
+
+        assert scheduler.notifier.send_critical_attention.call_count == 1
+        assert scheduler.state.get_attention_alert_delivered() is False
+        assert scheduler.state.get_attention_alert_attempts() == 1
+
+        # Still not delivered → retries next cycle.
+        scheduler._evaluate_manual_action_escalation(base + timedelta(seconds=950))
+        assert scheduler.notifier.send_critical_attention.call_count == 2
+
+    def test_delivered_send_stops_retrying(self, tmp_path):
+        scheduler = self._degraded(tmp_path, delivered=True)
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        scheduler._evaluate_manual_action_escalation(base)
+        scheduler._evaluate_manual_action_escalation(base + timedelta(seconds=901))
+
+        assert scheduler.state.get_attention_alert_delivered() is True
+        assert scheduler.notifier.send_critical_attention.call_count == 1
+
+        scheduler._evaluate_manual_action_escalation(base + timedelta(seconds=950))
+        assert scheduler.notifier.send_critical_attention.call_count == 1
+
+    def test_retries_are_capped(self, tmp_path):
+        from src.scheduler import MAX_ATTENTION_ALERT_ATTEMPTS
+
+        scheduler = self._degraded(tmp_path, delivered=False)
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        scheduler._evaluate_manual_action_escalation(base)
+        for i in range(MAX_ATTENTION_ALERT_ATTEMPTS + 3):
+            scheduler._evaluate_manual_action_escalation(base + timedelta(seconds=901 + i))
+
+        assert scheduler.notifier.send_critical_attention.call_count == MAX_ATTENTION_ALERT_ATTEMPTS
+
+    def test_recovery_resets_delivery_state(self, tmp_path):
+        scheduler = self._degraded(tmp_path, delivered=False)
+        event = scheduler.config.events[0]
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        scheduler._evaluate_manual_action_escalation(base)
+        scheduler._evaluate_manual_action_escalation(base + timedelta(seconds=901))
+        assert scheduler.state.get_attention_alert_attempts() == 1
+
+        scheduler.state.set_in_outage_state(event.event_id, False)
+        scheduler._evaluate_manual_action_escalation(base + timedelta(seconds=950))
+
+        assert scheduler.state.get_attention_alert_attempts() == 0
+        assert scheduler.state.get_attention_alert_delivered() is False
+        assert scheduler.state.get_attention_alerted() is False
+
+
+class TestStartupWarmup:
+    @staticmethod
+    def _blocked():
+        return _make_result(
+            available=False, blocked=True, signal_type=ProbeSignalType.NONE, dom_signals=[]
+        )
+
+    def test_blind_during_warmup_does_not_trip_outage(self, tmp_path):
+        scheduler = _make_scheduler(
+            tmp_path,
+            _make_config(browser_startup_grace_seconds=300, browser_challenge_threshold=2),
+        )
+        event = scheduler.config.events[0]
+        now = scheduler.start_time + timedelta(seconds=10)  # inside warmup
+        for _ in range(5):
+            scheduler._handle_probe_result(event, self._blocked(), now=now)
+        assert scheduler.state.get_in_outage_state(event.event_id) is False
+
+    def test_blind_after_warmup_trips_outage(self, tmp_path):
+        scheduler = _make_scheduler(
+            tmp_path,
+            _make_config(browser_startup_grace_seconds=30, browser_challenge_threshold=2),
+        )
+        event = scheduler.config.events[0]
+        now = scheduler.start_time + timedelta(seconds=60)  # past warmup
+        for _ in range(3):
+            scheduler._handle_probe_result(event, self._blocked(), now=now)
+        assert scheduler.state.get_in_outage_state(event.event_id) is True
+
+    def test_challenge_cooldown_stays_at_base_during_warmup(self, tmp_path):
+        scheduler = _make_scheduler(
+            tmp_path,
+            _make_config(
+                browser_startup_grace_seconds=300,
+                browser_challenge_cooldown_base_seconds=60,
+                browser_challenge_cooldown_max_seconds=1800,
+            ),
+        )
+        now = scheduler.start_time + timedelta(seconds=10)
+        result = SimpleNamespace(challenge_detected=True, raw_indicators={"retry_after_seconds": None})
+        for _ in range(4):
+            scheduler._update_challenge_cooldown(result=result, status=None, now=now)
+        # No exponential growth during warmup — stays at base.
+        assert scheduler.state.get_challenge_cooldown_until() == now + timedelta(seconds=60)

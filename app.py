@@ -120,6 +120,53 @@ def load_state() -> dict[str, Any]:
         return {}
 
 
+def inspect_tm_login(user_data_dir: str) -> tuple[bool | None, str]:
+    """Check whether the Chrome profile is logged into Ticketmaster by reading its
+    cookie DB directly (read-only — no browser launch, so no profile-lock conflict with
+    a running monitor). Returns (logged_in, detail); logged_in is None when the profile
+    couldn't be read.
+
+    Looks for durable cookies on the auth/identity domains; their presence with a future
+    expiry is the reliable logged-in marker.
+    """
+    import sqlite3
+
+    cookies_db = Path(user_data_dir) / "Default" / "Cookies"
+    if not cookies_db.exists():
+        return False, "No saved login yet — click 'Log In to Ticketmaster' below."
+
+    # 1601 epoch → unix seconds: subtract seconds between 1601-01-01 and 1970-01-01.
+    EPOCH_DIFF = 11644473600
+    now_us = (datetime.now(timezone.utc).timestamp() + EPOCH_DIFF) * 1_000_000
+
+    conn = None
+    try:
+        # immutable=1 lets us read even while Chrome/the monitor holds the profile.
+        conn = sqlite3.connect(f"file:{cookies_db}?mode=ro&immutable=1", uri=True, timeout=2)
+        rows = conn.execute(
+            "SELECT expires_utc FROM cookies "
+            "WHERE (host_key LIKE '%auth.ticketmaster.com' "
+            "   OR host_key LIKE '%identity.ticketmaster.com') "
+        ).fetchall()
+    except Exception as exc:
+        return None, f"Couldn't read the Chrome profile ({exc}). Try again in a moment."
+    finally:
+        if conn is not None:
+            conn.close()
+
+    # A future or session (0) expiry counts as a live auth cookie.
+    live = [r[0] for r in rows if (r[0] == 0 or r[0] > now_us)]
+    if not live:
+        return False, "Not logged in (no valid Ticketmaster session) — click 'Log In to Ticketmaster'."
+
+    dated = [e for e in live if e and e > now_us]
+    if dated:
+        soonest = min(dated)
+        expiry = datetime.fromtimestamp(soonest / 1_000_000 - EPOCH_DIFF, tz=timezone.utc).astimezone()
+        return True, f"Logged in to Ticketmaster — session valid until {expiry:%b %d, %Y}."
+    return True, "Logged in to Ticketmaster (session cookies present)."
+
+
 def python_exe() -> str:
     """Return the Python executable to use for subprocess calls."""
     # Prefer the venv Python if it exists.
@@ -184,6 +231,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "challenge_retry_seconds": 60,
         "challenge_cooldown_base_seconds": 60,
         "challenge_cooldown_max_seconds": 1800,
+        "startup_grace_seconds": 180,
         "event_stagger_seconds": 6,
         "cdp_endpoint_url": "http://127.0.0.1:9222",
         "cdp_connect_timeout_seconds": 10,
@@ -847,9 +895,13 @@ class TicketMonitorApp(ctk.CTk):
         )
         login_btn.grid(row=3, column=0, padx=20, pady=(0, 10), sticky="w")
 
+        ctk.CTkButton(
+            frame, text="🔍  Verify login", fg_color=COLOR_GRAY, command=self._verify_login,
+        ).grid(row=3, column=0, padx=(230, 0), pady=(0, 10), sticky="w")
+
         ctk.CTkLabel(
             frame,
-            text="A browser window will open. Log in to Ticketmaster normally, then\ncome back here and click 'Done — I'm logged in'.\n\nYour session is stored locally and reused on every restart — you won't need\nto log in again unless your session expires (usually every few weeks).",
+            text="A browser window will open. Log in to Ticketmaster normally, then\ncome back here and click 'Done — I'm logged in'.\n\nYour session is stored locally and reused on every restart — you won't need\nto log in again unless your session expires (usually every few weeks).\n\nNote: only one program can use the saved Chrome profile at a time — don't open\nChrome on that profile while the monitor is running.",
             text_color="gray55", justify="left",
         ).grid(row=4, column=0, padx=20, pady=(0, 14), sticky="w")
 
@@ -863,24 +915,33 @@ class TicketMonitorApp(ctk.CTk):
         session_mode = cfg.get("browser", {}).get("session_mode", "persistent_profile")
         if session_mode == "persistent_profile":
             profile_dir = cfg.get("browser", {}).get("user_data_dir", "secrets/tm_profile")
-            has_session = os.path.isdir(profile_dir) and any(True for _ in Path(profile_dir).iterdir() if True)
+            logged_in, detail = inspect_tm_login(profile_dir)
         else:
+            # storage_state mode: presence of the file is the available signal.
             state_path = cfg.get("browser", {}).get("storage_state_path", "secrets/tm_storage_state.json")
-            has_session = os.path.exists(state_path)
+            if os.path.exists(state_path):
+                logged_in, detail = True, "Session file found — the monitor will use your saved account."
+            else:
+                logged_in, detail = False, "No session file — click 'Log In to Ticketmaster'."
 
-        if has_session:
+        if logged_in is True:
             self._login_status_icon.configure(text="✅")
-            self._login_status_text.configure(
-                text="Session found! You're logged in — the monitor will use your saved account.",
-                text_color=COLOR_GREEN,
-            )
-        else:
+            self._login_status_text.configure(text=detail, text_color=COLOR_GREEN)
+        elif logged_in is False:
             self._login_status_icon.configure(text="ℹ️")
             self._login_status_text.configure(
-                text="No session — running anonymously. This works fine! Login is optional but\n"
-                     "reduces the chance of being rate-limited by Ticketmaster.",
+                text=detail + "\nLogin is optional but reduces the chance of being rate-limited.",
                 text_color="gray55",
             )
+        else:  # None — couldn't read the profile
+            self._login_status_icon.configure(text="⚠️")
+            self._login_status_text.configure(text=detail, text_color=COLOR_ORANGE)
+
+    def _verify_login(self):
+        """Re-run the real login check on demand and surface the detail."""
+        self._update_login_status()
+        detail = self._login_status_text.cget("text").split("\n")[0]
+        self._bootstrap_status_label.configure(text=f"🔍  {detail}", text_color="gray55")
 
     def _start_bootstrap_session(self):
         if not self._events:
@@ -1232,7 +1293,9 @@ class TicketMonitorApp(ctk.CTk):
                 "   • Login expired and auto re-login failed → go to the Login tab and log in again\n"
                 "   • Monitor stuck for 10+ minutes despite self-healing → restart the app\n\n"
                 "💚 A heartbeat message is sent to Discord every few hours to confirm the monitor is alive.\n"
-                "   If heartbeats stop, open the app and check the Live Logs."
+                "   If heartbeats stop, open the app and check the Live Logs.\n\n"
+                "🌐 Run on your normal home internet. VPNs (incl. Proton) usually get blocked MORE by\n"
+                "   Ticketmaster, and some blocks are normal for the first few minutes after starting."
             ),
             font=ctk.CTkFont(size=11), text_color="gray60", anchor="w", justify="left",
         ).grid(row=1, column=0, padx=14, pady=(0, 6), sticky="w")
@@ -1478,7 +1541,9 @@ class TicketMonitorApp(ctk.CTk):
         if not health.get("degraded"):
             return None
         reason = health.get("reason")
-        alerted = bool(health.get("attention_alerted"))
+        attempted = bool(health.get("attention_alerted"))
+        delivered = bool(health.get("attention_alert_delivered"))
+        attempts = int(health.get("attention_alert_attempts", 0) or 0)
         if reason == "auth_paused":
             head = "🔴  Login expired — auto re-login failed."
             fix = "Open the Login tab and click 'Log In to Ticketmaster', or use Re-authenticate below."
@@ -1488,11 +1553,15 @@ class TicketMonitorApp(ctk.CTk):
         else:
             head = "🔴  Monitor blocked — Ticketmaster keeps returning blocked / no data."
             fix = "Self-healing is backing off and retrying automatically."
-        tail = (
-            "An action alert has been sent to Discord."
-            if alerted
-            else "Self-healing for up to 15 min before alerting you."
-        )
+        # Tail reflects ACTUAL Discord delivery, never just an attempt.
+        if delivered:
+            tail = "An action alert has been sent to Discord."
+        elif attempted and attempts >= 6:
+            tail = "⚠️ Couldn't reach Discord — check your webhook URL in the Notifications tab."
+        elif attempted:
+            tail = "Trying to send a Discord alert…"
+        else:
+            tail = "Self-healing for up to 15 min before alerting you."
         return (f"{head}\n{fix}\n{tail}", COLOR_RED)
 
     def _refresh_monitor_events_panel(self):

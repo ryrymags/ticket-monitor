@@ -9,7 +9,8 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 ## 📋 Recent Changes
 
 <!-- CHANGELOG_START -->
-- `a64e4f1`  2026-06-24  Sync GUI/ping degraded state, add in-app fixes, challenge cooldown
+- `5c2ef86`  2026-06-24  Honest alert delivery, startup warmup grace, real login verification
+- `f1b7054`  2026-06-24  Sync GUI/ping degraded state, add in-app fixes, challenge cooldown
 - `4416213`  2026-06-24  Document ntfy push setup and iOS app deep-link mechanism in README
 - `4d73db2`  2026-06-24  Add ntfy.sh push notifications with iOS app deep-linking
 - `9ea780a`  2026-06-23  Make history de-duper runnable from terminal anywhere + add Mac launcher
@@ -18,7 +19,6 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 - `94e965e`  2026-06-23  Provision Google Chrome in GUI setup scripts for the chrome channel
 - `d8b7e01`  2026-06-23  Add adaptive cadence, stealth, health stats, and BINGO history counter
 - `5bfa846`  2026-06-23  Fix false stall pings and stop non-BINGO @ mentions
-- `992e9e4`  2026-06-20  Overhaul notifications: quiet, BINGO-only, ping only when manual action is truly needed
 
 Full history: [CHANGELOG.md](CHANGELOG.md)
 <!-- CHANGELOG_END -->

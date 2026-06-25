@@ -29,6 +29,12 @@ BURST_PHASE1_SECONDS = 120
 BURST_PHASE2_SECONDS = 300
 BURST_PHASE2_INTERVAL_SECONDS = 60
 BURST_HARD_FAILSAFE_SECONDS = 900
+# How many times to retry a failed critical-attention send before giving up for the
+# episode (avoids hammering a permanently-broken webhook every cycle).
+MAX_ATTENTION_ALERT_ATTEMPTS = 6
+# Cap on a single challenge-cooldown sleep so the loop keeps re-evaluating the
+# manual-action escalation (the cooldown itself persists in state and resumes).
+CHALLENGE_COOLDOWN_SLEEP_CAP_SECONDS = 120
 # Absolute path so the fallback terminal commands work from any directory — the old
 # relative "scripts/monitorctl.sh" only worked if you'd already cd'd into the repo.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -363,7 +369,12 @@ class MonitorScheduler:
         if blind:
             count = self.state.increment_consecutive_blocked(event_id)
             logger.warning("[%s] blind check #%d", event_cfg.name, count)
-            if count >= self.config.browser_challenge_threshold:
+            if self._in_startup_warmup(now):
+                # Ticketmaster blocks heavily right after launch/recycle. Count the
+                # blind checks (so the threshold is met promptly once warmup ends) but
+                # don't flag outage/degraded yet — let the monitor break in first.
+                logger.info("[%s] blind during startup warmup — not flagging outage", event_cfg.name)
+            elif count >= self.config.browser_challenge_threshold:
                 if not self.state.get_in_outage_state(event_id):
                     message = f"Event checks are blind ({count} consecutive)."
                     incident = self._incident_fingerprint(
@@ -755,7 +766,12 @@ class MonitorScheduler:
         # thing (incl. auth-pause/stale, which were previously invisible to the GUI).
         self.state.set_degraded_state(True, reason=reason, since=since)
 
-        if self.state.get_attention_alerted():
+        # Stop only once the alert is actually DELIVERED (or we've exhausted retries).
+        # A send that Discord rejects (rate-limit / error / network) leaves us free to
+        # retry next cycle instead of falsely marking the episode as alerted.
+        if self.state.get_attention_alert_delivered():
+            return
+        if self.state.get_attention_alert_attempts() >= MAX_ATTENTION_ALERT_ATTEMPTS:
             return
 
         delay = max(0, int(self.config.alerts_manual_action_after_seconds))
@@ -765,17 +781,27 @@ class MonitorScheduler:
 
         message, next_steps = self._manual_action_summary(reason)
         minutes = int(degraded_seconds // 60)
-        self.notifier.send_critical_attention(
+        delivered = self.notifier.send_critical_attention(
             message,
             context={"degraded_for": f"{minutes} min"},
             next_steps=next_steps,
         )
+        attempts = self.state.get_attention_alert_attempts() + 1
+        self.state.set_attention_alert_attempts(attempts)
         self.state.set_attention_alerted(True)
-        logger.critical(
-            "Manual-action ping sent after %d min degraded: %s",
-            minutes,
-            message,
-        )
+        self.state.set_attention_alert_delivered(bool(delivered))
+        if delivered:
+            logger.critical(
+                "Manual-action ping delivered after %d min degraded: %s", minutes, message
+            )
+        else:
+            logger.error(
+                "Manual-action ping FAILED to deliver (attempt %d/%d) after %d min degraded: %s",
+                attempts,
+                MAX_ATTENTION_ALERT_ATTEMPTS,
+                minutes,
+                message,
+            )
 
     # ---- State/metrics ----
 
@@ -913,6 +939,17 @@ class MonitorScheduler:
         candidate = base * (self.config.backoff_multiplier ** exponent)
         return float(min(candidate, self.config.max_backoff_seconds))
 
+    def _in_startup_warmup(self, now: datetime) -> bool:
+        """True during the warmup window after launch or a browser recycle, when the
+        Ticketmaster block flurry is expected and shouldn't be treated as an outage."""
+        grace = max(0, int(self.config.browser_startup_grace_seconds))
+        if grace <= 0:
+            return False
+        anchor = self.start_time
+        if self._last_browser_recycle_at is not None and self._last_browser_recycle_at > anchor:
+            anchor = self._last_browser_recycle_at
+        return (now - anchor).total_seconds() < grace
+
     def _update_challenge_cooldown(self, *, result, status, now: datetime):
         """Grow/clear the challenge cooldown based on the latest probe.
 
@@ -929,7 +966,13 @@ class MonitorScheduler:
         self._consecutive_challenges += 1
         base = max(1, int(self.config.browser_challenge_cooldown_base_seconds))
         cap = max(base, int(self.config.browser_challenge_cooldown_max_seconds))
-        cooldown = min(base * (2 ** (self._consecutive_challenges - 1)), cap)
+        # During startup/recycle warmup, keep the cooldown at its base (no exponential
+        # growth) so the monitor keeps trying to break in rather than backing off for
+        # tens of minutes on the expected initial block flurry.
+        if self._in_startup_warmup(now):
+            cooldown = base
+        else:
+            cooldown = min(base * (2 ** (self._consecutive_challenges - 1)), cap)
 
         retry_after = None
         if isinstance(result.raw_indicators, dict):
@@ -946,13 +989,20 @@ class MonitorScheduler:
         )
 
     def _apply_challenge_cooldown(self, sleep_time: float, now: datetime) -> float:
-        """Extend this cycle's sleep to cover an active challenge cooldown."""
+        """Extend this cycle's sleep to cover an active challenge cooldown, but clamp a
+        single sleep so the loop keeps re-evaluating the manual-action escalation (the
+        cooldown persists in state and resumes on the next cycle)."""
         until = self.state.get_challenge_cooldown_until()
         if until is not None and now < until:
             remaining = (until - now).total_seconds()
-            if remaining > sleep_time:
-                logger.info("Challenge cooldown active: sleeping %.0fs before next probe", remaining)
-                return remaining
+            target = min(remaining, CHALLENGE_COOLDOWN_SLEEP_CAP_SECONDS)
+            if target > sleep_time:
+                logger.info(
+                    "Challenge cooldown active: sleeping %.0fs (%.0fs remaining) before next probe",
+                    target,
+                    remaining,
+                )
+                return target
         return sleep_time
 
     def _interruptible_sleep(self, seconds: float):

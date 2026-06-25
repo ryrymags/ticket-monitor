@@ -312,10 +312,28 @@ class MonitorState:
         self._health()["attention_alerted"] = bool(value)
         self.save()
 
+    def get_attention_alert_delivered(self) -> bool:
+        """Whether the manual-action ping was actually accepted by Discord (not just
+        attempted). The GUI banner keys off this so it never claims a send that failed."""
+        return bool(self._health().get("attention_alert_delivered", False))
+
+    def set_attention_alert_delivered(self, value: bool):
+        self._health()["attention_alert_delivered"] = bool(value)
+        self.save()
+
+    def get_attention_alert_attempts(self) -> int:
+        return int(self._health().get("attention_alert_attempts", 0) or 0)
+
+    def set_attention_alert_attempts(self, value: int):
+        self._health()["attention_alert_attempts"] = int(value)
+        self.save()
+
     def clear_attention(self):
         health = self._health()
         health["attention_since"] = None
         health["attention_alerted"] = False
+        health["attention_alert_delivered"] = False
+        health["attention_alert_attempts"] = 0
         self.save()
 
     def get_auth_pause_until(self) -> datetime | None:
