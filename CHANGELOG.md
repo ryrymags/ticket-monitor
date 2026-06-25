@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `5c2ef86`  2026-06-24 23:28  Honest alert delivery, startup warmup grace, real login verification
+- `a8fa058`  2026-06-24 23:53  Anti-block: headful Chrome, human-like nav, fast adaptive cadence
+
+- `809c90f`  2026-06-24 23:28  Honest alert delivery, startup warmup grace, real login verification
 
 - `f1b7054`  2026-06-24 22:50  Sync GUI/ping degraded state, add in-app fixes, challenge cooldown
 

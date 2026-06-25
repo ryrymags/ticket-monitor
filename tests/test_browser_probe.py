@@ -81,6 +81,9 @@ class _FakePage:
         self.reload_calls += 1
         return self.goto(self.url)
 
+    def is_closed(self) -> bool:
+        return False
+
     def wait_for_timeout(self, _ms: int):
         return
 
@@ -674,6 +677,58 @@ class TestBrowserProbeSessionModes:
         assert first.available is True
         assert second.available is True
         assert page.reload_calls >= 1
+
+    def test_persistent_mode_reuses_tab_and_reloads(self):
+        page = _FakePage(
+            html="<html><body>Event</body></html>",
+            status=200,
+            network_payloads=[{"offers": [{"available": True, "quantity": 1, "price": 99.0}]}],
+        )
+        context = _FakePersistentContext()
+        context.new_page = lambda: page  # one page, reused across checks
+
+        probe = BrowserProbe(
+            storage_state_path="unused.json",
+            session_mode="persistent_profile",
+            reuse_event_tabs=True,
+            navigation_timeout_seconds=20,
+        )
+        probe._started = True
+        probe._context = context
+
+        first = probe.check_event("event-1", "https://ticketmaster.com/event/1")
+        second = probe.check_event("event-1", "https://ticketmaster.com/event/1")
+
+        assert first.available is True
+        assert second.available is True
+        # Second check reused the same tab via reload() instead of a fresh navigation.
+        assert page.reload_calls >= 1
+
+    def test_persistent_mode_without_reuse_opens_fresh_pages(self):
+        pages: list = []
+
+        def make_page():
+            p = _FakePage(html="<html><body>Event</body></html>", status=200)
+            pages.append(p)
+            return p
+
+        context = _FakePersistentContext()
+        context.new_page = make_page
+
+        probe = BrowserProbe(
+            storage_state_path="unused.json",
+            session_mode="persistent_profile",
+            reuse_event_tabs=False,
+            navigation_timeout_seconds=20,
+        )
+        probe._started = True
+        probe._context = context
+
+        probe.check_event("event-1", "https://ticketmaster.com/event/1")
+        probe.check_event("event-1", "https://ticketmaster.com/event/1")
+
+        assert len(pages) == 2
+        assert all(p.reload_calls == 0 for p in pages)
 
     def test_listing_summary_reports_when_rows_are_omitted(self):
         page = _FakePage(

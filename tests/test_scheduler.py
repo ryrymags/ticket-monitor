@@ -1181,3 +1181,32 @@ class TestStartupWarmup:
             scheduler._update_challenge_cooldown(result=result, status=None, now=now)
         # No exponential growth during warmup — stays at base.
         assert scheduler.state.get_challenge_cooldown_until() == now + timedelta(seconds=60)
+
+
+class TestActivityCadence:
+    def test_has_activity_signal(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        assert scheduler._has_activity_signal(_make_result(available=True)) is True
+        # A positive DOM signal counts even if not yet "available".
+        assert scheduler._has_activity_signal(
+            _make_result(available=False, signal_type=ProbeSignalType.DOM, dom_signals=["offer_card_ui"])
+        ) is True
+        # Sold-out / no-signal page is not activity.
+        assert scheduler._has_activity_signal(
+            _make_result(available=False, signal_type=ProbeSignalType.NONE, dom_signals=[])
+        ) is False
+
+    def test_activity_resets_backoff_to_floor(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        scheduler._cadence_backoff = 4.0
+        scheduler._handle_probe_result(scheduler.config.events[0], _make_result(available=True))
+        assert scheduler._cadence_backoff == 1.0
+
+    def test_blind_check_does_not_reset_backoff(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        scheduler._cadence_backoff = 4.0
+        blind = _make_result(
+            available=False, blocked=True, signal_type=ProbeSignalType.NONE, dom_signals=[]
+        )
+        scheduler._handle_probe_result(scheduler.config.events[0], blind)
+        assert scheduler._cadence_backoff == 4.0
