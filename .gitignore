@@ -14,6 +14,7 @@ state *.json
 ticket_history.json
 ticket_history.backup-*.json
 uptime_log.json
+uptime_log.pre-fix-backup-*.json
 .uptime-*.tmp
 
 # Ticketmaster session data, Chrome profiles, auth files

@@ -46,6 +46,9 @@ def _make_config(**overrides) -> MonitorConfig:
         browser_challenge_retry_seconds=60,
         browser_challenge_cooldown_base_seconds=60,
         browser_challenge_cooldown_max_seconds=1800,
+        browser_challenge_cooldown_escalate_after=6,
+        browser_challenge_cooldown_tiers_seconds=[300, 900, 1800],
+        browser_challenge_cooldown_tier_every=3,
         browser_startup_grace_seconds=0,
         event_stagger_seconds=6,
         browser_adaptive_backoff_enabled=True,
@@ -81,6 +84,9 @@ def _make_config(**overrides) -> MonitorConfig:
         auth_auto_login_cooldown_seconds=1800,
         auth_session_health_check_interval_seconds=3600,
         auth_session_health_check_url="https://www.ticketmaster.com/my-account",
+        auth_session_recheck_base_seconds=120,
+        auth_session_recheck_max_seconds=900,
+        auth_session_logout_confirmations_required=2,
         preferences=TicketPreferences(),
         bingo_configs=[TicketPreferences()],
         watchdog_enabled=True,
@@ -153,6 +159,11 @@ def _make_scheduler(tmp_path, config: MonitorConfig | None = None) -> MonitorSch
     )
     scheduler.probe.start = MagicMock(return_value=None)
     return scheduler
+
+
+class _FixedRand:
+    def uniform(self, _low, _high):
+        return 1.0
 
 
 class TestTicketAlerting:
@@ -497,6 +508,28 @@ class TestOutageTracking:
 
 
 class TestAutoReauth:
+    def test_auth_like_failure_classification(self):
+        blocked = _make_result(
+            available=False,
+            blocked=True,
+            challenge=False,
+            signal_type=ProbeSignalType.NONE,
+            dom_signals=[],
+        )
+
+        blocked.raw_indicators["response_status"] = 401
+        assert MonitorScheduler._is_auth_like_failure(blocked) is True
+
+        blocked.raw_indicators["response_status"] = 403
+        blocked.raw_indicators["page_title"] = ""
+        assert MonitorScheduler._is_auth_like_failure(blocked) is False
+
+        blocked.raw_indicators["response_status"] = None
+        assert MonitorScheduler._is_auth_like_failure(blocked) is False
+
+        blocked.raw_indicators["page_title"] = "Ticketmaster Login"
+        assert MonitorScheduler._is_auth_like_failure(blocked) is True
+
     def test_cdp_attach_mode_skips_scripted_auto_reauth(self, tmp_path):
         config = _make_config(
             browser_session_mode="cdp_attach",
@@ -595,7 +628,7 @@ class TestAutoReauth:
             signal_type=ProbeSignalType.NONE,
             dom_signals=[],
         )
-        blocked.raw_indicators["response_status"] = 403
+        blocked.raw_indicators["response_status"] = 401
         base = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
         scheduler._handle_probe_result(config.events[0], blocked, now=base)
@@ -607,6 +640,37 @@ class TestAutoReauth:
         # Auth pause is recorded as degraded, but no immediate ping — the manual-action
         # escalation only fires after the grace window (covered separately).
         scheduler.notifier.send_critical_attention.assert_not_called()
+
+    def test_bare_403_block_does_not_trigger_auto_reauth(self, tmp_path):
+        config = _make_config(
+            browser_challenge_threshold=1,
+            auth_auto_login_enabled=True,
+        )
+        state = MonitorState(state_file=str(tmp_path / "state.json"))
+        probe = MagicMock()
+        probe.start = MagicMock(return_value=None)
+        scheduler = MonitorScheduler(
+            config=config,
+            notifier=MagicMock(),
+            state=state,
+            start_time=datetime.now(timezone.utc),
+            probe=probe,
+            session_autofixer=MagicMock(
+                attempt_reauth=MagicMock(return_value=AutoReauthResult(success=True, reason="session_refreshed"))
+            ),
+        )
+        blocked = _make_result(
+            available=False,
+            blocked=True,
+            challenge=False,
+            signal_type=ProbeSignalType.NONE,
+            dom_signals=[],
+        )
+        blocked.raw_indicators["response_status"] = 403
+
+        scheduler._handle_probe_result(config.events[0], blocked)
+
+        scheduler.session_autofixer.attempt_reauth.assert_not_called()
 
     def test_challenge_detected_failure_does_not_ping_immediately(self, tmp_path):
         config = _make_config(
@@ -660,6 +724,29 @@ class TestCycleBehavior:
         needs_slow_retry = scheduler._run_cycle()
 
         assert needs_slow_retry is True
+
+    def test_run_skips_active_probes_during_challenge_cooldown(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        scheduler.state.set_challenge_cooldown_until(datetime.now(timezone.utc) + timedelta(minutes=10))
+        scheduler._maybe_send_heartbeat = MagicMock()
+        scheduler._consume_browser_restart_request_if_any = MagicMock()
+        scheduler._run_cycle = MagicMock(return_value=False)
+        scheduler._maybe_check_session_health = MagicMock()
+        scheduler._evaluate_manual_action_escalation = MagicMock()
+        scheduler._apply_challenge_cooldown = MagicMock(return_value=0.01)
+        scheduler._record_uptime_heartbeat = MagicMock()
+
+        def stop_after_sleep(_seconds):
+            scheduler.stop()
+
+        scheduler._interruptible_sleep = MagicMock(side_effect=stop_after_sleep)
+
+        scheduler.run()
+
+        scheduler._run_cycle.assert_not_called()
+        scheduler._maybe_check_session_health.assert_not_called()
+        scheduler._consume_browser_restart_request_if_any.assert_called_once()
+        scheduler._record_uptime_heartbeat.assert_called_once_with(True, reason="blocked")
 
     def test_run_cycle_continues_to_next_event_after_probe_error(self, tmp_path):
         config = _make_config(
@@ -959,6 +1046,112 @@ class TestCheckOutcomeRecording:
         assert outcomes == ["healthy", "blocked", "challenge"]
 
 
+class TestSessionHealthChecks:
+    @staticmethod
+    def _health_result(reason: str, *, status: int | None = None, challenge: bool = False, definitive: bool = False):
+        return {
+            "healthy": False,
+            "reason": reason,
+            "status": status,
+            "challenge": challenge,
+            "definitive_logged_out": definitive,
+        }
+
+    def test_403_health_result_is_block_not_logout(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        scheduler._rand = _FixedRand()
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        scheduler.probe.check_session_health.return_value = self._health_result(
+            "http_403", status=403, definitive=False
+        )
+
+        scheduler._maybe_check_session_health(base)
+
+        assert scheduler.state.get_session_logged_out() is False
+        assert scheduler.state.get_session_logout_pending_count() == 0
+        assert scheduler.state.get_last_session_health_reason() == "http_403"
+        assert scheduler._session_health_fail_streak == 1
+
+    def test_definitive_logout_requires_two_confirmations(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        scheduler._rand = _FixedRand()
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        scheduler.probe.check_session_health.return_value = self._health_result(
+            "login_page_content", status=200, definitive=True
+        )
+
+        scheduler._maybe_check_session_health(base)
+
+        assert scheduler.state.get_session_logged_out() is False
+        assert scheduler.state.get_session_logout_pending_count() == 1
+
+        scheduler._maybe_check_session_health(base + timedelta(seconds=121))
+
+        assert scheduler.state.get_session_logged_out() is True
+        assert scheduler.state.get_session_logout_pending_count() == 0
+
+    def test_healthy_session_check_resets_pending_and_flag(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        scheduler._rand = _FixedRand()
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        scheduler.probe.check_session_health.return_value = self._health_result(
+            "login_page_content", status=200, definitive=True
+        )
+        scheduler._maybe_check_session_health(base)
+        scheduler.state.set_session_logged_out(True)
+        scheduler.probe.check_session_health.return_value = {
+            "healthy": True,
+            "reason": "ok",
+            "status": 200,
+            "challenge": False,
+            "definitive_logged_out": False,
+        }
+
+        scheduler._maybe_check_session_health(base + timedelta(seconds=121))
+
+        assert scheduler.state.get_session_logged_out() is False
+        assert scheduler.state.get_session_logout_pending_count() == 0
+        assert scheduler._session_health_fail_streak == 0
+
+    def test_session_probe_skips_during_challenge_cooldown_without_stamping_last_check(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        scheduler.state.set_challenge_cooldown_until(base + timedelta(minutes=5))
+
+        scheduler._maybe_check_session_health(base)
+
+        scheduler.probe.check_session_health.assert_not_called()
+        assert scheduler.state.get_last_session_health_check_at() is None
+
+    def test_session_probe_defers_after_blocked_event_cycle(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        scheduler._last_cycle_blocked = True
+
+        scheduler._maybe_check_session_health(base)
+
+        scheduler.probe.check_session_health.assert_not_called()
+        assert scheduler.state.get_last_session_health_check_at() is None
+
+    def test_fast_recheck_interval_grows_and_caps(self, tmp_path):
+        scheduler = _make_scheduler(
+            tmp_path,
+            _make_config(auth_session_recheck_base_seconds=120, auth_session_recheck_max_seconds=300),
+        )
+        scheduler._rand = _FixedRand()
+
+        assert scheduler._session_health_due_interval() == 3600.0
+        scheduler._session_health_fail_streak = 1
+        assert scheduler._session_health_due_interval() == 120.0
+        scheduler._session_health_fail_streak = 2
+        assert scheduler._session_health_due_interval() == 240.0
+        scheduler._session_health_fail_streak = 3
+        assert scheduler._session_health_due_interval() == 300.0
+        scheduler._session_health_fail_streak = 0
+        scheduler.state.set_session_logged_out(True)
+        assert scheduler._session_health_due_interval() == 120.0
+
+
 class TestDegradedStatePersistence:
     """The GUI reads health.degraded* from state.json; it must match the exact
     condition that drives the manual-action ping (single source of truth)."""
@@ -1018,8 +1211,10 @@ class TestChallengeCircuitBreaker:
             _make_config(
                 browser_challenge_cooldown_base_seconds=60,
                 browser_challenge_cooldown_max_seconds=1800,
+                browser_challenge_cooldown_escalate_after=10,
             ),
         )
+        scheduler._rand = _FixedRand()
         base = datetime(2026, 1, 1, tzinfo=timezone.utc)
         for expected in (60, 120, 240):
             scheduler._update_challenge_cooldown(
@@ -1033,8 +1228,10 @@ class TestChallengeCircuitBreaker:
             _make_config(
                 browser_challenge_cooldown_base_seconds=600,
                 browser_challenge_cooldown_max_seconds=1800,
+                browser_challenge_cooldown_escalate_after=10,
             ),
         )
+        scheduler._rand = _FixedRand()
         base = datetime(2026, 1, 1, tzinfo=timezone.utc)
         for _ in range(6):
             scheduler._update_challenge_cooldown(
@@ -1042,8 +1239,29 @@ class TestChallengeCircuitBreaker:
             )
         assert scheduler.state.get_challenge_cooldown_until() == base + timedelta(seconds=1800)
 
+    def test_cooldown_escalates_to_quiet_tiers(self, tmp_path):
+        scheduler = _make_scheduler(
+            tmp_path,
+            _make_config(
+                browser_challenge_cooldown_base_seconds=60,
+                browser_challenge_cooldown_max_seconds=300,
+                browser_challenge_cooldown_escalate_after=3,
+                browser_challenge_cooldown_tiers_seconds=[300, 900, 1800],
+                browser_challenge_cooldown_tier_every=2,
+            ),
+        )
+        scheduler._rand = _FixedRand()
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        expected = [60, 120, 300, 300, 900, 900, 1800]
+        for seconds in expected:
+            scheduler._update_challenge_cooldown(
+                result=self._result(challenge=True), status=None, now=base
+            )
+            assert scheduler.state.get_challenge_cooldown_until() == base + timedelta(seconds=seconds)
+
     def test_clean_check_resets_cooldown(self, tmp_path):
         scheduler = _make_scheduler(tmp_path)
+        scheduler._rand = _FixedRand()
         base = datetime(2026, 1, 1, tzinfo=timezone.utc)
         scheduler._update_challenge_cooldown(
             result=self._result(challenge=True), status=None, now=base
@@ -1064,6 +1282,7 @@ class TestChallengeCircuitBreaker:
                 browser_challenge_cooldown_max_seconds=1800,
             ),
         )
+        scheduler._rand = _FixedRand()
         base = datetime(2026, 1, 1, tzinfo=timezone.utc)
         # 429 counts as a challenge even without the challenge flag; Retry-After (300s)
         # exceeds the base 60s cooldown and becomes the floor.
@@ -1191,6 +1410,7 @@ class TestStartupWarmup:
                 browser_challenge_cooldown_max_seconds=1800,
             ),
         )
+        scheduler._rand = _FixedRand()
         now = scheduler.start_time + timedelta(seconds=10)
         result = SimpleNamespace(challenge_detected=True, raw_indicators={"retry_after_seconds": None})
         for _ in range(4):
@@ -1298,7 +1518,7 @@ class TestUptimeConnectivity:
         scheduler._record_uptime_heartbeat(needs_slow_retry=True)
         assert scheduler.uptime.segments[-1]["state"] == "healthy"
 
-    def test_logged_out_session_records_impaired(self, tmp_path):
+    def test_logged_out_flag_with_healthy_cycle_records_healthy(self, tmp_path):
         scheduler = _make_scheduler(tmp_path)
         clean = _make_result(
             available=False, blocked=False, signal_type=ProbeSignalType.NONE, dom_signals=[]
@@ -1307,6 +1527,18 @@ class TestUptimeConnectivity:
         scheduler.state.set_session_logged_out(True)
         scheduler._run_cycle()
         scheduler._record_uptime_heartbeat(needs_slow_retry=False)
+        last = scheduler.uptime.segments[-1]
+        assert last["state"] == "healthy"
+        assert last["reason"] is None
+
+    def test_logged_out_session_without_checks_records_impaired(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        scheduler.state.set_session_logged_out(True)
+        scheduler._cycle_healthy_checks = 0
+        scheduler._cycle_bad_checks = 0
+
+        scheduler._record_uptime_heartbeat(needs_slow_retry=False)
+
         last = scheduler.uptime.segments[-1]
         assert last["state"] == "impaired"
         assert last["reason"] == "logged_out"

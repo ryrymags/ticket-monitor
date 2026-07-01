@@ -235,8 +235,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "storage_state_path": "secrets/tm_storage_state.json",
         "user_data_dir": "secrets/tm_profile",
         "channel": "chrome",
-        "poll_min_seconds": 6,
-        "poll_max_seconds": 12,
+        "poll_min_seconds": 12,
+        "poll_max_seconds": 24,
         "headless": False,
         "reuse_event_tabs": True,
         "navigation_timeout_seconds": 20,
@@ -244,6 +244,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "challenge_retry_seconds": 60,
         "challenge_cooldown_base_seconds": 60,
         "challenge_cooldown_max_seconds": 300,
+        "challenge_cooldown_escalate_after": 6,
+        "challenge_cooldown_tiers_seconds": [300, 900, 1800],
+        "challenge_cooldown_tier_every": 3,
         "startup_grace_seconds": 180,
         "event_stagger_seconds": 6,
         "cdp_endpoint_url": "http://127.0.0.1:9222",
@@ -294,6 +297,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "auto_login_cooldown_seconds": 1800,
         "session_health_check_interval_seconds": 3600,
         "session_health_check_url": "https://www.ticketmaster.com/my-account",
+        "session_recheck_base_seconds": 120,
+        "session_recheck_max_seconds": 900,
+        "session_logout_confirmations_required": 2,
     },
     "watchdog": {
         "enabled": True,
@@ -1370,6 +1376,7 @@ class TicketMonitorApp(ctk.CTk):
     }
     _UPTIME_REASON_TEXT = {
         "blocked": "blocked by Ticketmaster",
+        "challenge": "blocked by Ticketmaster",
         "outage": "blocked by Ticketmaster",
         "stale": "no fresh data",
         "logged_out": "signed out",

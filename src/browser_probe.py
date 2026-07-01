@@ -137,6 +137,7 @@ class BrowserProbe:
         self._context = None
         self._uses_persistent_context = False
         self._event_pages: dict[str, Any] = {}
+        self._health_page: Any | None = None
         self._last_warmup_at: dict[str, float] = {}
         self._cdp_connected = False
         self._started = False
@@ -248,6 +249,7 @@ class BrowserProbe:
         """Close browser resources."""
         if self.session_mode == "cdp_attach":
             self._event_pages = {}
+            self._health_page = None
             self._context = None
             self._browser = None
             try:
@@ -267,6 +269,7 @@ class BrowserProbe:
             self._context = None
             self._uses_persistent_context = False
             self._event_pages = {}
+            self._health_page = None
 
         try:
             if self._browser is not None:
@@ -360,41 +363,70 @@ class BrowserProbe:
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("stealth init script not applied: %s", exc)
 
-    def check_session_health(self, url: str = "https://www.ticketmaster.com/my-account") -> dict:
+    def check_session_health(
+        self,
+        url: str = "https://www.ticketmaster.com/my-account",
+        *,
+        warm_navigation: bool = True,
+    ) -> dict:
         """Proactively check whether the browser session is still authenticated.
 
         Returns a dict with:
           healthy: bool
           reason: str  — "ok" | "http_401" | "http_403" | "challenge_detected"
                          | "login_redirect" | "login_page_title"
+                         | "login_page_content"
           status: int | None  — final HTTP status code
           challenge: bool
+          definitive_logged_out: bool
         """
         if not self._started:
             self.start()
 
         page = None
         try:
-            page = self._context.new_page()
+            page = self._get_or_create_health_page()
             timeout_ms = self.navigation_timeout_seconds * 1000
+            if warm_navigation and self.session_mode != "cdp_attach":
+                self._warm_session_health_navigation(page, timeout_ms)
             response = page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
             response_status: int | None = response.status if response is not None else None
 
-            page.wait_for_timeout(1000)
-            html = page.content()
-            body_text = self._safe_inner_text(page, "body")
-            page_title = self._safe_page_title(page).lower()
-
-            challenge = self._detect_challenge(
-                body_text_lower=body_text.lower(),
-                html_lower=html.lower(),
-                page_title=page_title,
-            )
+            page.wait_for_timeout(random.randint(1500, 2500))
+            html, body_text, page_title, challenge = self._session_health_page_state(page)
             if challenge:
-                return {"healthy": False, "reason": "challenge_detected", "status": response_status, "challenge": True}
+                return {
+                    "healthy": False,
+                    "reason": "challenge_detected",
+                    "status": response_status,
+                    "challenge": True,
+                    "definitive_logged_out": False,
+                }
 
             if response_status in {401, 403}:
-                return {"healthy": False, "reason": f"http_{response_status}", "status": response_status, "challenge": False}
+                try:
+                    page.wait_for_load_state("networkidle", timeout=5000)
+                except Exception:
+                    try:
+                        page.wait_for_timeout(3000)
+                    except Exception:
+                        pass
+                html, body_text, page_title, challenge = self._session_health_page_state(page)
+                if challenge:
+                    return {
+                        "healthy": False,
+                        "reason": "challenge_detected",
+                        "status": response_status,
+                        "challenge": True,
+                        "definitive_logged_out": False,
+                    }
+                return {
+                    "healthy": False,
+                    "reason": f"http_{response_status}",
+                    "status": response_status,
+                    "challenge": False,
+                    "definitive_logged_out": False,
+                }
 
             # Check if we were redirected to a login page
             final_url = ""
@@ -403,17 +435,48 @@ class BrowserProbe:
             except Exception:
                 pass
             if any(pat in final_url for pat in ("signin", "login", "sign-in", "log-in")):
-                return {"healthy": False, "reason": "login_redirect", "status": response_status, "challenge": False}
+                return {
+                    "healthy": False,
+                    "reason": "login_redirect",
+                    "status": response_status,
+                    "challenge": False,
+                    "definitive_logged_out": True,
+                }
             if any(pat in page_title for pat in ("sign in", "log in", "login")):
-                return {"healthy": False, "reason": "login_page_title", "status": response_status, "challenge": False}
+                return {
+                    "healthy": False,
+                    "reason": "login_page_title",
+                    "status": response_status,
+                    "challenge": False,
+                    "definitive_logged_out": True,
+                }
+            body_text_lower = body_text.lower()
+            if self._has_password_input(page) or "sign in to your account" in body_text_lower:
+                return {
+                    "healthy": False,
+                    "reason": "login_page_content",
+                    "status": response_status,
+                    "challenge": False,
+                    "definitive_logged_out": True,
+                }
 
-            return {"healthy": True, "reason": "ok", "status": response_status, "challenge": False}
+            return {
+                "healthy": True,
+                "reason": "ok",
+                "status": response_status,
+                "challenge": False,
+                "definitive_logged_out": False,
+            }
         except Exception:
             raise
         finally:
             if page is not None:
                 try:
-                    page.close()
+                    page.goto(
+                        self.WARMUP_URL,
+                        wait_until="domcontentloaded",
+                        timeout=self.navigation_timeout_seconds * 1000,
+                    )
                 except Exception:
                     pass
 
@@ -564,6 +627,15 @@ class BrowserProbe:
             # Warm-up is best-effort; fall through to the normal event navigation.
             return False
 
+    def _warm_session_health_navigation(self, page: Any, timeout_ms: int):
+        """Best-effort homepage warmup before the account health check."""
+        try:
+            page.goto(self.WARMUP_URL, wait_until="domcontentloaded", timeout=timeout_ms)
+            page.wait_for_timeout(random.randint(400, 1200))
+            self._human_jitter(page)
+        except Exception:
+            return
+
     @staticmethod
     def _human_jitter(page: Any):
         """A small, random scroll some of the time so interaction isn't perfectly static."""
@@ -589,7 +661,7 @@ class BrowserProbe:
                         pass
                 # Reuse an idle blank tab (e.g. the one Chrome opens on launch) instead
                 # of opening a new one, so blank tabs don't pile up.
-                assigned = {id(p) for p in self._event_pages.values()}
+                assigned = self._assigned_page_ids()
                 for existing in list(getattr(self._context, "pages", [])):
                     try:
                         if id(existing) in assigned or existing.is_closed():
@@ -627,7 +699,7 @@ class BrowserProbe:
                     return existing, False
 
             # Reuse the initial about:blank tab when no event tabs exist yet.
-            assigned_pages = {id(page) for page in self._event_pages.values()}
+            assigned_pages = self._assigned_page_ids()
             for existing in pages:
                 try:
                     existing_url = str(getattr(existing, "url", "")).lower()
@@ -641,6 +713,37 @@ class BrowserProbe:
         if self.reuse_event_tabs:
             self._event_pages[event_id] = page
         return page, True
+
+    def _assigned_page_ids(self) -> set[int]:
+        assigned = {id(p) for p in self._event_pages.values() if p is not None}
+        if self._health_page is not None:
+            assigned.add(id(self._health_page))
+        return assigned
+
+    def _get_or_create_health_page(self):
+        cached = self._health_page
+        if cached is not None:
+            try:
+                if not cached.is_closed():
+                    return cached
+            except Exception:
+                pass
+
+        assigned = self._assigned_page_ids()
+        for existing in list(getattr(self._context, "pages", [])):
+            try:
+                if id(existing) in assigned or existing.is_closed():
+                    continue
+                existing_url = str(getattr(existing, "url", "")).lower()
+            except Exception:
+                continue
+            if existing_url in ("", "about:blank"):
+                self._health_page = existing
+                return existing
+
+        page = self._context.new_page()
+        self._health_page = page
+        return page
 
     def _capture_response(self, response, snapshot: _NetworkSnapshot):
         try:
@@ -842,6 +945,25 @@ class BrowserProbe:
         if "cf-challenge" in html_lower or "datadome" in html_lower:
             return True
         return False
+
+    def _session_health_page_state(self, page) -> tuple[str, str, str, bool]:
+        html = page.content()
+        body_text = self._safe_inner_text(page, "body")
+        page_title = self._safe_page_title(page).lower()
+        challenge = self._detect_challenge(
+            body_text_lower=body_text.lower(),
+            html_lower=html.lower(),
+            page_title=page_title,
+        )
+        return html, body_text, page_title, challenge
+
+    @staticmethod
+    def _has_password_input(page) -> bool:
+        try:
+            locator = page.locator("input[type='password'], input[name='password'], input#password")
+            return locator.count() > 0
+        except Exception:
+            return False
 
     @staticmethod
     def _safe_inner_text(page, selector: str) -> str:

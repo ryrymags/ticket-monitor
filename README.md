@@ -9,7 +9,8 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 ## 📋 Recent Changes
 
 <!-- CHANGELOG_START -->
-- `969b0c8`  2026-07-01  Add Uptime tab, fix History-tab crash, ticket-seen stats, ntfy push UI
+- `c59f8e4`  2026-07-01  Fix session health block handling
+- `b31a0f3`  2026-07-01  Add Uptime tab, fix History-tab crash, ticket-seen stats, ntfy push UI
 - `dc7fefd`  2026-06-24  Anti-block: headful Chrome, human-like nav, fast adaptive cadence
 - `809c90f`  2026-06-24  Honest alert delivery, startup warmup grace, real login verification
 - `f1b7054`  2026-06-24  Sync GUI/ping degraded state, add in-app fixes, challenge cooldown
@@ -18,7 +19,6 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 - `9ea780a`  2026-06-23  Make history de-duper runnable from terminal anywhere + add Mac launcher
 - `6e53adc`  2026-06-23  Add re-runnable ticket-history dedupe cleanup
 - `61fb6c4`  2026-06-23  Dedup repeat detections in BINGO counter and ticket history
-- `94e965e`  2026-06-23  Provision Google Chrome in GUI setup scripts for the chrome channel
 
 Full history: [CHANGELOG.md](CHANGELOG.md)
 <!-- CHANGELOG_END -->

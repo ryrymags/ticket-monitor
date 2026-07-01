@@ -148,6 +148,8 @@ class MonitorScheduler:
         self._last_browser_recycle_at: datetime | None = None
         self._stale_event_alerted: set[str] = set()
         self._last_session_health_alert_at: datetime | None = None
+        self._session_health_fail_streak: int = 0
+        self._last_cycle_blocked: bool = False
         # Adaptive cadence: multiplier (>= 1.0) applied to the random poll floor.
         # Grows when a cycle is blocked/challenged, decays back toward 1.0 when healthy.
         self._cadence_backoff: float = 1.0
@@ -215,13 +217,30 @@ class MonitorScheduler:
             self.state.set_last_cycle_started_at()
             try:
                 self._maybe_send_heartbeat()
-                self._maybe_check_session_health()
                 self._consume_browser_restart_request_if_any()
-                needs_slow_retry = self._run_cycle()
+                loop_check_now = datetime.now(timezone.utc)
+                if self._should_skip_cycle_for_challenge_cooldown(loop_check_now):
+                    until = self.state.get_challenge_cooldown_until()
+                    remaining = (until - loop_check_now).total_seconds() if until else 0.0
+                    logger.info(
+                        "Challenge cooldown active: %.0fs remaining; skipping active probes",
+                        max(0.0, remaining),
+                    )
+                    self._cycle_connectivity_down = False
+                    self._cycle_healthy_checks = 0
+                    self._cycle_bad_checks = 0
+                    self._last_cycle_blocked = True
+                    needs_slow_retry = True
+                else:
+                    needs_slow_retry = self._run_cycle()
+                    self._maybe_check_session_health()
                 self._consecutive_runtime_errors = 0
                 self.state.set_last_cycle_completed_at()
                 self.state.clear_last_error()
-                self._record_uptime_heartbeat(needs_slow_retry)
+                self._record_uptime_heartbeat(
+                    needs_slow_retry,
+                    reason="blocked" if self._last_cycle_blocked and self._cycle_healthy_checks == 0 else None,
+                )
 
                 sleep_time = self._next_sleep(blocked=needs_slow_retry)
 
@@ -288,27 +307,26 @@ class MonitorScheduler:
                 self.uptime.heartbeat(now, "down", "no_internet", expected_gap_seconds=gap)
                 return
 
-            # Session-level problems keep monitoring impaired even though pages load:
-            # a signed-out session can't grab tickets; an auth pause is a cooldown.
-            session_reason = None
-            if self.state.get_session_logged_out():
-                session_reason = "logged_out"
-            else:
-                pause_until = self.state.get_auth_pause_until()
-                if pause_until is not None and now < pause_until:
-                    session_reason = "auth_paused"
-
             # Classify from THIS cycle's actual results — not lagging cadence/outage
-            # flags. Clean scans (even sold-out) are healthy; a block/challenge/error
-            # this cycle, or a session problem, is impaired.
-            if reason is not None or self._cycle_bad_checks > 0 or session_reason is not None:
-                state, out_reason = "impaired", (reason or session_reason or "blocked")
+            # flags. Clean scans (even sold-out) are healthy. A block/challenge/error
+            # from this cycle is impaired. Session-only problems are used only when
+            # no event data flowed this cycle, so the timeline measures monitor
+            # visibility while the banner reports auth state.
+            if reason is not None or self._cycle_bad_checks > 0:
+                state, out_reason = "impaired", (reason or "blocked")
             elif self._cycle_healthy_checks > 0:
                 state, out_reason = "healthy", None
             else:
-                # No checks ran and nothing flagged — fall back to the cadence hint.
-                state = "impaired" if needs_slow_retry else "healthy"
-                out_reason = "blocked" if needs_slow_retry else None
+                if self.state.get_session_logged_out():
+                    state, out_reason = "impaired", "logged_out"
+                else:
+                    pause_until = self.state.get_auth_pause_until()
+                    if pause_until is not None and now < pause_until:
+                        state, out_reason = "impaired", "auth_paused"
+                    else:
+                        # No checks ran and nothing flagged — fall back to the cadence hint.
+                        state = "impaired" if needs_slow_retry else "healthy"
+                        out_reason = "blocked" if needs_slow_retry else None
 
             self.uptime.heartbeat(now, state, out_reason, expected_gap_seconds=gap)
         except Exception as exc:  # pragma: no cover - telemetry must never crash the loop
@@ -319,8 +337,8 @@ class MonitorScheduler:
         self.probe.start()
         self.state.set_last_cycle_started_at()
         self._maybe_send_heartbeat()
-        self._maybe_check_session_health()
         self._run_cycle()
+        self._maybe_check_session_health()
         self._evaluate_manual_action_escalation(datetime.now(timezone.utc))
         self.state.set_last_cycle_completed_at()
         self.state.clear_last_error()
@@ -403,6 +421,7 @@ class MonitorScheduler:
                 needs_slow_retry = True
                 break
 
+        self._last_cycle_blocked = self._cycle_bad_checks > 0
         return needs_slow_retry
 
     def _check_event_poll_staleness(self, now: datetime) -> bool:
@@ -866,9 +885,9 @@ class MonitorScheduler:
 
         indicators = result.raw_indicators if isinstance(result.raw_indicators, dict) else {}
         status = indicators.get("response_status")
-        if status in {401, 403}:
+        if status == 401:
             return True
-        if status == 429:
+        if status in {403, 429}:
             return False
 
         if result.signal_type != ProbeSignalType.NONE:
@@ -878,7 +897,7 @@ class MonitorScheduler:
         if any(token in page_title for token in ("sign in", "log in", "login")):
             return True
 
-        return status is None
+        return False
 
     def _reload_probe_after_reauth(self, now: datetime, event_name: str) -> bool:
         try:
@@ -1048,9 +1067,26 @@ class MonitorScheduler:
 
     def _maybe_check_session_health(self, now: datetime | None = None):
         now = now or datetime.now(timezone.utc)
-        interval = self.config.auth_session_health_check_interval_seconds
+        interval = self._session_health_due_interval()
         last = self.state.get_last_session_health_check_at()
         if last is not None and (now - last).total_seconds() < interval:
+            return
+
+        cooldown_until = self.state.get_challenge_cooldown_until()
+        if cooldown_until is not None and now < cooldown_until:
+            logger.debug(
+                "Skipping session health check during challenge cooldown until %s",
+                cooldown_until.isoformat(),
+            )
+            return
+
+        pending = self.state.get_session_logout_pending_count()
+        if (
+            self._last_cycle_blocked
+            and not self.state.get_session_logged_out()
+            and pending <= 0
+        ):
+            logger.debug("Deferring session health check after a blocked event cycle")
             return
 
         url = self.config.auth_session_health_check_url
@@ -1070,6 +1106,9 @@ class MonitorScheduler:
 
         if result.get("healthy"):
             logger.debug("Session health check passed (status=%s)", result.get("status"))
+            self._session_health_fail_streak = 0
+            self.state.set_session_logout_pending_count(0)
+            self.state.set_last_session_health_reason("ok")
             if self.state.get_session_logged_out():
                 logger.info("Session health recovered; clearing logged-out state")
                 self.state.set_session_logged_out(False)
@@ -1077,27 +1116,73 @@ class MonitorScheduler:
 
         reason = result.get("reason", "unknown")
         status = result.get("status")
-        challenge = result.get("challenge", False)
-        # A genuine logged-out signal (sign-in redirect / login page / 401-403 with no
-        # challenge) is the ONE thing that needs the human — flag it so the escalation
-        # pings for re-login. A challenge here is a DataDome block, which self-heals.
-        logged_out = (not challenge) and reason in {
-            "login_redirect",
-            "login_page_title",
-            "http_401",
-            "http_403",
-        }
-        if logged_out:
-            if not self.state.get_session_logged_out():
-                logger.error("Session health: logged out (reason=%s) — will ping for re-login", reason)
-            self.state.set_session_logged_out(True)
-        else:
+        challenge = bool(result.get("challenge", False))
+        definitive = bool(result.get("definitive_logged_out", False))
+        self.state.set_last_session_health_reason(str(reason))
+
+        if challenge or reason in {"challenge_detected", "http_401", "http_403"}:
+            self._session_health_fail_streak += 1
+            outcome = "challenge" if challenge or reason == "challenge_detected" else "blocked"
+            self.state.record_check_outcome(outcome, now)
             logger.warning(
-                "Session health check failed (log-only, self-heals): reason=%s status=%s challenge=%s",
+                "Session health check blocked (self-heals): reason=%s status=%s challenge=%s streak=%d",
                 reason,
                 status,
                 challenge,
+                self._session_health_fail_streak,
             )
+            return
+
+        if not definitive:
+            self._session_health_fail_streak += 1
+            self.state.record_check_outcome("blocked", now)
+            logger.warning(
+                "Session health check failed without definitive logout: reason=%s status=%s streak=%d",
+                reason,
+                status,
+                self._session_health_fail_streak,
+            )
+            return
+
+        self._session_health_fail_streak = 0
+        if self.state.get_session_logged_out():
+            self.state.set_session_logout_pending_count(0)
+            logger.debug("Session health still logged out (reason=%s)", reason)
+            return
+
+        pending = self.state.get_session_logout_pending_count() + 1
+        required = max(1, int(self.config.auth_session_logout_confirmations_required))
+        if pending < required:
+            self.state.set_session_logout_pending_count(pending)
+            logger.warning(
+                "Session health: possible sign-out (reason=%s, confirmation %d/%d) — confirming",
+                reason,
+                pending,
+                required,
+            )
+            return
+
+        self.state.set_session_logout_pending_count(0)
+        logger.error("Session health: confirmed logged out (reason=%s) — will ping for re-login", reason)
+        self.state.set_session_logged_out(True)
+
+    def _session_health_due_interval(self) -> float:
+        if (
+            not self.state.get_session_logged_out()
+            and self.state.get_session_logout_pending_count() <= 0
+            and self._session_health_fail_streak <= 0
+        ):
+            return float(self.config.auth_session_health_check_interval_seconds)
+
+        base = max(30, int(self.config.auth_session_recheck_base_seconds))
+        cap = max(base, int(self.config.auth_session_recheck_max_seconds))
+        exponent = max(0, self._session_health_fail_streak - 1)
+        interval = min(base * (2 ** exponent), cap)
+        return max(1.0, float(interval) * self._rand.uniform(0.85, 1.15))
+
+    def _should_skip_cycle_for_challenge_cooldown(self, now: datetime) -> bool:
+        until = self.state.get_challenge_cooldown_until()
+        return until is not None and now < until and not self._in_startup_warmup(now)
 
     # ---- Sleep/backoff helpers ----
 
@@ -1167,8 +1252,8 @@ class MonitorScheduler:
     def _update_challenge_cooldown(self, *, result, status, now: datetime):
         """Grow/clear the challenge cooldown based on the latest probe.
 
-        Captcha/challenge or HTTP 429 → exponential cooldown (base * 2^(n-1), capped),
-        with the server's Retry-After honored as a floor. A clean check resets it.
+        Captcha/challenge or HTTP 429 -> exponential cooldown, then tiered quiet
+        periods for persistent blocks. A clean check resets it.
         """
         is_challenge = bool(result.challenge_detected) or status == 429
         if not is_challenge:
@@ -1180,19 +1265,32 @@ class MonitorScheduler:
         self._consecutive_challenges += 1
         base = max(1, int(self.config.browser_challenge_cooldown_base_seconds))
         cap = max(base, int(self.config.browser_challenge_cooldown_max_seconds))
+        escalate_after = max(1, int(self.config.browser_challenge_cooldown_escalate_after))
+        tier_every = max(1, int(self.config.browser_challenge_cooldown_tier_every))
+        tiers = [max(1, int(v)) for v in self.config.browser_challenge_cooldown_tiers_seconds]
+        if not tiers:
+            tiers = [cap]
         # During startup/recycle warmup, keep the cooldown at its base (no exponential
         # growth) so the monitor keeps trying to break in rather than backing off for
         # tens of minutes on the expected initial block flurry.
         if self._in_startup_warmup(now):
             cooldown = base
+        elif self._consecutive_challenges >= escalate_after:
+            idx = min(
+                (self._consecutive_challenges - escalate_after) // tier_every,
+                len(tiers) - 1,
+            )
+            cooldown = tiers[idx]
         else:
             cooldown = min(base * (2 ** (self._consecutive_challenges - 1)), cap)
+        cooldown = max(1, int(cooldown * self._rand.uniform(0.85, 1.15)))
 
         retry_after = None
         if isinstance(result.raw_indicators, dict):
             retry_after = result.raw_indicators.get("retry_after_seconds")
         if isinstance(retry_after, int) and retry_after > 0:
-            cooldown = max(cooldown, min(retry_after, cap))
+            retry_after_cap = max(cap, tiers[-1])
+            cooldown = max(cooldown, min(retry_after, retry_after_cap))
 
         self.state.set_challenge_cooldown_until(now + timedelta(seconds=cooldown))
         logger.warning(
