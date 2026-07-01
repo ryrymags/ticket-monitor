@@ -100,10 +100,21 @@ browser:
   storage_state_path: "secrets/tm_storage_state.json"
   channel: "chrome"                     # "" = bundled Chromium (works on all PCs)
                                         # "chrome" = use system Google Chrome (better bot-evasion; falls back to Chromium if not installed)
-  poll_min_seconds: 12                  # Adaptive-fast floor; wider jitter lowers block risk
+  per_event_scheduler_enabled: true     # true = check one due event per wake; false = legacy all-event cycles
+  per_event_poll_min_seconds: 45        # Each event gets its own randomized next-due time
+  per_event_poll_max_seconds: 105
+  per_event_min_gap_between_checks_seconds: 20
+  event_weights:                        # Soft priority; higher weight gets earlier randomized due times
+    "EXAMPLEEVENT0001": 2               # primary example weight
+    "EXAMPLEEVENT0002": 1               # secondary example weight
+  poll_min_seconds: 12                  # Legacy cycle-mode fallback when per_event_scheduler_enabled=false
   poll_max_seconds: 24
   headless: true
   reuse_event_tabs: true
+  single_event_page: true               # Reuse one active event tab and navigate it between events
+  event_dwell_min_seconds: 3            # Post-load dwell before reading the page
+  event_dwell_max_seconds: 8
+  homepage_warmup_interval_seconds: 1800
   poll_interval_seconds: 12
   poll_jitter_seconds: 2
   event_stagger_seconds: 6

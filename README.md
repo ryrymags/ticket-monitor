@@ -9,7 +9,8 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 ## 📋 Recent Changes
 
 <!-- CHANGELOG_START -->
-- `c59f8e4`  2026-07-01  Fix session health block handling
+- `6dbf995`  2026-07-01  Add per-event Ticketmaster scheduler
+- `c57c29d`  2026-07-01  Fix session health block handling
 - `b31a0f3`  2026-07-01  Add Uptime tab, fix History-tab crash, ticket-seen stats, ntfy push UI
 - `dc7fefd`  2026-06-24  Anti-block: headful Chrome, human-like nav, fast adaptive cadence
 - `809c90f`  2026-06-24  Honest alert delivery, startup warmup grace, real login verification
@@ -18,7 +19,6 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 - `4d73db2`  2026-06-24  Add ntfy.sh push notifications with iOS app deep-linking
 - `9ea780a`  2026-06-23  Make history de-duper runnable from terminal anywhere + add Mac launcher
 - `6e53adc`  2026-06-23  Add re-runnable ticket-history dedupe cleanup
-- `61fb6c4`  2026-06-23  Dedup repeat detections in BINGO counter and ticket history
 
 Full history: [CHANGELOG.md](CHANGELOG.md)
 <!-- CHANGELOG_END -->
@@ -244,7 +244,8 @@ python monitor.py --doctor
 ## 📝 Notes
 
 - This tool only **notifies** you — it does not buy tickets automatically
-- The monitor refreshes event pages every 45–75 seconds (randomized to be polite)
+- The monitor checks one due event at a time; each active event is rescheduled randomly every 45–105 seconds, with at least 20 seconds between event checks by default
+- The browser keeps one active Ticketmaster event tab and navigates it between events instead of keeping every event page hot
 - Ticketmaster's Face Value Exchange tickets sell out fast — act quickly when you get a BINGO!
 - Your Ticketmaster session may expire after a few weeks — re-login from the Login tab if you stop getting proper checks
 

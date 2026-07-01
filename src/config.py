@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import sys
 from dataclasses import dataclass, field
@@ -145,6 +146,22 @@ class MonitorConfig:
     # Template that opens the native app — for Ticketmaster, an AppsFlyer OneLink.
     # Supports {url_encoded}, {url}, {event_id}. Empty = no "Open in App" button.
     ntfy_app_deep_link: str = ""
+    browser_per_event_scheduler_enabled: bool = True
+    browser_per_event_poll_min_seconds: int = 45
+    browser_per_event_poll_max_seconds: int = 105
+    browser_per_event_min_gap_between_checks_seconds: int = 20
+    browser_event_weights: dict[str, float] = field(default_factory=dict)
+    browser_single_event_page: bool = True
+    browser_event_dwell_min_seconds: int = 3
+    browser_event_dwell_max_seconds: int = 8
+    browser_homepage_warmup_interval_seconds: int = 1800
+
+
+DEFAULT_EVENT_WEIGHTS = {
+    # Current target-history bias: Wednesday gets a soft priority over Tuesday.
+    "EXAMPLEEVENT0001": 2.0,
+    "EXAMPLEEVENT0002": 1.0,
+}
 
 
 def load_config(path: str = "config.yaml") -> MonitorConfig:
@@ -274,6 +291,67 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
     browser_reuse_event_tabs = safe_bool(browser, "reuse_event_tabs", True)
     browser_poll_min_seconds = safe_int(browser, "poll_min_seconds", 15, "browser.poll_min_seconds")
     browser_poll_max_seconds = safe_int(browser, "poll_max_seconds", 25, "browser.poll_max_seconds")
+    browser_per_event_scheduler_enabled = safe_bool(browser, "per_event_scheduler_enabled", True)
+    browser_per_event_poll_min_seconds = safe_int(
+        browser,
+        "per_event_poll_min_seconds",
+        45,
+        "browser.per_event_poll_min_seconds",
+    )
+    browser_per_event_poll_max_seconds = safe_int(
+        browser,
+        "per_event_poll_max_seconds",
+        105,
+        "browser.per_event_poll_max_seconds",
+    )
+    browser_per_event_min_gap_between_checks_seconds = safe_int(
+        browser,
+        "per_event_min_gap_between_checks_seconds",
+        20,
+        "browser.per_event_min_gap_between_checks_seconds",
+    )
+    browser_single_event_page = safe_bool(browser, "single_event_page", True)
+    browser_event_dwell_min_seconds = safe_int(
+        browser,
+        "event_dwell_min_seconds",
+        3,
+        "browser.event_dwell_min_seconds",
+    )
+    browser_event_dwell_max_seconds = safe_int(
+        browser,
+        "event_dwell_max_seconds",
+        8,
+        "browser.event_dwell_max_seconds",
+    )
+    browser_homepage_warmup_interval_seconds = safe_int(
+        browser,
+        "homepage_warmup_interval_seconds",
+        1800,
+        "browser.homepage_warmup_interval_seconds",
+    )
+    browser_event_weights = dict(DEFAULT_EVENT_WEIGHTS)
+    raw_event_weights = browser.get("event_weights")
+    if raw_event_weights is not None:
+        if isinstance(raw_event_weights, dict):
+            browser_event_weights = {}
+            for event_id, raw_weight in raw_event_weights.items():
+                event_id_str = str(event_id).strip()
+                if not event_id_str:
+                    errors.append("browser.event_weights keys must be non-empty event IDs")
+                    continue
+                try:
+                    weight = float(raw_weight)
+                except (ValueError, TypeError):
+                    errors.append(
+                        f"browser.event_weights[{event_id_str!r}] must be a number, got: {raw_weight!r}"
+                    )
+                    continue
+                if not math.isfinite(weight) or weight <= 0:
+                    errors.append(f"browser.event_weights[{event_id_str!r}] must be > 0")
+                    continue
+                browser_event_weights[event_id_str] = weight
+        else:
+            errors.append("browser.event_weights must be a mapping of event_id to positive weight")
 
     browser_headless = safe_bool(browser, "headless", True)
     browser_poll_interval_seconds = safe_int(
@@ -555,6 +633,22 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
         errors.append("browser.poll_max_seconds must be >= 1")
     if browser_poll_min_seconds > browser_poll_max_seconds:
         errors.append("browser.poll_min_seconds must be <= browser.poll_max_seconds")
+    if browser_per_event_poll_min_seconds < 1:
+        errors.append("browser.per_event_poll_min_seconds must be >= 1")
+    if browser_per_event_poll_max_seconds < 1:
+        errors.append("browser.per_event_poll_max_seconds must be >= 1")
+    if browser_per_event_poll_min_seconds > browser_per_event_poll_max_seconds:
+        errors.append("browser.per_event_poll_min_seconds must be <= browser.per_event_poll_max_seconds")
+    if browser_per_event_min_gap_between_checks_seconds < 0:
+        errors.append("browser.per_event_min_gap_between_checks_seconds must be >= 0")
+    if browser_event_dwell_min_seconds < 0:
+        errors.append("browser.event_dwell_min_seconds must be >= 0")
+    if browser_event_dwell_max_seconds < 0:
+        errors.append("browser.event_dwell_max_seconds must be >= 0")
+    if browser_event_dwell_min_seconds > browser_event_dwell_max_seconds:
+        errors.append("browser.event_dwell_min_seconds must be <= browser.event_dwell_max_seconds")
+    if browser_homepage_warmup_interval_seconds < 0:
+        errors.append("browser.homepage_warmup_interval_seconds must be >= 0")
     if browser_poll_interval_seconds < 1:
         errors.append("browser.poll_interval_seconds must be >= 1")
     if browser_poll_jitter_seconds < 0:
@@ -733,4 +827,13 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
         log_file=str(logging_cfg.get("file", "logs/monitor.log")),
         log_max_file_size_mb=log_max_file_size_mb,
         log_backup_count=log_backup_count,
+        browser_per_event_scheduler_enabled=browser_per_event_scheduler_enabled,
+        browser_per_event_poll_min_seconds=browser_per_event_poll_min_seconds,
+        browser_per_event_poll_max_seconds=browser_per_event_poll_max_seconds,
+        browser_per_event_min_gap_between_checks_seconds=browser_per_event_min_gap_between_checks_seconds,
+        browser_event_weights=browser_event_weights,
+        browser_single_event_page=browser_single_event_page,
+        browser_event_dwell_min_seconds=browser_event_dwell_min_seconds,
+        browser_event_dwell_max_seconds=browser_event_dwell_max_seconds,
+        browser_homepage_warmup_interval_seconds=browser_homepage_warmup_interval_seconds,
     )

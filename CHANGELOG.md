@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `c59f8e4`  2026-07-01 16:51  Fix session health block handling
+- `6dbf995`  2026-07-01 19:05  Add per-event Ticketmaster scheduler
+
+- `c57c29d`  2026-07-01 16:51  Fix session health block handling
 
 - `b31a0f3`  2026-07-01 16:00  Add Uptime tab, fix History-tab crash, ticket-seen stats, ntfy push UI
 

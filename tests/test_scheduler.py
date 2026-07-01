@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -814,6 +815,124 @@ class TestCycleBehavior:
         assert scheduler._runtime_error_backoff() == 40.0
         scheduler._consecutive_runtime_errors = 10
         assert scheduler._runtime_error_backoff() == 120.0
+
+
+class TestPerEventScheduler:
+    def _two_event_config(self, **overrides):
+        events = overrides.pop(
+            "events",
+            [
+                EventConfig(event_id="tuesday", name="Tuesday", date="2030-01-01", url="http://tuesday"),
+                EventConfig(event_id="wednesday", name="Wednesday", date="2030-01-02", url="http://wednesday"),
+            ],
+        )
+        defaults = dict(
+            events=events,
+            browser_per_event_scheduler_enabled=True,
+            browser_per_event_poll_min_seconds=45,
+            browser_per_event_poll_max_seconds=105,
+            browser_per_event_min_gap_between_checks_seconds=20,
+        )
+        defaults.update(overrides)
+        return _make_config(**defaults)
+
+    def test_due_cycle_checks_only_one_event_and_reschedules_it(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path, self._two_event_config())
+        due_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        scheduler._event_schedule = {"tuesday": due_at, "wednesday": due_at}
+        clean = _make_result(
+            available=False,
+            blocked=False,
+            signal_type=ProbeSignalType.NONE,
+            dom_signals=[],
+        )
+        scheduler.probe.check_event.return_value = clean
+
+        needs_slow_retry = scheduler._run_due_event_cycle()
+
+        assert needs_slow_retry is False
+        scheduler.probe.check_event.assert_called_once()
+        checked_event_id = scheduler.probe.check_event.call_args.args[0]
+        other_event_id = "wednesday" if checked_event_id == "tuesday" else "tuesday"
+        assert scheduler._event_schedule[checked_event_id] > due_at
+        assert scheduler._event_schedule[other_event_id] == due_at
+        assert scheduler.state.get_last_check(checked_event_id) is not None
+        assert scheduler.state.get_last_check(other_event_id) is None
+
+    def test_min_gap_prevents_back_to_back_due_events(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path, self._two_event_config())
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        scheduler._event_schedule = {
+            "tuesday": base - timedelta(seconds=1),
+            "wednesday": base - timedelta(seconds=1),
+        }
+        scheduler._next_event_check_not_before = base + timedelta(seconds=20)
+
+        event, wait_seconds = scheduler._select_due_event(base + timedelta(seconds=5))
+
+        assert event is None
+        assert wait_seconds == 15
+
+    def test_weighted_intervals_favor_wednesday_without_fixed_sequence(self, tmp_path):
+        scheduler = _make_scheduler(
+            tmp_path,
+            self._two_event_config(
+                browser_event_weights={"tuesday": 1.0, "wednesday": 2.0},
+            ),
+        )
+        scheduler._rand = random.Random(1234)
+
+        tuesday = [scheduler._event_interval_seconds("tuesday") for _ in range(500)]
+        wednesday = [scheduler._event_interval_seconds("wednesday") for _ in range(500)]
+
+        assert min(tuesday + wednesday) >= 45
+        assert max(tuesday + wednesday) <= 105
+        assert sum(wednesday) / len(wednesday) < sum(tuesday) / len(tuesday)
+        assert len({round(value, 1) for value in wednesday[:20]}) > 5
+
+    def test_blocked_event_gets_longer_cooldown(self, tmp_path):
+        scheduler = _make_scheduler(
+            tmp_path,
+            self._two_event_config(
+                events=[
+                    EventConfig(event_id="event-1", name="Night 1", date="2030-01-01", url="http://event")
+                ],
+                browser_per_event_poll_min_seconds=10,
+                browser_per_event_poll_max_seconds=10,
+                browser_challenge_retry_seconds=60,
+            ),
+        )
+        scheduler._rand = _FixedRand()
+        due_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        scheduler._event_schedule = {"event-1": due_at}
+        blocked = _make_result(
+            available=False,
+            blocked=True,
+            signal_type=ProbeSignalType.NONE,
+            dom_signals=[],
+        )
+        scheduler.probe.check_event.return_value = blocked
+
+        scheduler._run_due_event_cycle()
+
+        assert (scheduler._event_schedule["event-1"] - datetime.now(timezone.utc)).total_seconds() >= 59
+
+    def test_legacy_cycle_mode_still_checks_all_events(self, tmp_path):
+        scheduler = _make_scheduler(
+            tmp_path,
+            self._two_event_config(browser_per_event_scheduler_enabled=False),
+        )
+        clean = _make_result(
+            available=False,
+            blocked=False,
+            signal_type=ProbeSignalType.NONE,
+            dom_signals=[],
+        )
+        scheduler.probe.check_event.return_value = clean
+
+        scheduler._run_cycle()
+
+        assert scheduler.probe.check_event.call_count == 2
 
 
 class TestSelfHealing:

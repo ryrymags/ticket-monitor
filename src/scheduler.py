@@ -7,7 +7,9 @@ import logging
 import random
 import time
 from collections import deque
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from .browser_probe import BrowserProbe, BrowserProbeError
 from .config import EventConfig, MonitorConfig
@@ -79,6 +81,14 @@ _CONNECTIVITY_ERROR_SIGNATURES = (
 )
 
 
+@dataclass
+class _EventCheckOutcome:
+    needs_slow_retry: bool = False
+    had_response: bool = False
+    had_connectivity_error: bool = False
+    result: Any | None = None
+
+
 def _is_connectivity_error(exc: Exception) -> bool:
     """True when an exception looks like a lost/absent internet connection."""
     texts = [str(exc).lower()]
@@ -124,11 +134,15 @@ class MonitorScheduler:
             cdp_endpoint_url=config.browser_cdp_endpoint_url,
             cdp_connect_timeout_seconds=config.browser_cdp_connect_timeout_seconds,
             reuse_event_tabs=config.browser_reuse_event_tabs,
+            single_event_page=config.browser_single_event_page,
             headless=config.browser_headless,
             navigation_timeout_seconds=config.browser_navigation_timeout_seconds,
             stealth_enabled=config.browser_stealth_enabled,
             locale=config.browser_locale,
             timezone_id=config.browser_timezone_id,
+            event_dwell_min_seconds=config.browser_event_dwell_min_seconds,
+            event_dwell_max_seconds=config.browser_event_dwell_max_seconds,
+            homepage_warmup_interval_seconds=config.browser_homepage_warmup_interval_seconds,
         )
         self.detector = detector or Detector(config.alerts_ticket_cooldown_seconds)
         self._rand = rand or random.Random()
@@ -170,6 +184,8 @@ class MonitorScheduler:
         # actually did (clean vs blocked/errored), not lagging cadence/outage flags.
         self._cycle_healthy_checks: int = 0
         self._cycle_bad_checks: int = 0
+        self._event_schedule: dict[str, datetime] = {}
+        self._next_event_check_not_before: datetime | None = None
 
     def stop(self):
         """Signal the loop to stop."""
@@ -232,7 +248,10 @@ class MonitorScheduler:
                     self._last_cycle_blocked = True
                     needs_slow_retry = True
                 else:
-                    needs_slow_retry = self._run_cycle()
+                    if self._per_event_scheduler_enabled():
+                        needs_slow_retry = self._run_due_event_cycle()
+                    else:
+                        needs_slow_retry = self._run_cycle()
                     self._maybe_check_session_health()
                 self._consecutive_runtime_errors = 0
                 self.state.set_last_cycle_completed_at()
@@ -242,7 +261,10 @@ class MonitorScheduler:
                     reason="blocked" if self._last_cycle_blocked and self._cycle_healthy_checks == 0 else None,
                 )
 
-                sleep_time = self._next_sleep(blocked=needs_slow_retry)
+                if self._per_event_scheduler_enabled():
+                    sleep_time = self._per_event_next_sleep(datetime.now(timezone.utc))
+                else:
+                    sleep_time = self._next_sleep(blocked=needs_slow_retry)
 
             except BrowserProbeError as exc:
                 logger.error("Browser probe runtime error: %s", exc)
@@ -337,7 +359,10 @@ class MonitorScheduler:
         self.probe.start()
         self.state.set_last_cycle_started_at()
         self._maybe_send_heartbeat()
-        self._run_cycle()
+        if self._per_event_scheduler_enabled():
+            self._run_due_event_cycle()
+        else:
+            self._run_cycle()
         self._maybe_check_session_health()
         self._evaluate_manual_action_escalation(datetime.now(timezone.utc))
         self.state.set_last_cycle_completed_at()
@@ -353,9 +378,7 @@ class MonitorScheduler:
         # connectivity error with zero responses means we're offline (→ down).
         # Reset up front so an early throw can't leak a stale value into the next
         # error-path heartbeat.
-        self._cycle_connectivity_down = False
-        self._cycle_healthy_checks = 0
-        self._cycle_bad_checks = 0
+        self._reset_cycle_tallies()
         had_response = False
         had_connectivity_error = False
 
@@ -368,45 +391,10 @@ class MonitorScheduler:
                 stagger = max(0.0, float(self.config.event_stagger_seconds) + self._rand.uniform(-2.0, 2.0))
                 self._interruptible_sleep(stagger)
 
-            try:
-                probe_result = self.probe.check_event(event_cfg.event_id, event_cfg.url)
-                had_response = True
-            except BrowserProbeError as exc:
-                logger.error("[%s] browser probe failed: %s", event_cfg.name, exc)
-                if _is_connectivity_error(exc):
-                    had_connectivity_error = True
-                self.state.set_last_error(self._classify_browser_probe_error(exc), f"{event_cfg.name}: {exc}")
-                self._handle_browser_probe_error(exc)
-                needs_slow_retry = True
-                continue
-            except Exception as exc:
-                logger.exception("[%s] unexpected per-event failure: %s", event_cfg.name, exc)
-                self.state.set_last_error(type(exc).__name__, f"{event_cfg.name}: {exc}")
-                self._maybe_send_error_alert(
-                    f"Unexpected per-event check failure for {event_cfg.name}: {type(exc).__name__}: {exc}",
-                    context={"event_name": event_cfg.name, "event_id": event_cfg.event_id},
-                )
-                needs_slow_retry = True
-                continue
-
-            logger.info(
-                "[%s] available=%s blocked=%s challenge=%s signal=%s confidence=%.2f",
-                event_cfg.name,
-                probe_result.available,
-                probe_result.blocked,
-                probe_result.challenge_detected,
-                probe_result.signal_type.value,
-                probe_result.signal_confidence,
-            )
-
-            if probe_result.blocked or probe_result.challenge_detected:
-                needs_slow_retry = True
-
-            self._handle_probe_result(event_cfg, probe_result)
-
-            self.state.set_last_check(event_cfg.event_id)
-            self._last_successful_check = datetime.now(timezone.utc)
-            self.state.set_last_successful_check()
+            outcome = self._check_one_event(event_cfg)
+            had_response = had_response or outcome.had_response
+            had_connectivity_error = had_connectivity_error or outcome.had_connectivity_error
+            needs_slow_retry = needs_slow_retry or outcome.needs_slow_retry
 
         # No response from any event + a connectivity error → the internet is down.
         # (A block page still returns a response, so that stays impaired, not down.)
@@ -423,6 +411,206 @@ class MonitorScheduler:
 
         self._last_cycle_blocked = self._cycle_bad_checks > 0
         return needs_slow_retry
+
+    def _run_due_event_cycle(self) -> bool:
+        """Check exactly one due event and reschedule that event."""
+        self._reset_cycle_tallies()
+        now = datetime.now(timezone.utc)
+        event_cfg, wait_seconds = self._select_due_event(now)
+        if event_cfg is None:
+            logger.debug("No event due yet; next due event in %.1fs", wait_seconds)
+            self._last_cycle_blocked = False
+            return False
+
+        logger.info("[%s] per-event scheduler wake: checking one due event", event_cfg.name)
+        outcome = self._check_one_event(event_cfg)
+        checked_at = datetime.now(timezone.utc)
+        self._cycle_connectivity_down = outcome.had_connectivity_error and not outcome.had_response
+        self._reschedule_event(event_cfg.event_id, checked_at, outcome.result)
+
+        needs_slow_retry = outcome.needs_slow_retry
+        if self._check_event_poll_staleness(now=checked_at):
+            needs_slow_retry = True
+
+        for configured_event in self.config.events:
+            if self.state.get_in_outage_state(configured_event.event_id):
+                needs_slow_retry = True
+                break
+
+        self._last_cycle_blocked = self._cycle_bad_checks > 0
+        return needs_slow_retry
+
+    def _reset_cycle_tallies(self):
+        self._cycle_connectivity_down = False
+        self._cycle_healthy_checks = 0
+        self._cycle_bad_checks = 0
+
+    def _check_one_event(self, event_cfg: EventConfig) -> _EventCheckOutcome:
+        try:
+            probe_result = self.probe.check_event(event_cfg.event_id, event_cfg.url)
+        except BrowserProbeError as exc:
+            logger.error("[%s] browser probe failed: %s", event_cfg.name, exc)
+            connectivity_error = _is_connectivity_error(exc)
+            self.state.set_last_error(self._classify_browser_probe_error(exc), f"{event_cfg.name}: {exc}")
+            self._handle_browser_probe_error(exc)
+            return _EventCheckOutcome(
+                needs_slow_retry=True,
+                had_response=False,
+                had_connectivity_error=connectivity_error,
+            )
+        except Exception as exc:
+            logger.exception("[%s] unexpected per-event failure: %s", event_cfg.name, exc)
+            self.state.set_last_error(type(exc).__name__, f"{event_cfg.name}: {exc}")
+            self._maybe_send_error_alert(
+                f"Unexpected per-event check failure for {event_cfg.name}: {type(exc).__name__}: {exc}",
+                context={"event_name": event_cfg.name, "event_id": event_cfg.event_id},
+            )
+            return _EventCheckOutcome(needs_slow_retry=True)
+
+        logger.info(
+            "[%s] available=%s blocked=%s challenge=%s signal=%s confidence=%.2f",
+            event_cfg.name,
+            probe_result.available,
+            probe_result.blocked,
+            probe_result.challenge_detected,
+            probe_result.signal_type.value,
+            probe_result.signal_confidence,
+        )
+
+        needs_slow_retry = probe_result.blocked or probe_result.challenge_detected
+        self._handle_probe_result(event_cfg, probe_result)
+
+        self.state.set_last_check(event_cfg.event_id)
+        self._last_successful_check = datetime.now(timezone.utc)
+        self.state.set_last_successful_check()
+        return _EventCheckOutcome(
+            needs_slow_retry=needs_slow_retry,
+            had_response=True,
+            result=probe_result,
+        )
+
+    def _per_event_scheduler_enabled(self) -> bool:
+        return bool(self.config.browser_per_event_scheduler_enabled)
+
+    def _ensure_event_schedule(self, now: datetime):
+        configured_ids = {event.event_id for event in self.config.events}
+        for event_id in list(self._event_schedule):
+            if event_id not in configured_ids:
+                self._event_schedule.pop(event_id, None)
+        for event in self.config.events:
+            self._event_schedule.setdefault(event.event_id, now)
+
+    def _select_due_event(self, now: datetime) -> tuple[EventConfig | None, float]:
+        if not self.config.events:
+            return None, 1.0
+        self._ensure_event_schedule(now)
+
+        gap_target = self._next_event_check_not_before
+        if gap_target is not None and now < gap_target:
+            return None, max(0.0, (gap_target - now).total_seconds())
+
+        event_by_id = {event.event_id: event for event in self.config.events}
+        earliest_due = min(self._event_schedule[event.event_id] for event in self.config.events)
+        if earliest_due > now:
+            return None, max(0.0, (earliest_due - now).total_seconds())
+
+        due_events = [
+            event_by_id[event_id]
+            for event_id, due_at in self._event_schedule.items()
+            if event_id in event_by_id and due_at <= earliest_due
+        ]
+        return self._weighted_choice(due_events), 0.0
+
+    def _weighted_choice(self, events: list[EventConfig]) -> EventConfig | None:
+        if not events:
+            return None
+        total = sum(self._event_weight(event.event_id) for event in events)
+        if total <= 0:
+            return events[0]
+        pick = self._rand.uniform(0.0, total)
+        cumulative = 0.0
+        for event in events:
+            cumulative += self._event_weight(event.event_id)
+            if pick <= cumulative:
+                return event
+        return events[-1]
+
+    def _reschedule_event(self, event_id: str, checked_at: datetime, result: Any | None):
+        interval = self._event_interval_seconds(event_id)
+        if self._result_needs_event_cooldown(result):
+            interval = max(interval, self._blocked_event_cooldown_seconds(result, checked_at))
+        self._event_schedule[event_id] = checked_at + timedelta(seconds=interval)
+
+        gap = max(0, int(self.config.browser_per_event_min_gap_between_checks_seconds))
+        if gap > 0:
+            self._next_event_check_not_before = checked_at + timedelta(seconds=gap)
+        else:
+            self._next_event_check_not_before = checked_at
+
+    def _event_interval_seconds(self, event_id: str) -> float:
+        low = float(self.config.browser_per_event_poll_min_seconds)
+        high = float(self.config.browser_per_event_poll_max_seconds)
+        if high <= low:
+            return max(1.0, low)
+
+        weight = self._event_weight(event_id)
+        if weight > 1.0 and hasattr(self._rand, "betavariate"):
+            fraction = self._rand.betavariate(1.0, weight)
+        elif 0.0 < weight < 1.0 and hasattr(self._rand, "betavariate"):
+            fraction = self._rand.betavariate(1.0 / weight, 1.0)
+        else:
+            fraction = self._rand.uniform(0.0, 1.0)
+        return max(1.0, low + (high - low) * fraction)
+
+    def _event_weight(self, event_id: str) -> float:
+        weights = self.config.browser_event_weights or {}
+        try:
+            return max(0.01, float(weights.get(event_id, 1.0)))
+        except (TypeError, ValueError):
+            return 1.0
+
+    @staticmethod
+    def _result_needs_event_cooldown(result: Any | None) -> bool:
+        if result is None:
+            return True
+        return bool(getattr(result, "blocked", False) or getattr(result, "challenge_detected", False))
+
+    def _blocked_event_cooldown_seconds(self, result: Any | None, now: datetime) -> float:
+        base = max(
+            float(self.config.browser_challenge_retry_seconds),
+            float(self.config.browser_per_event_poll_max_seconds),
+        )
+        retry_after = self._result_retry_after_seconds(result)
+        if retry_after is not None:
+            base = max(base, float(retry_after))
+
+        challenge_until = self.state.get_challenge_cooldown_until()
+        if challenge_until is not None and challenge_until > now:
+            base = max(base, (challenge_until - now).total_seconds())
+
+        return max(1.0, base * self._rand.uniform(0.85, 1.15))
+
+    @staticmethod
+    def _result_retry_after_seconds(result: Any | None) -> int | None:
+        if result is None:
+            return None
+        raw = getattr(result, "raw_indicators", None)
+        if not isinstance(raw, dict):
+            return None
+        retry_after = raw.get("retry_after_seconds")
+        if isinstance(retry_after, int) and retry_after > 0:
+            return retry_after
+        return None
+
+    def _per_event_next_sleep(self, now: datetime) -> float:
+        self._ensure_event_schedule(now)
+        if not self._event_schedule:
+            return 1.0
+        earliest_due = min(self._event_schedule.values())
+        target = earliest_due
+        if self._next_event_check_not_before is not None and target < self._next_event_check_not_before:
+            target = self._next_event_check_not_before
+        return max(1.0, (target - now).total_seconds())
 
     def _check_event_poll_staleness(self, now: datetime) -> bool:
         """Alert and self-heal when any configured event stops receiving checks."""
@@ -442,6 +630,14 @@ class MonitorScheduler:
                 age_seconds = int(uptime_seconds)
             else:
                 age_seconds = int(min((now - last_check).total_seconds(), uptime_seconds))
+
+            planned_due = self._event_schedule.get(event_id)
+            if (
+                self._per_event_scheduler_enabled()
+                and planned_due is not None
+                and now < planned_due + timedelta(seconds=threshold_seconds)
+            ):
+                continue
 
             if age_seconds > threshold_seconds:
                 stale_detected = True
