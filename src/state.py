@@ -376,6 +376,20 @@ class MonitorState:
         self._health()["session_logged_out"] = bool(value)
         self.save()
 
+    def get_session_logout_pending_count(self) -> int:
+        return int(self._health().get("session_logout_pending_count", 0) or 0)
+
+    def set_session_logout_pending_count(self, value: int):
+        self._health()["session_logout_pending_count"] = max(0, int(value))
+        self.save()
+
+    def get_last_session_health_reason(self) -> str:
+        return str(self._health().get("last_session_health_reason", "") or "")
+
+    def set_last_session_health_reason(self, reason: str | None):
+        self._health()["last_session_health_reason"] = str(reason or "")[:120]
+        self.save()
+
     def get_challenge_cooldown_until(self) -> datetime | None:
         return _iso_to_dt(self._health().get("challenge_cooldown_until"))
 
@@ -734,6 +748,10 @@ class MonitorState:
         health.setdefault("auth_reauth_attempt_events", [])
         health.setdefault("auth_reauth_attempts_last_hour", 0)
         health.setdefault("auth_pause_until", None)
+        health.setdefault("session_logged_out", False)
+        health.setdefault("session_logout_pending_count", 0)
+        health.setdefault("last_session_health_reason", "")
+        health.setdefault("challenge_cooldown_until", None)
         health.setdefault("attention_since", None)
         health.setdefault("attention_alerted", False)
         # Effectiveness metrics: per-hour outcome buckets (last ~25h) + lifetime totals.

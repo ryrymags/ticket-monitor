@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `969b0c8`  2026-07-01 16:00  Add Uptime tab, fix History-tab crash, ticket-seen stats, ntfy push UI
+- `c59f8e4`  2026-07-01 16:51  Fix session health block handling
+
+- `b31a0f3`  2026-07-01 16:00  Add Uptime tab, fix History-tab crash, ticket-seen stats, ntfy push UI
 
 - `dc7fefd`  2026-06-24 23:53  Anti-block: headful Chrome, human-like nav, fast adaptive cadence
 

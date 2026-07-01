@@ -44,18 +44,29 @@ class _FakePage:
         *,
         html: str,
         body_text: str | None = None,
+        title: str = "",
         status: int = 200,
         selector_counts=None,
         network_payloads=None,
+        html_sequence: list[str] | None = None,
+        body_text_sequence: list[str] | None = None,
+        final_url: str | None = None,
     ):
         self._html = html
         self._body_text = body_text if body_text is not None else html
+        self._html_sequence = html_sequence or [self._html]
+        self._body_text_sequence = body_text_sequence or [self._body_text]
+        self._stage = 0
+        self._title = title
         self._status = status
         self._selector_counts = selector_counts or {}
         self._network_payloads = network_payloads or []
         self._listeners = []
+        self._final_url = final_url
         self.url = "about:blank"
         self.reload_calls = 0
+        self.goto_calls: list[str] = []
+        self.closed = False
 
     def on(self, event: str, callback):
         if event == "response":
@@ -67,7 +78,12 @@ class _FakePage:
 
     def goto(self, *args, **_kwargs):
         if args:
-            self.url = str(args[0])
+            requested_url = str(args[0])
+            self.goto_calls.append(requested_url)
+            if self._final_url and "my-account" in requested_url:
+                self.url = self._final_url
+            else:
+                self.url = requested_url
         for payload in self._network_payloads:
             response = _FakeNetworkResponse(
                 "https://www.ticketmaster.com/api/inventory",
@@ -82,28 +98,42 @@ class _FakePage:
         return self.goto(self.url)
 
     def is_closed(self) -> bool:
-        return False
+        return self.closed
 
     def wait_for_timeout(self, _ms: int):
         return
 
+    def wait_for_load_state(self, *_args, **_kwargs):
+        max_stage = max(len(self._body_text_sequence), len(self._html_sequence)) - 1
+        self._stage = min(self._stage + 1, max_stage)
+        return
+
     def content(self) -> str:
-        return self._html
+        return self._html_sequence[min(self._stage, len(self._html_sequence) - 1)]
 
     def locator(self, selector: str):
         if selector == "body":
-            return _FakeLocator(1, self._body_text)
+            text = self._body_text_sequence[min(self._stage, len(self._body_text_sequence) - 1)]
+            return _FakeLocator(1, text)
         return _FakeLocator(self._selector_counts.get(selector, 0))
 
+    def title(self) -> str:
+        return self._title
+
     def close(self):
-        return
+        self.closed = True
 
 
 class _FakeContext:
     def __init__(self, page):
         self._page = page
+        self.pages = []
+        self.new_page_calls = 0
 
     def new_page(self):
+        self.new_page_calls += 1
+        if self._page not in self.pages:
+            self.pages.append(self._page)
         return self._page
 
 
@@ -463,6 +493,96 @@ class TestBrowserProbe:
         assert result.available is True
         assert result.price_summary == "$458.15 - $458.15"
         assert result.listing_summary == "LOGE11 / Row 4 / $458.15 x3"
+
+
+class TestBrowserProbeSessionHealth:
+    def test_403_with_late_pause_text_is_challenge_not_logout(self):
+        page = _FakePage(
+            html="<html><body>Forbidden</body></html>",
+            body_text="Forbidden",
+            html_sequence=[
+                "<html><body>Forbidden</body></html>",
+                "<html><body>Your Browsing Activity Has Been Paused</body></html>",
+            ],
+            body_text_sequence=[
+                "Forbidden",
+                "Your Browsing Activity Has Been Paused. We've detected unusual behavior.",
+            ],
+            status=403,
+        )
+        probe = _probe_for_page(page)
+
+        result = probe.check_session_health(warm_navigation=False)
+
+        assert result["reason"] == "challenge_detected"
+        assert result["challenge"] is True
+        assert result["definitive_logged_out"] is False
+        assert page.is_closed() is False
+
+    def test_bare_403_is_non_definitive_block(self):
+        page = _FakePage(html="<html><body>Forbidden</body></html>", body_text="Forbidden", status=403)
+        probe = _probe_for_page(page)
+
+        result = probe.check_session_health(warm_navigation=False)
+
+        assert result["reason"] == "http_403"
+        assert result["challenge"] is False
+        assert result["definitive_logged_out"] is False
+
+    def test_login_redirect_is_definitive_logout(self):
+        page = _FakePage(
+            html="<html><body>Sign in</body></html>",
+            status=200,
+            final_url="https://auth.ticketmaster.com/signin",
+        )
+        probe = _probe_for_page(page)
+
+        result = probe.check_session_health(warm_navigation=False)
+
+        assert result["reason"] == "login_redirect"
+        assert result["definitive_logged_out"] is True
+
+    def test_login_title_is_definitive_logout(self):
+        page = _FakePage(
+            html="<html><body>Ticketmaster</body></html>",
+            title="Ticketmaster Sign In",
+            status=200,
+        )
+        probe = _probe_for_page(page)
+
+        result = probe.check_session_health(warm_navigation=False)
+
+        assert result["reason"] == "login_page_title"
+        assert result["definitive_logged_out"] is True
+
+    def test_rendered_password_form_is_definitive_logout(self):
+        page = _FakePage(
+            html="<html><body>Sign in to your account</body></html>",
+            body_text="Sign in to your account",
+            status=200,
+            selector_counts={"input[type='password'], input[name='password'], input#password": 1},
+        )
+        probe = _probe_for_page(page)
+
+        result = probe.check_session_health(warm_navigation=False)
+
+        assert result["reason"] == "login_page_content"
+        assert result["definitive_logged_out"] is True
+
+    def test_session_health_reuses_parked_tab(self):
+        page = _FakePage(html="<html><body>Account</body></html>", body_text="Account", status=200)
+        context = _FakeContext(page)
+        probe = BrowserProbe(storage_state_path="unused.json", headless=True, navigation_timeout_seconds=20)
+        probe._started = True
+        probe._context = context
+
+        first = probe.check_session_health(warm_navigation=False)
+        second = probe.check_session_health(warm_navigation=False)
+
+        assert first["healthy"] is True
+        assert second["healthy"] is True
+        assert context.new_page_calls == 1
+        assert page.goto_calls[-1] == BrowserProbe.WARMUP_URL
 
 
 class TestBrowserProbeSessionModes:

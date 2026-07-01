@@ -96,6 +96,9 @@ class TestLoadConfig:
         assert config.browser_stealth_enabled is True
         assert config.browser_locale == "en-US"
         assert config.browser_timezone_id == "America/New_York"
+        assert config.browser_challenge_cooldown_escalate_after == 6
+        assert config.browser_challenge_cooldown_tiers_seconds == [300, 900, 1800]
+        assert config.browser_challenge_cooldown_tier_every == 3
         assert config.browser_host_enabled is False
         assert config.browser_host_chrome_executable_path.endswith("/Google Chrome")
         assert config.browser_host_user_data_dir == "secrets/tm_chrome_profile"
@@ -110,6 +113,9 @@ class TestLoadConfig:
         assert config.auth_keychain_password_account == "ticketmaster-password"
         assert config.auth_max_auto_login_attempts_per_hour == 3
         assert config.auth_auto_login_cooldown_seconds == 1800
+        assert config.auth_session_recheck_base_seconds == 120
+        assert config.auth_session_recheck_max_seconds == 900
+        assert config.auth_session_logout_confirmations_required == 2
         assert config.watchdog_interval_seconds == 120
         assert config.updates_interval_seconds == 60
         assert len(config.bingo_configs) == 1
@@ -162,6 +168,22 @@ class TestLoadConfig:
         with pytest.raises(SystemExit):
             load_config(path)
 
+    def test_invalid_auth_recheck_range_exits(self, tmp_path):
+        path = _write_config(
+            tmp_path,
+            {
+                "auth.session_recheck_base_seconds": 120,
+                "auth.session_recheck_max_seconds": 60,
+            },
+        )
+        with pytest.raises(SystemExit):
+            load_config(path)
+
+    def test_invalid_auth_logout_confirmations_exits(self, tmp_path):
+        path = _write_config(tmp_path, {"auth.session_logout_confirmations_required": 0})
+        with pytest.raises(SystemExit):
+            load_config(path)
+
     def test_auto_login_requires_keychain_fields(self, tmp_path):
         path = _write_config(
             tmp_path,
@@ -192,6 +214,24 @@ class TestLoadConfig:
                 "browser.poll_max_seconds": 30,
             },
         )
+        with pytest.raises(SystemExit):
+            load_config(path)
+
+    def test_invalid_challenge_cooldown_tiers_exits(self, tmp_path):
+        path = _write_config(
+            tmp_path,
+            {"browser.challenge_cooldown_tiers_seconds": [300, 120, 900]},
+        )
+        with pytest.raises(SystemExit):
+            load_config(path)
+
+    def test_empty_challenge_cooldown_tiers_exits(self, tmp_path):
+        path = _write_config(tmp_path, {"browser.challenge_cooldown_tiers_seconds": []})
+        with pytest.raises(SystemExit):
+            load_config(path)
+
+    def test_invalid_challenge_cooldown_tier_every_exits(self, tmp_path):
+        path = _write_config(tmp_path, {"browser.challenge_cooldown_tier_every": 0})
         with pytest.raises(SystemExit):
             load_config(path)
 

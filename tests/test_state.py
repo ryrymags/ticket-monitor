@@ -273,6 +273,13 @@ class TestHealthState:
         loaded = state.get_auth_pause_until()
         assert loaded is not None
 
+    def test_session_health_fields_roundtrip(self, state):
+        state.set_session_logout_pending_count(2)
+        state.set_last_session_health_reason("login_page_content")
+
+        assert state.get_session_logout_pending_count() == 2
+        assert state.get_last_session_health_reason() == "login_page_content"
+
     def test_recent_restart_counters_respect_window(self, state):
         now = datetime.now(timezone.utc)
         state.record_browser_restart(now - timedelta(seconds=400))

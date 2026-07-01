@@ -61,6 +61,9 @@ class MonitorConfig:
     # the capped cadence (which sustains the block). Resets on a clean check.
     browser_challenge_cooldown_base_seconds: int
     browser_challenge_cooldown_max_seconds: int
+    browser_challenge_cooldown_escalate_after: int
+    browser_challenge_cooldown_tiers_seconds: list[int]
+    browser_challenge_cooldown_tier_every: int
     # Startup/recycle warmup: Ticketmaster blocks heavily right after launch. During this
     # window blind checks don't trip outage/degraded and the challenge cooldown stays at
     # its base, so the monitor can break in instead of flagging a false "blocked".
@@ -111,6 +114,9 @@ class MonitorConfig:
     auth_auto_login_cooldown_seconds: int
     auth_session_health_check_interval_seconds: int
     auth_session_health_check_url: str
+    auth_session_recheck_base_seconds: int
+    auth_session_recheck_max_seconds: int
+    auth_session_logout_confirmations_required: int
 
     # Watchdog
     watchdog_enabled: bool
@@ -235,6 +241,19 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
             return val.strip().lower() in {"true", "1", "yes", "y", "on"}
         return bool(val)
 
+    def safe_int_list(section: dict[str, Any], key: str, default: list[int], label: str) -> list[int]:
+        val = section.get(key, default)
+        if not isinstance(val, list):
+            errors.append(f"{label} must be a list of integers")
+            return list(default)
+        values: list[int] = []
+        for i, raw in enumerate(val):
+            try:
+                values.append(int(raw))
+            except (ValueError, TypeError):
+                errors.append(f"{label}[{i}] must be an integer, got: {raw!r}")
+        return values
+
     # Validate timezone
     timezone_str = str(polling.get("timezone", "US/Eastern"))
     if tz.gettz(timezone_str) is None:
@@ -277,6 +296,24 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
     )
     browser_challenge_cooldown_max_seconds = safe_int(
         browser, "challenge_cooldown_max_seconds", 300, "browser.challenge_cooldown_max_seconds"
+    )
+    browser_challenge_cooldown_escalate_after = safe_int(
+        browser,
+        "challenge_cooldown_escalate_after",
+        6,
+        "browser.challenge_cooldown_escalate_after",
+    )
+    browser_challenge_cooldown_tiers_seconds = safe_int_list(
+        browser,
+        "challenge_cooldown_tiers_seconds",
+        [300, 900, 1800],
+        "browser.challenge_cooldown_tiers_seconds",
+    )
+    browser_challenge_cooldown_tier_every = safe_int(
+        browser,
+        "challenge_cooldown_tier_every",
+        3,
+        "browser.challenge_cooldown_tier_every",
     )
     browser_startup_grace_seconds = safe_int(
         browser, "startup_grace_seconds", 180, "browser.startup_grace_seconds"
@@ -396,6 +433,24 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
     auth_session_health_check_url = str(
         auth.get("session_health_check_url", "https://www.ticketmaster.com/my-account")
     ).strip()
+    auth_session_recheck_base_seconds = safe_int(
+        auth,
+        "session_recheck_base_seconds",
+        120,
+        "auth.session_recheck_base_seconds",
+    )
+    auth_session_recheck_max_seconds = safe_int(
+        auth,
+        "session_recheck_max_seconds",
+        900,
+        "auth.session_recheck_max_seconds",
+    )
+    auth_session_logout_confirmations_required = safe_int(
+        auth,
+        "session_logout_confirmations_required",
+        2,
+        "auth.session_logout_confirmations_required",
+    )
 
     # Watchdog
     watchdog_enabled = safe_bool(watchdog, "enabled", True)
@@ -518,6 +573,19 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
         errors.append("browser.challenge_threshold must be >= 1")
     if browser_challenge_retry_seconds < 1:
         errors.append("browser.challenge_retry_seconds must be >= 1")
+    if browser_challenge_cooldown_escalate_after < 1:
+        errors.append("browser.challenge_cooldown_escalate_after must be >= 1")
+    if browser_challenge_cooldown_tier_every < 1:
+        errors.append("browser.challenge_cooldown_tier_every must be >= 1")
+    if not browser_challenge_cooldown_tiers_seconds:
+        errors.append("browser.challenge_cooldown_tiers_seconds must be non-empty")
+    prev_tier = 0
+    for i, value in enumerate(browser_challenge_cooldown_tiers_seconds):
+        if value < 1:
+            errors.append(f"browser.challenge_cooldown_tiers_seconds[{i}] must be >= 1")
+        if prev_tier and value <= prev_tier:
+            errors.append("browser.challenge_cooldown_tiers_seconds must be ascending")
+        prev_tier = value
     if event_stagger_seconds < 0:
         errors.append("browser.event_stagger_seconds must be >= 0")
     if alerts_ticket_cooldown_seconds < 1:
@@ -550,6 +618,12 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
         errors.append("auth.auto_login_cooldown_seconds must be >= 0")
     if auth_session_health_check_interval_seconds < 60:
         errors.append("auth.session_health_check_interval_seconds must be >= 60")
+    if auth_session_recheck_base_seconds < 30:
+        errors.append("auth.session_recheck_base_seconds must be >= 30")
+    if auth_session_recheck_max_seconds < auth_session_recheck_base_seconds:
+        errors.append("auth.session_recheck_max_seconds must be >= auth.session_recheck_base_seconds")
+    if auth_session_logout_confirmations_required < 1:
+        errors.append("auth.session_logout_confirmations_required must be >= 1")
     if auth_auto_login_enabled:
         if not auth_keychain_service:
             errors.append("auth.keychain_service is required when auth.auto_login_enabled is true")
@@ -603,6 +677,9 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
         browser_challenge_retry_seconds=browser_challenge_retry_seconds,
         browser_challenge_cooldown_base_seconds=browser_challenge_cooldown_base_seconds,
         browser_challenge_cooldown_max_seconds=browser_challenge_cooldown_max_seconds,
+        browser_challenge_cooldown_escalate_after=browser_challenge_cooldown_escalate_after,
+        browser_challenge_cooldown_tiers_seconds=browser_challenge_cooldown_tiers_seconds,
+        browser_challenge_cooldown_tier_every=browser_challenge_cooldown_tier_every,
         browser_startup_grace_seconds=browser_startup_grace_seconds,
         event_stagger_seconds=event_stagger_seconds,
         browser_adaptive_backoff_enabled=browser_adaptive_backoff_enabled,
@@ -638,6 +715,9 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
         auth_auto_login_cooldown_seconds=auth_auto_login_cooldown_seconds,
         auth_session_health_check_interval_seconds=auth_session_health_check_interval_seconds,
         auth_session_health_check_url=auth_session_health_check_url,
+        auth_session_recheck_base_seconds=auth_session_recheck_base_seconds,
+        auth_session_recheck_max_seconds=auth_session_recheck_max_seconds,
+        auth_session_logout_confirmations_required=auth_session_logout_confirmations_required,
         watchdog_enabled=watchdog_enabled,
         watchdog_interval_seconds=watchdog_interval_seconds,
         watchdog_stale_after_seconds=watchdog_stale_after_seconds,

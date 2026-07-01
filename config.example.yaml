@@ -100,8 +100,8 @@ browser:
   storage_state_path: "secrets/tm_storage_state.json"
   channel: "chrome"                     # "" = bundled Chromium (works on all PCs)
                                         # "chrome" = use system Google Chrome (better bot-evasion; falls back to Chromium if not installed)
-  poll_min_seconds: 15                  # Adaptive-fast floor; raise toward 45/75 if you get blocked a lot
-  poll_max_seconds: 25
+  poll_min_seconds: 12                  # Adaptive-fast floor; wider jitter lowers block risk
+  poll_max_seconds: 24
   headless: true
   reuse_event_tabs: true
   poll_interval_seconds: 12
@@ -110,6 +110,11 @@ browser:
   navigation_timeout_seconds: 20
   challenge_threshold: 5
   challenge_retry_seconds: 60
+  challenge_cooldown_base_seconds: 60
+  challenge_cooldown_max_seconds: 300
+  challenge_cooldown_escalate_after: 6
+  challenge_cooldown_tiers_seconds: [300, 900, 1800]
+  challenge_cooldown_tier_every: 3
   cdp_endpoint_url: "http://127.0.0.1:9222"
   cdp_connect_timeout_seconds: 10
   # Adaptive cadence: poll near the floor when healthy, multiply the interval on
@@ -163,6 +168,9 @@ auth:
   auto_login_cooldown_seconds: 1800
   session_health_check_interval_seconds: 3600
   session_health_check_url: "https://www.ticketmaster.com/my-account"
+  session_recheck_base_seconds: 120
+  session_recheck_max_seconds: 900
+  session_logout_confirmations_required: 2
 
 # ── Watchdog ──────────────────────────────────────────────────────────────
 watchdog:
