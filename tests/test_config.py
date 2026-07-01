@@ -88,6 +88,16 @@ class TestLoadConfig:
         assert config.browser_reuse_event_tabs is True
         assert config.browser_poll_min_seconds == 15
         assert config.browser_poll_max_seconds == 25
+        assert config.browser_per_event_scheduler_enabled is True
+        assert config.browser_per_event_poll_min_seconds == 45
+        assert config.browser_per_event_poll_max_seconds == 105
+        assert config.browser_per_event_min_gap_between_checks_seconds == 20
+        assert config.browser_event_weights["01006444D7AFFD78"] == 2.0
+        assert config.browser_event_weights["01006430FEAADAD2"] == 1.0
+        assert config.browser_single_event_page is True
+        assert config.browser_event_dwell_min_seconds == 3
+        assert config.browser_event_dwell_max_seconds == 8
+        assert config.browser_homepage_warmup_interval_seconds == 1800
         # Adaptive cadence + stealth defaults.
         assert config.browser_adaptive_backoff_enabled is True
         assert config.browser_adaptive_backoff_multiplier == 2.0
@@ -212,6 +222,38 @@ class TestLoadConfig:
             {
                 "browser.poll_min_seconds": 90,
                 "browser.poll_max_seconds": 30,
+            },
+        )
+        with pytest.raises(SystemExit):
+            load_config(path)
+
+    def test_invalid_per_event_poll_min_max_exits(self, tmp_path):
+        path = _write_config(
+            tmp_path,
+            {
+                "browser.per_event_poll_min_seconds": 120,
+                "browser.per_event_poll_max_seconds": 45,
+            },
+        )
+        with pytest.raises(SystemExit):
+            load_config(path)
+
+    def test_invalid_per_event_gap_exits(self, tmp_path):
+        path = _write_config(tmp_path, {"browser.per_event_min_gap_between_checks_seconds": -1})
+        with pytest.raises(SystemExit):
+            load_config(path)
+
+    def test_invalid_event_weight_exits(self, tmp_path):
+        path = _write_config(tmp_path, {"browser.event_weights": {"event-1": 0}})
+        with pytest.raises(SystemExit):
+            load_config(path)
+
+    def test_invalid_event_dwell_range_exits(self, tmp_path):
+        path = _write_config(
+            tmp_path,
+            {
+                "browser.event_dwell_min_seconds": 9,
+                "browser.event_dwell_max_seconds": 3,
             },
         )
         with pytest.raises(SystemExit):

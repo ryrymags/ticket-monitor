@@ -82,7 +82,13 @@ def run_test(config_path: str):
 
     print("[1/3] Config loaded")
     print(f"      Events: {len(config.events)}")
-    print(f"      Poll interval: {config.browser_poll_min_seconds}s - {config.browser_poll_max_seconds}s")
+    if config.browser_per_event_scheduler_enabled:
+        print(
+            "      Per-event interval: "
+            f"{config.browser_per_event_poll_min_seconds}s - {config.browser_per_event_poll_max_seconds}s"
+        )
+    else:
+        print(f"      Poll interval: {config.browser_poll_min_seconds}s - {config.browser_poll_max_seconds}s")
     print()
 
     print("[2/3] Testing Discord webhook")
@@ -213,11 +219,15 @@ def run_doctor(config_path: str):
         cdp_endpoint_url=config.browser_cdp_endpoint_url,
         cdp_connect_timeout_seconds=config.browser_cdp_connect_timeout_seconds,
         reuse_event_tabs=config.browser_reuse_event_tabs,
+        single_event_page=config.browser_single_event_page,
         headless=config.browser_headless,
         navigation_timeout_seconds=config.browser_navigation_timeout_seconds,
         stealth_enabled=config.browser_stealth_enabled,
         locale=config.browser_locale,
         timezone_id=config.browser_timezone_id,
+        event_dwell_min_seconds=config.browser_event_dwell_min_seconds,
+        event_dwell_max_seconds=config.browser_event_dwell_max_seconds,
+        homepage_warmup_interval_seconds=config.browser_homepage_warmup_interval_seconds,
     )
 
     try:
@@ -285,11 +295,15 @@ def run_doctor_lite(config_path: str):
         cdp_endpoint_url=config.browser_cdp_endpoint_url,
         cdp_connect_timeout_seconds=config.browser_cdp_connect_timeout_seconds,
         reuse_event_tabs=config.browser_reuse_event_tabs,
+        single_event_page=config.browser_single_event_page,
         headless=config.browser_headless,
         navigation_timeout_seconds=config.browser_navigation_timeout_seconds,
         stealth_enabled=config.browser_stealth_enabled,
         locale=config.browser_locale,
         timezone_id=config.browser_timezone_id,
+        event_dwell_min_seconds=config.browser_event_dwell_min_seconds,
+        event_dwell_max_seconds=config.browser_event_dwell_max_seconds,
+        homepage_warmup_interval_seconds=config.browser_homepage_warmup_interval_seconds,
     )
     try:
         probe.start()
@@ -516,12 +530,21 @@ def run_monitor(config_path: str, once: bool = False):
             sys.exit(1)
         logger.info("Done.")
     else:
-        logger.info(
-            "Starting monitor — %d event(s), poll=%ss-%ss",
-            len(config.events),
-            config.browser_poll_min_seconds,
-            config.browser_poll_max_seconds,
-        )
+        if config.browser_per_event_scheduler_enabled:
+            logger.info(
+                "Starting monitor — %d event(s), per-event poll=%ss-%ss, min_gap=%ss",
+                len(config.events),
+                config.browser_per_event_poll_min_seconds,
+                config.browser_per_event_poll_max_seconds,
+                config.browser_per_event_min_gap_between_checks_seconds,
+            )
+        else:
+            logger.info(
+                "Starting monitor — %d event(s), legacy cycle poll=%ss-%ss",
+                len(config.events),
+                config.browser_poll_min_seconds,
+                config.browser_poll_max_seconds,
+            )
         scheduler.run()
         logger.info("Monitor stopped.")
 

@@ -66,6 +66,7 @@ class _FakePage:
         self.url = "about:blank"
         self.reload_calls = 0
         self.goto_calls: list[str] = []
+        self.timeout_calls: list[int] = []
         self.closed = False
 
     def on(self, event: str, callback):
@@ -101,6 +102,7 @@ class _FakePage:
         return self.closed
 
     def wait_for_timeout(self, _ms: int):
+        self.timeout_calls.append(_ms)
         return
 
     def wait_for_load_state(self, *_args, **_kwargs):
@@ -844,6 +846,46 @@ class TestBrowserProbeSessionModes:
         assert second.available is True
         # Second check reused the same tab via reload() instead of a fresh navigation.
         assert page.reload_calls >= 1
+
+    def test_single_event_page_navigates_same_page_across_event_ids(self):
+        page = _FakePage(
+            html="<html><body>Event</body></html>",
+            status=200,
+            network_payloads=[{"offers": [{"available": True, "quantity": 1, "price": 99.0}]}],
+        )
+        context = _FakePersistentContext()
+        new_page_calls = 0
+
+        def make_page():
+            nonlocal new_page_calls
+            new_page_calls += 1
+            return page
+
+        context.new_page = make_page
+
+        probe = BrowserProbe(
+            storage_state_path="unused.json",
+            session_mode="persistent_profile",
+            reuse_event_tabs=True,
+            single_event_page=True,
+            navigation_timeout_seconds=20,
+            event_dwell_min_seconds=3,
+            event_dwell_max_seconds=8,
+            homepage_warmup_interval_seconds=0,
+        )
+        probe._started = True
+        probe._context = context
+
+        first = probe.check_event("event-1", "https://ticketmaster.com/event/1")
+        second = probe.check_event("event-2", "https://ticketmaster.com/event/2")
+
+        assert first.available is True
+        assert second.available is True
+        assert new_page_calls == 1
+        assert "https://ticketmaster.com/event/1" in page.goto_calls
+        assert "https://ticketmaster.com/event/2" in page.goto_calls
+        assert page.reload_calls == 0
+        assert any(3000 <= ms <= 8000 for ms in page.timeout_calls)
 
     def test_persistent_mode_without_reuse_opens_fresh_pages(self):
         pages: list = []

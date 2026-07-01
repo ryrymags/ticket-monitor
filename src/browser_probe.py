@@ -59,6 +59,7 @@ class BrowserProbe:
     # also keeps the DataDome cookie warm.
     WARMUP_URL = "https://www.ticketmaster.com/"
     WARMUP_INTERVAL_SECONDS = 1800
+    SINGLE_EVENT_PAGE_KEY = "__active_event_page__"
 
     CTA_SELECTORS = [
         "button:has-text('Find Tickets')",
@@ -114,11 +115,15 @@ class BrowserProbe:
         cdp_endpoint_url: str = "http://127.0.0.1:9222",
         cdp_connect_timeout_seconds: int = 10,
         reuse_event_tabs: bool = True,
+        single_event_page: bool = True,
         headless: bool = True,
         navigation_timeout_seconds: int = 20,
         stealth_enabled: bool = False,
         locale: str = "en-US",
         timezone_id: str = "America/New_York",
+        event_dwell_min_seconds: int = 3,
+        event_dwell_max_seconds: int = 8,
+        homepage_warmup_interval_seconds: int = WARMUP_INTERVAL_SECONDS,
     ):
         self.storage_state_path = storage_state_path
         self.session_mode = session_mode
@@ -127,16 +132,21 @@ class BrowserProbe:
         self.cdp_endpoint_url = cdp_endpoint_url
         self.cdp_connect_timeout_seconds = cdp_connect_timeout_seconds
         self.reuse_event_tabs = reuse_event_tabs
+        self.single_event_page = single_event_page
         self.headless = headless
         self.navigation_timeout_seconds = navigation_timeout_seconds
         self.stealth_enabled = stealth_enabled
         self.locale = locale
         self.timezone_id = timezone_id
+        self.event_dwell_min_seconds = event_dwell_min_seconds
+        self.event_dwell_max_seconds = event_dwell_max_seconds
+        self.homepage_warmup_interval_seconds = homepage_warmup_interval_seconds
         self._playwright = None
         self._browser = None
         self._context = None
         self._uses_persistent_context = False
         self._event_pages: dict[str, Any] = {}
+        self._single_event_page_event_id: str | None = None
         self._health_page: Any | None = None
         self._last_warmup_at: dict[str, float] = {}
         self._cdp_connected = False
@@ -249,6 +259,7 @@ class BrowserProbe:
         """Close browser resources."""
         if self.session_mode == "cdp_attach":
             self._event_pages = {}
+            self._single_event_page_event_id = None
             self._health_page = None
             self._context = None
             self._browser = None
@@ -269,6 +280,7 @@ class BrowserProbe:
             self._context = None
             self._uses_persistent_context = False
             self._event_pages = {}
+            self._single_event_page_event_id = None
             self._health_page = None
 
         try:
@@ -497,11 +509,14 @@ class BrowserProbe:
 
         try:
             if self.session_mode == "cdp_attach" or self.reuse_event_tabs:
-                page, first_visit = self._get_or_create_event_page(event_id=event_id, event_url=event_url)
+                page, needs_navigation = self._get_or_create_event_page(
+                    event_id=event_id,
+                    event_url=event_url,
+                )
                 close_page = False
             else:
                 page = self._context.new_page()
-                first_visit = True
+                needs_navigation = True
 
             network_snapshot = _NetworkSnapshot(
                 availability_count=0,
@@ -518,8 +533,8 @@ class BrowserProbe:
             response_status: int | None = None
             # Occasionally browse the homepage first so traffic looks human; if we did,
             # the page is now on the homepage so we must goto (not reload) the event.
-            warmed = self._maybe_warmup(page, event_id, first_visit, timeout_ms)
-            if first_visit or warmed:
+            warmed = self._maybe_warmup(page, event_id, needs_navigation, timeout_ms)
+            if needs_navigation or warmed:
                 response = page.goto(event_url, wait_until="domcontentloaded", timeout=timeout_ms)
             else:
                 try:
@@ -534,7 +549,7 @@ class BrowserProbe:
                     retry_after_seconds = self._parse_retry_after(response)
 
             # Jittered settle + occasional light scroll — avoids a robotic fixed rhythm.
-            page.wait_for_timeout(random.randint(900, 2200))
+            page.wait_for_timeout(self._event_dwell_timeout_ms())
             self._human_jitter(page)
             html = page.content()
             html_lower = html.lower()
@@ -613,19 +628,30 @@ class BrowserProbe:
         Skipped for cdp_attach (that's the user's own external browser — don't hijack it)."""
         if self.session_mode == "cdp_attach":
             return False
+        interval = int(self.homepage_warmup_interval_seconds)
+        if interval <= 0:
+            return False
         now = time.monotonic()
-        last = self._last_warmup_at.get(event_id)
-        due = first_visit or last is None or (now - last) >= self.WARMUP_INTERVAL_SECONDS
+        key = self.SINGLE_EVENT_PAGE_KEY if self.single_event_page and self.reuse_event_tabs else event_id
+        last = self._last_warmup_at.get(key)
+        due = first_visit or last is None or (now - last) >= interval
         if not due:
             return False
         try:
             page.goto(self.WARMUP_URL, wait_until="domcontentloaded", timeout=timeout_ms)
             page.wait_for_timeout(random.randint(400, 1200))
-            self._last_warmup_at[event_id] = now
+            self._last_warmup_at[key] = now
             return True
         except Exception:
             # Warm-up is best-effort; fall through to the normal event navigation.
             return False
+
+    def _event_dwell_timeout_ms(self) -> int:
+        low_seconds = max(0, int(self.event_dwell_min_seconds))
+        high_seconds = max(low_seconds, int(self.event_dwell_max_seconds))
+        if high_seconds <= 0:
+            return 0
+        return random.randint(low_seconds * 1000, high_seconds * 1000)
 
     def _warm_session_health_navigation(self, page: Any, timeout_ms: int):
         """Best-effort homepage warmup before the account health check."""
@@ -647,6 +673,9 @@ class BrowserProbe:
                 pass
 
     def _get_or_create_event_page(self, event_id: str, event_url: str) -> tuple[Any, bool]:
+        if self.single_event_page and self.reuse_event_tabs:
+            return self._get_or_create_single_event_page(event_id=event_id, event_url=event_url)
+
         if self.session_mode != "cdp_attach":
             # We own this context (persistent/storage). Keep one tab per event open and
             # reload it instead of opening a fresh deep-link each check — more human-like
@@ -713,6 +742,49 @@ class BrowserProbe:
         if self.reuse_event_tabs:
             self._event_pages[event_id] = page
         return page, True
+
+    def _get_or_create_single_event_page(self, event_id: str, event_url: str) -> tuple[Any, bool]:
+        cached = self._event_pages.get(self.SINGLE_EVENT_PAGE_KEY)
+        if cached is not None:
+            try:
+                if not cached.is_closed():
+                    needs_navigation = self._single_event_page_event_id != event_id
+                    self._single_event_page_event_id = event_id
+                    return cached, needs_navigation
+            except Exception:
+                pass
+
+        page, already_on_event = self._find_single_event_page(event_url=event_url)
+        self._event_pages = {self.SINGLE_EVENT_PAGE_KEY: page}
+        self._single_event_page_event_id = event_id
+        return page, not already_on_event
+
+    def _find_single_event_page(self, event_url: str) -> tuple[Any, bool]:
+        pages = list(getattr(self._context, "pages", []))
+        normalized_url = event_url.lower()
+        assigned_pages = self._assigned_page_ids()
+
+        for existing in pages:
+            try:
+                if id(existing) in assigned_pages or existing.is_closed():
+                    continue
+                existing_url = str(getattr(existing, "url", "")).lower()
+            except Exception:
+                continue
+            if normalized_url and normalized_url in existing_url:
+                return existing, True
+
+        for existing in pages:
+            try:
+                if id(existing) in assigned_pages or existing.is_closed():
+                    continue
+                existing_url = str(getattr(existing, "url", "")).lower()
+            except Exception:
+                continue
+            if existing_url in ("", "about:blank"):
+                return existing, False
+
+        return self._context.new_page(), False
 
     def _assigned_page_ids(self) -> set[int]:
         assigned = {id(p) for p in self._event_pages.values() if p is not None}
