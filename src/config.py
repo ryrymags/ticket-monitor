@@ -276,7 +276,7 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
         browser, "challenge_cooldown_base_seconds", 60, "browser.challenge_cooldown_base_seconds"
     )
     browser_challenge_cooldown_max_seconds = safe_int(
-        browser, "challenge_cooldown_max_seconds", 1800, "browser.challenge_cooldown_max_seconds"
+        browser, "challenge_cooldown_max_seconds", 300, "browser.challenge_cooldown_max_seconds"
     )
     browser_startup_grace_seconds = safe_int(
         browser, "startup_grace_seconds", 180, "browser.startup_grace_seconds"

@@ -274,6 +274,27 @@ class TestBrowserProbe:
         assert result.blocked is True
         assert result.available is False
 
+    def test_browsing_activity_paused_screen_detected_as_block(self):
+        # DataDome "soft block" interstitial — no captcha widget, just a pause page.
+        page = _FakePage(
+            html=(
+                "<html><body>Your Browsing Activity Has Been Paused. "
+                "We've detected unusual behavior on either your network or your browser.</body></html>"
+            ),
+            body_text=(
+                "Your Browsing Activity Has Been Paused "
+                "We've detected unusual behavior on either your network or your browser. "
+                "Sign in to your account if you haven't already"
+            ),
+            status=200,
+        )
+        probe = _probe_for_page(page)
+        result = probe.check_event("event-1", "http://event")
+
+        assert result.challenge_detected is True
+        assert result.blocked is True
+        assert result.available is False
+
     def test_sold_out_text_is_not_available(self):
         page = _FakePage(
             html="<html><body>Sold out</body></html>",

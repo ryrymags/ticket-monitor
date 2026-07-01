@@ -114,3 +114,46 @@ def test_collapse_history_distinct_events_kept_separate():
         {"event_id": "E2", "fingerprint": "fp", "listings": [{"section": "LOGE", "row": "1", "price": 150.0, "count": 2}]},
     ]
     assert len(collapse_history(history)) == 2  # same fingerprint, different events
+
+
+def test_count_recent_appearances_window_and_bingo():
+    from datetime import datetime, timedelta, timezone
+    from src.history_stats import count_recent_appearances
+
+    now = datetime(2026, 6, 30, 12, 0, 0, tzinfo=timezone.utc)
+
+    def ent(event_id, fp, hours_ago, bingo):
+        ts = (now - timedelta(hours=hours_ago)).isoformat()
+        return {
+            "event_id": event_id, "fingerprint": fp, "bingo": bingo,
+            "first_seen": ts, "last_seen": ts, "seen_count": 1,
+            "listings": [{"section": "LOGE", "row": "1", "price": 150.0, "count": 2}],
+        }
+
+    history = [
+        ent("E1", "a", 2, True),     # in 48h + 7d, bingo
+        ent("E2", "b", 30, False),   # in 48h + 7d, not bingo
+        ent("E3", "c", 100, True),   # in 7d only, bingo
+        ent("E4", "d", 24 * 10, True),  # older than 7d
+    ]
+
+    d2 = count_recent_appearances(history, now, hours=48)
+    assert d2 == {"total": 2, "bingo": 1}
+
+    d7 = count_recent_appearances(history, now, hours=24 * 7)
+    assert d7 == {"total": 3, "bingo": 2}
+
+
+def test_count_recent_appearances_collapses_repeats():
+    from datetime import datetime, timedelta, timezone
+    from src.history_stats import count_recent_appearances
+
+    now = datetime(2026, 6, 30, 12, 0, 0, tzinfo=timezone.utc)
+    ts = (now - timedelta(hours=1)).isoformat()
+    entry = {
+        "event_id": "E1", "fingerprint": "same", "bingo": True,
+        "first_seen": ts, "last_seen": ts, "seen_count": 1,
+        "listings": [{"section": "LOGE", "row": "1", "price": 150.0, "count": 2}],
+    }
+    history = [dict(entry), dict(entry), dict(entry)]  # 3 repeat detections → 1
+    assert count_recent_appearances(history, now, hours=48) == {"total": 1, "bingo": 1}

@@ -16,6 +16,7 @@ from .models import ProbeSignalType
 from .notifier import DiscordNotifier
 from .session_autofix import TicketmasterSessionAutoFixer
 from .state import MonitorState
+from .uptime import UptimeLedger
 
 logger = logging.getLogger(__name__)
 
@@ -40,19 +41,52 @@ CHALLENGE_COOLDOWN_SLEEP_CAP_SECONDS = 120
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _MONITORCTL = os.path.join(_REPO_ROOT, "scripts", "monitorctl.sh")
 
-# App-first guidance: the GUI already has a one-click re-login (Login tab → "Log In to
-# Ticketmaster"), so point there before any terminal commands.
-REAUTH_MANUAL_STEPS = [
-    "Open the Ticket Monitor app → Login tab → click “Log In to Ticketmaster” (easiest fix).",
-    "Or, from a terminal:",
-    f"{_MONITORCTL} reauth",
+# The ONLY manual action is logging back in (everything else self-heals). Point at the
+# double-click Desktop file first, then the in-app Login tab.
+LOGIN_MANUAL_STEPS = [
+    "Double-click “Ticket Monitor Reauth.command” on your Desktop, or",
+    "open the Ticket Monitor app → Login tab → “Log In to Ticketmaster”.",
 ]
-EVENT_STALE_MANUAL_STEPS = [
-    "Open the Ticket Monitor app, then check the Monitor tab and Live Logs.",
-    "If it doesn’t clear on its own, from a terminal:",
-    f"{_MONITORCTL} doctor",
-    f"{_MONITORCTL} reauth",
-]
+# Kept for the auto-reauth probe-reload error path (a different, internal failure).
+REAUTH_MANUAL_STEPS = LOGIN_MANUAL_STEPS
+
+# After this many consecutive blind checks, escalate the flush: clear the DataDome token
+# (keeping login cookies) to shed a poisoned block cookie. ~2x the outage threshold.
+PROLONGED_BLOCK_COOKIE_FLUSH_MULTIPLIER = 2
+# A loop iteration that wakes this many seconds later than intended means the system was
+# suspended (sleep) — not the monitor going stale. Re-anchor instead of crying stale.
+SLEEP_OVERSHOOT_SECONDS = 120
+
+# Chromium net-stack errors that mean the page never loaded because there's no
+# working internet connection (as opposed to Ticketmaster loading a block page).
+# When a cycle hits these and gets NO response from any event, monitoring is DOWN,
+# not merely impaired — we can't see tickets at all.
+_CONNECTIVITY_ERROR_SIGNATURES = (
+    "err_internet_disconnected",
+    "err_name_not_resolved",
+    "err_name_resolution_failed",
+    "err_network_changed",
+    "err_network_access_denied",
+    "err_address_unreachable",
+    "err_connection_refused",
+    "err_connection_reset",
+    "err_connection_closed",
+    "err_connection_timed_out",
+    "err_connection_aborted",
+    "err_proxy_connection_failed",
+    "err_socket_not_connected",
+    "err_dns",
+)
+
+
+def _is_connectivity_error(exc: Exception) -> bool:
+    """True when an exception looks like a lost/absent internet connection."""
+    texts = [str(exc).lower()]
+    cause = getattr(exc, "__cause__", None)
+    if cause is not None:
+        texts.append(str(cause).lower())
+    blob = " ".join(texts)
+    return any(sig in blob for sig in _CONNECTIVITY_ERROR_SIGNATURES)
 
 
 class MonitorScheduler:
@@ -73,6 +107,14 @@ class MonitorScheduler:
         self.notifier = notifier
         self.state = state
         self.start_time = start_time
+        # Durable uptime/downtime timeline (healthy/impaired/down). One heartbeat
+        # per cycle; down intervals are inferred from gaps in the stream. Co-located
+        # with the state file so it lands beside state.json in prod and inside the
+        # tmp dir under tests.
+        uptime_path = os.path.join(
+            os.path.dirname(getattr(state, "state_file", "")) or ".", "uptime_log.json"
+        )
+        self.uptime = UptimeLedger(path=uptime_path)
 
         self.probe = probe or BrowserProbe(
             storage_state_path=config.browser_storage_state_path,
@@ -112,6 +154,20 @@ class MonitorScheduler:
         # Challenge circuit-breaker: consecutive captcha/challenge (or 429) checks drive
         # an exponential cooldown so we stop hammering a fingerprint that's being blocked.
         self._consecutive_challenges: int = 0
+        # Staleness only counts time the monitor is actually running — anchored at start
+        # and re-anchored after a detected system sleep (set in run()).
+        self._uptime_anchor: datetime = start_time
+        # How long the loop deliberately slept before the current cycle. Lets the
+        # uptime ledger tell an intended backoff (impairment) apart from an unplanned
+        # silence (downtime). None on the first cycle of a process.
+        self._last_loop_sleep_seconds: float | None = None
+        # Set each cycle: True when no event got any response AND at least one failed
+        # with a connectivity error → the internet is down (uptime = down, not impaired).
+        self._cycle_connectivity_down: bool = False
+        # Per-cycle check tally — the uptime state reflects what THIS cycle's checks
+        # actually did (clean vs blocked/errored), not lagging cadence/outage flags.
+        self._cycle_healthy_checks: int = 0
+        self._cycle_bad_checks: int = 0
 
     def stop(self):
         """Signal the loop to stop."""
@@ -120,6 +176,15 @@ class MonitorScheduler:
     def run(self):
         """Main loop — runs until stop() is called or interrupted."""
         logger.info("Monitor started. Checking %d event(s).", len(self.config.events))
+        # Fresh run: don't inherit a stale degraded/attention clock from before a restart
+        # or sleep. The stale clock only counts time the monitor is actually running.
+        self._uptime_anchor = datetime.now(timezone.utc)
+        self._expected_wake: datetime | None = None
+        self.state.clear_attention()
+        self.state.set_degraded_state(False)
+        # Close any downtime gap right at startup so the recorded "down" spans
+        # last-check → this moment (monitor start), not last-check → first pull.
+        self.uptime.mark_online()
         try:
             self.probe.start()
         except BrowserProbeError as exc:
@@ -133,6 +198,19 @@ class MonitorScheduler:
             )
 
         while self._running:
+            # Detect a system sleep/suspend: if we woke far later than we intended to,
+            # re-anchor uptime so the gap isn't counted as the monitor "going stale".
+            loop_now = datetime.now(timezone.utc)
+            if self._expected_wake is not None:
+                overshoot = (loop_now - self._expected_wake).total_seconds()
+                if overshoot > SLEEP_OVERSHOOT_SECONDS:
+                    logger.warning(
+                        "Detected ~%.0fs sleep/suspend gap — re-anchoring uptime, skipping stale this cycle",
+                        overshoot,
+                    )
+                    self._uptime_anchor = loop_now
+                    self._stale_event_alerted.clear()
+                    self.state.clear_attention()
             sleep_time = self._normal_loop_sleep()
             self.state.set_last_cycle_started_at()
             try:
@@ -143,6 +221,7 @@ class MonitorScheduler:
                 self._consecutive_runtime_errors = 0
                 self.state.set_last_cycle_completed_at()
                 self.state.clear_last_error()
+                self._record_uptime_heartbeat(needs_slow_retry)
 
                 sleep_time = self._next_sleep(blocked=needs_slow_retry)
 
@@ -151,6 +230,9 @@ class MonitorScheduler:
                 self._consecutive_runtime_errors += 1
                 self.state.set_last_cycle_completed_at()
                 self.state.set_last_error(self._classify_browser_probe_error(exc), str(exc))
+                self._record_uptime_heartbeat(
+                    True, reason="error", connectivity_lost=_is_connectivity_error(exc)
+                )
                 self._handle_browser_probe_error(exc)
                 sleep_time = self._runtime_error_backoff()
 
@@ -159,6 +241,7 @@ class MonitorScheduler:
                 self._consecutive_runtime_errors += 1
                 self.state.set_last_cycle_completed_at()
                 self.state.set_last_error(type(exc).__name__, str(exc))
+                self._record_uptime_heartbeat(True, reason="error")
                 sleep_time = self._runtime_error_backoff()
                 self._maybe_send_error_alert(f"Unexpected monitor error: {type(exc).__name__}: {exc}")
 
@@ -173,9 +256,63 @@ class MonitorScheduler:
             if not self._running:
                 break
             logger.debug("Next check in %.1f seconds", sleep_time)
+            self._expected_wake = datetime.now(timezone.utc) + timedelta(seconds=sleep_time)
+            # Remember the intended sleep so the next heartbeat can tell a planned
+            # backoff apart from an unplanned silence (down).
+            self._last_loop_sleep_seconds = sleep_time
             self._interruptible_sleep(sleep_time)
 
         self.probe.close()
+        self.uptime.flush()
+
+    def _record_uptime_heartbeat(
+        self,
+        needs_slow_retry: bool,
+        reason: str | None = None,
+        connectivity_lost: bool = False,
+    ):
+        """Record one uptime segment heartbeat for the cycle just completed.
+
+        Healthy unless the cycle was blocked/stale/errored or the monitor is in a
+        persisted degraded state (logged-out, outage, auth-paused, stale). A lost
+        internet connection is recorded as ``down``. The ledger also infers ``down``
+        intervals itself from gaps between heartbeats.
+        """
+        try:
+            now = datetime.now(timezone.utc)
+            gap = self._last_loop_sleep_seconds
+            # No internet (the page won't even load) is DOWN, not impairment — we
+            # can't see tickets at all. Ticketmaster *blocking* still returns a page,
+            # so that path never sets this flag and stays impaired.
+            if connectivity_lost or self._cycle_connectivity_down:
+                self.uptime.heartbeat(now, "down", "no_internet", expected_gap_seconds=gap)
+                return
+
+            # Session-level problems keep monitoring impaired even though pages load:
+            # a signed-out session can't grab tickets; an auth pause is a cooldown.
+            session_reason = None
+            if self.state.get_session_logged_out():
+                session_reason = "logged_out"
+            else:
+                pause_until = self.state.get_auth_pause_until()
+                if pause_until is not None and now < pause_until:
+                    session_reason = "auth_paused"
+
+            # Classify from THIS cycle's actual results — not lagging cadence/outage
+            # flags. Clean scans (even sold-out) are healthy; a block/challenge/error
+            # this cycle, or a session problem, is impaired.
+            if reason is not None or self._cycle_bad_checks > 0 or session_reason is not None:
+                state, out_reason = "impaired", (reason or session_reason or "blocked")
+            elif self._cycle_healthy_checks > 0:
+                state, out_reason = "healthy", None
+            else:
+                # No checks ran and nothing flagged — fall back to the cadence hint.
+                state = "impaired" if needs_slow_retry else "healthy"
+                out_reason = "blocked" if needs_slow_retry else None
+
+            self.uptime.heartbeat(now, state, out_reason, expected_gap_seconds=gap)
+        except Exception as exc:  # pragma: no cover - telemetry must never crash the loop
+            logger.debug("uptime heartbeat failed: %s", exc)
 
     def run_once(self):
         """Run a single check cycle and return (for --once mode)."""
@@ -194,6 +331,15 @@ class MonitorScheduler:
     def _run_cycle(self) -> bool:
         """Check all events once. Returns True when slow challenge retry mode is needed."""
         needs_slow_retry = False
+        # Track connectivity: any response at all proves the internet works; a
+        # connectivity error with zero responses means we're offline (→ down).
+        # Reset up front so an early throw can't leak a stale value into the next
+        # error-path heartbeat.
+        self._cycle_connectivity_down = False
+        self._cycle_healthy_checks = 0
+        self._cycle_bad_checks = 0
+        had_response = False
+        had_connectivity_error = False
 
         for index, event_cfg in enumerate(self.config.events):
             if not self._running:
@@ -206,8 +352,11 @@ class MonitorScheduler:
 
             try:
                 probe_result = self.probe.check_event(event_cfg.event_id, event_cfg.url)
+                had_response = True
             except BrowserProbeError as exc:
                 logger.error("[%s] browser probe failed: %s", event_cfg.name, exc)
+                if _is_connectivity_error(exc):
+                    had_connectivity_error = True
                 self.state.set_last_error(self._classify_browser_probe_error(exc), f"{event_cfg.name}: {exc}")
                 self._handle_browser_probe_error(exc)
                 needs_slow_retry = True
@@ -241,6 +390,10 @@ class MonitorScheduler:
             self._last_successful_check = datetime.now(timezone.utc)
             self.state.set_last_successful_check()
 
+        # No response from any event + a connectivity error → the internet is down.
+        # (A block page still returns a response, so that stays impaired, not down.)
+        self._cycle_connectivity_down = had_connectivity_error and not had_response
+
         if self._check_event_poll_staleness(now=datetime.now(timezone.utc)):
             needs_slow_retry = True
 
@@ -257,16 +410,19 @@ class MonitorScheduler:
         threshold_seconds = int(self.config.alerts_event_check_stale_seconds)
         stale_detected = False
 
+        # Staleness only counts time the monitor has actually been running this session
+        # (capped by the uptime anchor) — so a restart/wake after the Mac slept for 40
+        # min isn't instantly "stale". The anchor advances on a detected sleep too.
+        uptime_seconds = (now - self._uptime_anchor).total_seconds()
         for event_cfg in self.config.events:
             event_id = event_cfg.event_id
             last_check = self.state.get_last_check(event_id)
             if last_check is None:
-                startup_age = (now - self.start_time).total_seconds()
-                if startup_age <= threshold_seconds:
+                if uptime_seconds <= threshold_seconds:
                     continue
-                age_seconds = int(startup_age)
+                age_seconds = int(uptime_seconds)
             else:
-                age_seconds = int((now - last_check).total_seconds())
+                age_seconds = int(min((now - last_check).total_seconds(), uptime_seconds))
 
             if age_seconds > threshold_seconds:
                 stale_detected = True
@@ -353,6 +509,13 @@ class MonitorScheduler:
         no_signal = result.signal_type == ProbeSignalType.NONE and http_unhealthy
         blind = result.blocked or result.challenge_detected or no_signal
 
+        # Per-cycle uptime tally: a blind check (blocked/challenge/no-signal) is bad,
+        # anything else is a clean scan. Drives healthy-vs-impaired for the Uptime tab.
+        if blind:
+            self._cycle_bad_checks += 1
+        else:
+            self._cycle_healthy_checks += 1
+
         # Effectiveness metrics: one outcome per check, for the live GUI health panel.
         if result.challenge_detected:
             outcome = "challenge"
@@ -417,6 +580,21 @@ class MonitorScheduler:
                         now=now,
                         reason=f"blind/outage threshold reached for {event_cfg.name}",
                     )
+                # Escalating flush: after a prolonged block, shed a poisoned DataDome
+                # token (login cookies preserved) so the next probe gets a fresh one.
+                threshold = max(1, int(self.config.browser_challenge_threshold))
+                flush_at = threshold * PROLONGED_BLOCK_COOKIE_FLUSH_MULTIPLIER
+                if count >= flush_at and (count - flush_at) % threshold == 0:
+                    try:
+                        cleared = self.probe.clear_block_cookies()
+                        logger.warning(
+                            "[%s] prolonged block (#%d) — flushed %d block cookie(s)",
+                            event_cfg.name,
+                            count,
+                            cleared,
+                        )
+                    except Exception as exc:  # pragma: no cover - defensive
+                        logger.debug("clear_block_cookies failed: %s", exc)
                 self._maybe_auto_reauth(event_cfg=event_cfg, result=result, now=now)
         else:
             self.state.reset_consecutive_blocked(event_id)
@@ -725,14 +903,14 @@ class MonitorScheduler:
     # ---- Manual-action escalation ----
 
     def _monitor_degraded_reason(self, now: datetime) -> str | None:
-        """Return WHY the monitor is degraded (or None if healthy).
+        """Return WHY the monitor is non-healthy (or None), for the GUI banner.
 
-        One of: ``outage`` (any event blind/blocked), ``stale`` (event polling has
-        gone stale), or ``auth_paused`` (auto re-login paused after repeated failures).
-        A stale account session alone is NOT degraded — Face Value Exchange listings
-        still load without it. This single function backs both the manual-action ping
-        and the persisted health state the GUI renders, so the two can never drift.
+        ``logged_out`` is the ONLY human-actionable one (needs re-login). ``outage``
+        (blocked) and ``stale`` self-heal and never ping — they're informational only.
+        ``logged_out`` takes precedence because it's the one the user must act on.
         """
+        if self.state.get_session_logged_out():
+            return "logged_out"
         if any(self.state.get_in_outage_state(ev.event_id) for ev in self.config.events):
             return "outage"
         if self._stale_event_alerted:
@@ -745,24 +923,19 @@ class MonitorScheduler:
     def _is_monitor_degraded(self, now: datetime) -> bool:
         return self._monitor_degraded_reason(now) is not None
 
+    @staticmethod
+    def _reason_needs_manual_action(reason: str | None) -> bool:
+        """Only a dead session needs the human; blocks/stale self-heal silently."""
+        return reason in {"logged_out", "auth_paused"}
+
     def _manual_action_summary(self, reason: str | None) -> tuple[str, list[str]]:
-        """Plain-English description + next steps for the current degraded state."""
-        if reason == "auth_paused":
-            return (
-                "Auto re-login keeps failing, so the monitor can't refresh your "
-                "Ticketmaster session. It needs you to log in manually.",
-                REAUTH_MANUAL_STEPS,
-            )
-        if reason == "stale":
-            return (
-                "The monitor has stopped getting fresh data for your event(s) and "
-                "auto-recovery hasn't fixed it.",
-                EVENT_STALE_MANUAL_STEPS,
-            )
+        """Plain-English description + next steps. Only login-actionable reasons reach
+        here now (blocks/stale never ping)."""
         return (
-            "The monitor has been blocked from checking tickets and can't clear it "
-            "on its own.",
-            EVENT_STALE_MANUAL_STEPS,
+            "You've been signed out of Ticketmaster, so the monitor can't use your "
+            "account (needed to grab tickets the instant they drop). Please log back "
+            "in — everything else recovers on its own.",
+            LOGIN_MANUAL_STEPS,
         )
 
     def _evaluate_manual_action_escalation(self, now: datetime | None = None):
@@ -778,13 +951,20 @@ class MonitorScheduler:
             self.state.set_degraded_state(False)
             return
 
+        # GUI banner mirrors any non-healthy reason; keep the first-seen time stable.
+        degraded_since = self.state.get_degraded_state().get("since") or now
+        self.state.set_degraded_state(True, reason=reason, since=degraded_since)
+
+        # Blocks/stale self-heal — show "recovering" in the GUI but never ping the user.
+        if not self._reason_needs_manual_action(reason):
+            if self.state.get_attention_since() is not None or self.state.get_attention_alerted():
+                self.state.clear_attention()
+            return
+
         since = self.state.get_attention_since()
         if since is None:
             self.state.set_attention_since(now)
             since = now
-        # Mirror the ping's exact condition into state.json so the GUI shows the same
-        # thing (incl. auth-pause/stale, which were previously invisible to the GUI).
-        self.state.set_degraded_state(True, reason=reason, since=since)
 
         # Stop only once the alert is actually DELIVERED (or we've exhausted retries).
         # A send that Discord rejects (rate-limit / error / network) leaves us free to
@@ -890,20 +1070,34 @@ class MonitorScheduler:
 
         if result.get("healthy"):
             logger.debug("Session health check passed (status=%s)", result.get("status"))
+            if self.state.get_session_logged_out():
+                logger.info("Session health recovered; clearing logged-out state")
+                self.state.set_session_logged_out(False)
             return
 
         reason = result.get("reason", "unknown")
         status = result.get("status")
         challenge = result.get("challenge", False)
-        # Log only. A stale account session does not stop Face Value Exchange
-        # listings from loading, so this alone is not worth a ping. If it actually
-        # breaks checks, that surfaces as an outage and escalates on its own.
-        logger.warning(
-            "Session health check failed (log-only): reason=%s status=%s challenge=%s",
-            reason,
-            status,
-            challenge,
-        )
+        # A genuine logged-out signal (sign-in redirect / login page / 401-403 with no
+        # challenge) is the ONE thing that needs the human — flag it so the escalation
+        # pings for re-login. A challenge here is a DataDome block, which self-heals.
+        logged_out = (not challenge) and reason in {
+            "login_redirect",
+            "login_page_title",
+            "http_401",
+            "http_403",
+        }
+        if logged_out:
+            if not self.state.get_session_logged_out():
+                logger.error("Session health: logged out (reason=%s) — will ping for re-login", reason)
+            self.state.set_session_logged_out(True)
+        else:
+            logger.warning(
+                "Session health check failed (log-only, self-heals): reason=%s status=%s challenge=%s",
+                reason,
+                status,
+                challenge,
+            )
 
     # ---- Sleep/backoff helpers ----
 

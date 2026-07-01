@@ -83,6 +83,13 @@ class BrowserProbe:
         "press & hold",
         "datadome",
         "cf-challenge",
+        # DataDome "soft block" interstitial (no captcha, just a pause page):
+        #   "Your Browsing Activity Has Been Paused —
+        #    We've detected unusual behavior on either your network or your browser."
+        "browsing activity has been paused",
+        "detected unusual behavior",
+        "unusual behavior on either your network",
+        "unusual traffic",
     ]
     SOLD_OUT_PATTERNS = [
         "sold out",
@@ -215,10 +222,27 @@ class BrowserProbe:
 
             self._apply_stealth()
             self._context.set_default_timeout(self.navigation_timeout_seconds * 1000)
+            self._close_stray_tabs()
             self._started = True
         except Exception as exc:
             self.close()
             raise BrowserProbeError(f"Failed to start browser probe: {exc}") from exc
+
+    def _close_stray_tabs(self):
+        """Persistent profiles can restore old tabs on launch; keep one (reused for an
+        event) and close the rest so blank tabs don't accumulate across restarts. Never
+        touches an external (cdp_attach) browser — those are the user's own tabs."""
+        if self.session_mode == "cdp_attach" or self._context is None:
+            return
+        try:
+            pages = list(getattr(self._context, "pages", []))
+        except Exception:
+            return
+        for extra in pages[1:]:
+            try:
+                extra.close()
+            except Exception:
+                pass
 
     def close(self):
         """Close browser resources."""
@@ -258,6 +282,34 @@ class BrowserProbe:
             self._playwright = None
             self._started = False
 
+    # Bot/anti-block tokens to shed on a prolonged block. Login cookies are preserved.
+    BLOCK_COOKIE_NAMES = ("datadome",)
+
+    def clear_block_cookies(self) -> int:
+        """Delete DataDome/bot tokens from the context while keeping login cookies, so a
+        stuck block can get a fresh token on the next reload. Returns how many were removed."""
+        if self._context is None:
+            return 0
+        try:
+            cookies = self._context.cookies()
+        except Exception:
+            return 0
+        keep = [
+            c
+            for c in cookies
+            if not any(tok in str(c.get("name", "")).lower() for tok in self.BLOCK_COOKIE_NAMES)
+        ]
+        removed = len(cookies) - len(keep)
+        if removed <= 0:
+            return 0
+        try:
+            self._context.clear_cookies()
+            if keep:
+                self._context.add_cookies(keep)
+        except Exception:
+            return 0
+        return removed
+
     @property
     def cdp_connected(self) -> bool:
         return bool(self._cdp_connected and self._started and self.session_mode == "cdp_attach")
@@ -266,9 +318,15 @@ class BrowserProbe:
     def _launch_kwargs(*, headless: bool, channel: str | None) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
             "headless": headless,
+            # Keep the OS sandbox ON: Playwright defaults it OFF (--no-sandbox), which
+            # shows an infobar AND is a known automation tell. Also drop the
+            # --enable-automation switch (the "controlled by test software" banner/flag).
+            "chromium_sandbox": True,
+            "ignore_default_args": ["--enable-automation"],
             "args": [
                 "--disable-blink-features=AutomationControlled",
                 "--disable-dev-shm-usage",
+                "--hide-crash-restore-bubble",
             ],
         }
         if channel:
@@ -529,6 +587,19 @@ class BrowserProbe:
                             return cached, False
                     except Exception:
                         pass
+                # Reuse an idle blank tab (e.g. the one Chrome opens on launch) instead
+                # of opening a new one, so blank tabs don't pile up.
+                assigned = {id(p) for p in self._event_pages.values()}
+                for existing in list(getattr(self._context, "pages", [])):
+                    try:
+                        if id(existing) in assigned or existing.is_closed():
+                            continue
+                        existing_url = str(getattr(existing, "url", "")).lower()
+                    except Exception:
+                        continue
+                    if existing_url in ("", "about:blank"):
+                        self._event_pages[event_id] = existing
+                        return existing, True
                 page = self._context.new_page()
                 self._event_pages[event_id] = page
                 return page, True

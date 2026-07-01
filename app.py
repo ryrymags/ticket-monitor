@@ -11,6 +11,7 @@ Requirements: customtkinter  (pip install customtkinter)
 from __future__ import annotations
 
 import json
+import logging
 import os
 import platform
 import queue
@@ -29,9 +30,15 @@ import tkinter as tk
 from tkinter import messagebox, simpledialog
 
 from monitor import run_bootstrap_session
-from src.history_stats import count_bingo_in_history
+from src.history_stats import count_bingo_in_history, count_recent_appearances
 from src.preferences import TicketPreferences
 from src.state import summarize_check_stats
+from src.uptime import (
+    current_status as uptime_current_status,
+    load_uptime_segments,
+    summarize_uptime,
+    timeline as uptime_timeline,
+)
 
 # ── Appearance ──────────────────────────────────────────────────────────────
 ctk.set_appearance_mode("dark")
@@ -45,6 +52,7 @@ except ImportError:
 CONFIG_FILE = "config.yaml"
 STATE_FILE = "state.json"
 HISTORY_FILE = "ticket_history.json"
+UPTIME_FILE = "uptime_log.json"
 LOG_FILE = os.path.join("logs", "monitor.log")
 
 # Colors
@@ -198,6 +206,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "username": "Ticket Monitor",
         "ping_user_id": "",
     },
+    "ntfy": {
+        "enabled": False,
+        "topic": "",
+        "priority": "high",
+    },
     "events": [],
     "preferences": {
         "name": "BINGO 1",
@@ -230,7 +243,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "challenge_threshold": 5,
         "challenge_retry_seconds": 60,
         "challenge_cooldown_base_seconds": 60,
-        "challenge_cooldown_max_seconds": 1800,
+        "challenge_cooldown_max_seconds": 300,
         "startup_grace_seconds": 180,
         "event_stagger_seconds": 6,
         "cdp_endpoint_url": "http://127.0.0.1:9222",
@@ -323,6 +336,9 @@ class TicketMonitorApp(ctk.CTk):
         self._log_pos = 0
         self._status_poll_id: str | None = None
         self._events: list[dict[str, str]] = []  # [{event_id, name, date, url}]
+        self._current_tab: str = "events"
+        self._history_sig: tuple | None = None  # (mtime, size) of last-rendered history
+        self._uptime_outage_sig: tuple | None = None  # signature of last-rendered outages
 
         # Load or init config
         self._cfg: dict[str, Any] = {}
@@ -359,6 +375,7 @@ class TicketMonitorApp(ctk.CTk):
             ("notifications", "🔔  Notifications"),
             ("login", "🔐  Login"),
             ("history", "📋  History"),
+            ("uptime", "📊  Uptime"),
             ("monitor", "▶   Monitor"),
         ]
         for i, (key, label) in enumerate(nav_items, start=1):
@@ -395,6 +412,7 @@ class TicketMonitorApp(ctk.CTk):
         self._build_notifications_tab()
         self._build_login_tab()
         self._build_history_tab()
+        self._build_uptime_tab()
         self._build_monitor_tab()
 
         # Bottom status bar
@@ -426,6 +444,13 @@ class TicketMonitorApp(ctk.CTk):
                 fg_color=("gray25", "gray20") if k == key else "transparent",
                 text_color=("white", "white") if k == key else ("gray70", "gray90"),
             )
+        self._current_tab = key
+        # Refresh data-backed tabs on entry so they're fresh the moment you open them
+        # (the periodic poll only touches whichever tab is currently visible).
+        if key == "history":
+            self._refresh_history_tab()
+        elif key == "uptime":
+            self._refresh_uptime_tab()
 
     # ── Events Tab ───────────────────────────────────────────────────────────
 
@@ -824,13 +849,54 @@ class TicketMonitorApp(ctk.CTk):
         self._non_bingo_var = ctk.BooleanVar(value=False)
         ctk.CTkSwitch(notif_frame, text="", variable=self._non_bingo_var).grid(row=8, column=1, padx=12, pady=(12, 4), sticky="e")
 
+        # ── ntfy.sh push (optional second channel) ──────────────────────────
+        _section_header(frame, "📱  ntfy Push  (optional)", row=4)
+        ctk.CTkLabel(
+            frame,
+            text="A second channel so friends get phone pushes without Discord. They install the\n"
+                 "free ntfy app and subscribe to your topic (no account needed).",
+            text_color="gray60", justify="left",
+        ).grid(row=5, column=0, padx=20, pady=(0, 12), sticky="w")
+
+        ntfy_frame = ctk.CTkFrame(frame, fg_color=COLOR_BG_PANEL, corner_radius=8)
+        ntfy_frame.grid(row=6, column=0, padx=20, pady=(0, 12), sticky="ew")
+        ntfy_frame.grid_columnconfigure(1, weight=1)
+
+        # Enable switch
+        ctk.CTkLabel(ntfy_frame, text="Enable ntfy push", anchor="w").grid(row=0, column=0, padx=18, pady=(16, 4), sticky="w")
+        self._ntfy_enabled_var = ctk.BooleanVar(value=False)
+        ctk.CTkSwitch(ntfy_frame, text="", variable=self._ntfy_enabled_var).grid(row=0, column=1, padx=12, pady=(16, 4), sticky="e")
+
+        _divider(ntfy_frame, row=1)
+
+        # Topic
+        _field_label(ntfy_frame, "Topic", row=2)
+        ctk.CTkLabel(
+            ntfy_frame,
+            text="An UNGUESSABLE name — anyone who knows it can read your alerts.\n"
+                 "Subscribers open the ntfy app and add this exact topic.",
+            text_color="gray55", font=ctk.CTkFont(size=11), justify="left",
+        ).grid(row=3, column=0, columnspan=2, padx=18, pady=(0, 8), sticky="w")
+        self._ntfy_topic_var = ctk.StringVar()
+        ctk.CTkEntry(ntfy_frame, textvariable=self._ntfy_topic_var, placeholder_text="e.g. bingo-tix-a1B2c3D4").grid(row=2, column=1, padx=12, pady=(12, 4), sticky="ew")
+
+        _divider(ntfy_frame, row=4)
+
+        # Priority
+        _field_label(ntfy_frame, "Priority", row=5)
+        self._ntfy_priority_var = ctk.StringVar(value="high")
+        ctk.CTkOptionMenu(
+            ntfy_frame, variable=self._ntfy_priority_var,
+            values=["urgent", "high", "default", "low", "min"],
+        ).grid(row=5, column=1, padx=12, pady=(12, 12), sticky="e")
+
         btn_row = ctk.CTkFrame(frame, fg_color="transparent")
-        btn_row.grid(row=4, column=0, padx=20, pady=(0, 14), sticky="w")
+        btn_row.grid(row=7, column=0, padx=20, pady=(0, 14), sticky="w")
         ctk.CTkButton(btn_row, text="💾  Save", command=self._save_config, fg_color=COLOR_BLUE).pack(side="left", padx=(0, 10))
         ctk.CTkButton(btn_row, text="🧪  Send Test Message", command=self._test_discord, fg_color=COLOR_GRAY).pack(side="left")
 
         self._discord_status_label = ctk.CTkLabel(frame, text="", font=ctk.CTkFont(size=11))
-        self._discord_status_label.grid(row=5, column=0, padx=20, pady=0, sticky="w")
+        self._discord_status_label.grid(row=8, column=0, padx=20, pady=0, sticky="w")
 
     def _test_discord(self):
         self._save_config()
@@ -899,9 +965,14 @@ class TicketMonitorApp(ctk.CTk):
             frame, text="🔍  Verify login", fg_color=COLOR_GRAY, command=self._verify_login,
         ).grid(row=3, column=0, padx=(230, 0), pady=(0, 10), sticky="w")
 
+        ctk.CTkButton(
+            frame, text="🖥  Install Desktop shortcuts", fg_color=COLOR_GRAY,
+            command=self._install_desktop_shortcuts,
+        ).grid(row=3, column=0, padx=(360, 0), pady=(0, 10), sticky="w")
+
         ctk.CTkLabel(
             frame,
-            text="A browser window will open. Log in to Ticketmaster normally, then\ncome back here and click 'Done — I'm logged in'.\n\nYour session is stored locally and reused on every restart — you won't need\nto log in again unless your session expires (usually every few weeks).\n\nNote: only one program can use the saved Chrome profile at a time — don't open\nChrome on that profile while the monitor is running.",
+            text="A browser window will open. Log in to Ticketmaster normally, then\ncome back here and click 'Done — I'm logged in'.\n\nYour session is stored locally and reused on every restart — you won't need\nto log in again unless your session expires (usually every few weeks).\n\nThe only thing you ever need to do by hand is log back in if you get signed out —\nuse the double-click “Ticket Monitor Reauth.command” on your Desktop (install it with\nthe button above). Everything else (blocks, slow pages) self-heals automatically.\n\nNote: only one program can use the saved Chrome profile at a time — don't open\nChrome on that profile while the monitor is running.",
             text_color="gray55", justify="left",
         ).grid(row=4, column=0, padx=20, pady=(0, 14), sticky="w")
 
@@ -942,6 +1013,32 @@ class TicketMonitorApp(ctk.CTk):
         self._update_login_status()
         detail = self._login_status_text.cget("text").split("\n")[0]
         self._bootstrap_status_label.configure(text=f"🔍  {detail}", text_color="gray55")
+
+    def _install_desktop_shortcuts(self):
+        """Run scripts/install_desktop_shortcuts.sh so the double-click .command files
+        (incl. 'Ticket Monitor Reauth.command') land on the Desktop."""
+        repo_root = os.path.dirname(os.path.abspath(__file__))
+        script = os.path.join(repo_root, "scripts", "install_desktop_shortcuts.sh")
+        if not os.path.exists(script):
+            self._bootstrap_status_label.configure(text=f"❌  Not found: {script}", text_color=COLOR_RED)
+            return
+        self._bootstrap_status_label.configure(text="⏳  Installing Desktop shortcuts…", text_color="gray55")
+        self.update()
+
+        def run():
+            try:
+                result = subprocess.run(
+                    ["bash", script], capture_output=True, text=True, timeout=60, cwd=repo_root,
+                )
+                ok = result.returncode == 0
+                msg = ("✅  Desktop shortcuts installed (incl. Ticket Monitor Reauth.command)."
+                       if ok else f"❌  Install failed: {(result.stdout + result.stderr)[:200]}")
+                color = COLOR_GREEN if ok else COLOR_RED
+            except Exception as exc:
+                msg, color = f"❌  Error: {exc}", COLOR_RED
+            self.after(0, lambda: self._bootstrap_status_label.configure(text=msg, text_color=color))
+
+        threading.Thread(target=run, daemon=True).start()
 
     def _start_bootstrap_session(self):
         if not self._events:
@@ -1030,7 +1127,7 @@ class TicketMonitorApp(ctk.CTk):
         ctk.CTkButton(
             btn_row, text="↺  Refresh", width=90, height=28,
             fg_color="gray25", hover_color="gray30",
-            command=self._refresh_history_tab,
+            command=lambda: self._refresh_history_tab(force=True),
         ).pack(side="left", padx=(0, 6))
         ctk.CTkButton(
             btn_row, text="🗑  Clear", width=80, height=28,
@@ -1038,12 +1135,20 @@ class TicketMonitorApp(ctk.CTk):
             command=self._clear_history,
         ).pack(side="left")
 
-        # BINGO-under-current-configs counter (re-scored against your current configs).
+        # Stat row: BINGO-under-current-configs counter + recent-appearances tally.
+        stat_col = ctk.CTkFrame(frame, fg_color="transparent")
+        stat_col.grid(row=2, column=0, padx=20, pady=(0, 8), sticky="w")
         self._history_bingo_label = ctk.CTkLabel(
-            frame, text="🟢 BINGO under current configs: —",
+            stat_col, text="🟢 BINGO under current configs: —",
             font=ctk.CTkFont(size=12, weight="bold"), text_color=COLOR_GREEN, anchor="w",
         )
-        self._history_bingo_label.grid(row=2, column=0, padx=20, pady=(0, 8), sticky="w")
+        self._history_bingo_label.grid(row=0, column=0, pady=(0, 2), sticky="w")
+        # Peace-of-mind: how many appearances the monitor has caught recently.
+        self._history_seen_label = ctk.CTkLabel(
+            stat_col, text="🎟 Tickets seen: —",
+            font=ctk.CTkFont(size=12), text_color="gray70", anchor="w",
+        )
+        self._history_seen_label.grid(row=1, column=0, sticky="w")
 
         # Scrollable list of history entries
         self._history_list = ctk.CTkScrollableFrame(frame, fg_color=COLOR_BG_PANEL, corner_radius=8)
@@ -1102,14 +1207,51 @@ class TicketMonitorApp(ctk.CTk):
             text += f"  —  {parts}"
         self._history_bingo_label.configure(text=text)
 
-    def _refresh_history_tab(self):
-        """Reload ticket_history.json and re-render the history list."""
+    @staticmethod
+    def _tickets_seen_text(history: list[dict]) -> str:
+        """One-line 'tickets seen in 48h / 7d' peace-of-mind summary."""
+        now = datetime.now(timezone.utc)
+        d2 = count_recent_appearances(history, now, hours=48)
+        d7 = count_recent_appearances(history, now, hours=24 * 7)
+        return (
+            f"🎟 Tickets seen: {d2['total']} in 48h ({d2['bingo']} BINGO) · "
+            f"{d7['total']} in 7d ({d7['bingo']} BINGO)"
+        )
+
+    def _update_history_seen_label(self, history: list[dict]):
+        try:
+            self._history_seen_label.configure(text=self._tickets_seen_text(history))
+        except Exception:
+            pass
+
+    @staticmethod
+    def _history_file_sig() -> tuple | None:
+        """Cheap change signature for ticket_history.json (mtime, size)."""
+        try:
+            st = os.stat(HISTORY_FILE)
+            return (st.st_mtime, st.st_size)
+        except OSError:
+            return None
+
+    def _refresh_history_tab(self, force: bool = False):
+        """Reload ticket_history.json and re-render the history list.
+
+        Skips the (expensive) widget rebuild when the file hasn't changed since the
+        last render — this is what stops the every-10s churn that crashed the tab.
+        The Refresh/Clear buttons pass ``force=True``.
+        """
+        sig = self._history_file_sig()
+        if not force and sig == self._history_sig:
+            return
+        self._history_sig = sig
+
         for widget in self._history_list.winfo_children():
             widget.destroy()
         self._history_empty_label = None
 
         history: list[dict] = self._load_history()
         self._update_history_bingo_label(history)
+        self._update_history_seen_label(history)
 
         if not history:
             self._history_empty_label = ctk.CTkLabel(
@@ -1120,84 +1262,91 @@ class TicketMonitorApp(ctk.CTk):
             self._history_empty_label.grid(row=0, column=0, padx=20, pady=40)
             return
 
-        # Show newest first
+        # Show newest first. Guard each card so one malformed entry can't take
+        # down the whole tab (which is part of what made it crash-prone before).
         for i, entry in enumerate(reversed(history)):
-            is_bingo = bool(entry.get("bingo", False))
-            badge_color = COLOR_GREEN if is_bingo else COLOR_ORANGE
-            badge_text = "🟢 BINGO" if is_bingo else "🟡 Available"
-            event_name = entry.get("event_name", "Unknown event")
-            event_date = entry.get("event_date", "")
-            # Distinguish a fresh listing from the same one lingering across re-checks.
-            seen_count = int(entry.get("seen_count", 1) or 1)
-            first_ts = entry.get("first_seen", entry.get("timestamp", ""))
-            ts_display = self._format_ts(first_ts)
-            if seen_count > 1:
-                last_disp = self._format_ts(entry.get("last_seen", first_ts))
-                ts_display += f"  · seen {seen_count}× · last {last_disp}"
+            try:
+                self._render_history_card(i, entry)
+            except Exception:
+                logging.exception("Failed to render history entry %d", i)
 
-            # Get listings — new format has "listings" array, old has single fields.
-            listings = entry.get("listings", [])
-            if not listings:
-                # Backward compat: single-listing old format.
-                sect = entry.get("section", "?")
-                if sect and sect != "?":
-                    listings = [{
-                        "section": sect,
-                        "row": entry.get("row", "?"),
-                        "price": entry.get("price", 0),
-                        "count": entry.get("count", 0),
-                    }]
+    def _render_history_card(self, i: int, entry: dict):
+        is_bingo = bool(entry.get("bingo", False))
+        badge_color = COLOR_GREEN if is_bingo else COLOR_ORANGE
+        badge_text = "🟢 BINGO" if is_bingo else "🟡 Available"
+        event_name = entry.get("event_name", "Unknown event")
+        event_date = entry.get("event_date", "")
+        # Distinguish a fresh listing from the same one lingering across re-checks.
+        seen_count = int(entry.get("seen_count", 1) or 1)
+        first_ts = entry.get("first_seen", entry.get("timestamp", ""))
+        ts_display = self._format_ts(first_ts)
+        if seen_count > 1:
+            last_disp = self._format_ts(entry.get("last_seen", first_ts))
+            ts_display += f"  · seen {seen_count}× · last {last_disp}"
 
-            # ── Card frame ────────────────────────────────────────────────
-            card = ctk.CTkFrame(
-                self._history_list,
-                fg_color=("gray17", "gray17"),
-                corner_radius=6,
-            )
-            card.grid(row=i, column=0, padx=8, pady=4, sticky="ew")
-            card.grid_columnconfigure(1, weight=1)
+        # Get listings — new format has "listings" array, old has single fields.
+        listings = entry.get("listings", [])
+        if not listings:
+            # Backward compat: single-listing old format.
+            sect = entry.get("section", "?")
+            if sect and sect != "?":
+                listings = [{
+                    "section": sect,
+                    "row": entry.get("row", "?"),
+                    "price": entry.get("price", 0),
+                    "count": entry.get("count", 0),
+                }]
 
-            # Row 0: badge | event name + date | timestamp
-            ctk.CTkLabel(
-                card, text=badge_text,
-                font=ctk.CTkFont(size=11, weight="bold"),
-                text_color=badge_color, width=80, anchor="center",
-            ).grid(row=0, column=0, padx=(10, 6), pady=(8, 2), sticky="w")
+        # ── Card frame ────────────────────────────────────────────────
+        card = ctk.CTkFrame(
+            self._history_list,
+            fg_color=("gray17", "gray17"),
+            corner_radius=6,
+        )
+        card.grid(row=i, column=0, padx=8, pady=4, sticky="ew")
+        card.grid_columnconfigure(1, weight=1)
 
-            header = event_name[:55]
-            if event_date:
-                header += f"  ({event_date})"
-            ctk.CTkLabel(
-                card, text=header,
-                font=ctk.CTkFont(size=12, weight="bold"), anchor="w",
-            ).grid(row=0, column=1, padx=4, pady=(8, 2), sticky="w")
+        # Row 0: badge | event name + date | timestamp
+        ctk.CTkLabel(
+            card, text=badge_text,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=badge_color, width=80, anchor="center",
+        ).grid(row=0, column=0, padx=(10, 6), pady=(8, 2), sticky="w")
 
-            ctk.CTkLabel(
-                card, text=ts_display,
-                font=ctk.CTkFont(size=10), text_color="gray50", anchor="e",
-            ).grid(row=0, column=2, padx=(4, 10), pady=(8, 2), sticky="e")
+        header = event_name[:55]
+        if event_date:
+            header += f"  ({event_date})"
+        ctk.CTkLabel(
+            card, text=header,
+            font=ctk.CTkFont(size=12, weight="bold"), anchor="w",
+        ).grid(row=0, column=1, padx=4, pady=(8, 2), sticky="w")
 
-            # Rows 1+: one line per listing
-            if listings:
-                for j, lis in enumerate(listings):
-                    sect = lis.get("section", "?")
-                    row_val = lis.get("row", "?")
-                    price = lis.get("price", 0)
-                    count = lis.get("count", 0)
-                    row_str = f" · Row {row_val}" if row_val and row_val != "?" else ""
-                    line = f"  {sect}{row_str} · {count} ticket{'s' if count != 1 else ''} · ${float(price):,.2f} each"
-                    ctk.CTkLabel(
-                        card, text=line,
-                        font=ctk.CTkFont(family="Courier", size=11),
-                        text_color="gray60", anchor="w",
-                    ).grid(row=1 + j, column=0, columnspan=3, padx=(16, 10), pady=(0, 2 if j < len(listings) - 1 else 6), sticky="w")
-            else:
-                # No structured data — show label as fallback.
-                label = entry.get("label", "Tickets detected (no detail)")
+        ctk.CTkLabel(
+            card, text=ts_display,
+            font=ctk.CTkFont(size=10), text_color="gray50", anchor="e",
+        ).grid(row=0, column=2, padx=(4, 10), pady=(8, 2), sticky="e")
+
+        # Rows 1+: one line per listing
+        if listings:
+            for j, lis in enumerate(listings):
+                sect = lis.get("section", "?")
+                row_val = lis.get("row", "?")
+                price = lis.get("price", 0)
+                count = lis.get("count", 0)
+                row_str = f" · Row {row_val}" if row_val and row_val != "?" else ""
+                line = f"  {sect}{row_str} · {count} ticket{'s' if count != 1 else ''} · ${float(price):,.2f} each"
                 ctk.CTkLabel(
-                    card, text=f"  {label}",
-                    font=ctk.CTkFont(size=11), text_color="gray60", anchor="w",
-                ).grid(row=1, column=0, columnspan=3, padx=(16, 10), pady=(0, 6), sticky="w")
+                    card, text=line,
+                    font=ctk.CTkFont(family="Courier", size=11),
+                    text_color="gray60", anchor="w",
+                ).grid(row=1 + j, column=0, columnspan=3, padx=(16, 10), pady=(0, 2 if j < len(listings) - 1 else 6), sticky="w")
+        else:
+            # No structured data — show label as fallback.
+            label = entry.get("label", "Tickets detected (no detail)")
+            ctk.CTkLabel(
+                card, text=f"  {label}",
+                font=ctk.CTkFont(size=11), text_color="gray60", anchor="w",
+            ).grid(row=1, column=0, columnspan=3, padx=(16, 10), pady=(0, 6), sticky="w")
 
     def _clear_history(self):
         from tkinter import messagebox as _mb
@@ -1209,7 +1358,211 @@ class TicketMonitorApp(ctk.CTk):
         except Exception as exc:
             _mb.showerror("Error", f"Could not clear history:\n{exc}", parent=self)
             return
-        self._refresh_history_tab()
+        self._refresh_history_tab(force=True)
+
+    # ── Uptime Tab ────────────────────────────────────────────────────────────
+
+    # state → (emoji, label, color) for the uptime views
+    _UPTIME_STYLE = {
+        "healthy": ("🟢", "Monitoring", COLOR_GREEN),
+        "impaired": ("🟠", "Impaired", COLOR_ORANGE),
+        "down": ("⚪", "Down", COLOR_GRAY),
+    }
+    _UPTIME_REASON_TEXT = {
+        "blocked": "blocked by Ticketmaster",
+        "outage": "blocked by Ticketmaster",
+        "stale": "no fresh data",
+        "logged_out": "signed out",
+        "auth_paused": "auth cooldown",
+        "error": "monitor error",
+        "offline": "monitor offline",
+        "no_internet": "no internet connection",
+    }
+
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        """Compact human duration: '6h 9m', '3m', '2d 4h', '45s'."""
+        s = int(max(0, seconds))
+        d, rem = divmod(s, 86400)
+        h, rem = divmod(rem, 3600)
+        m, sec = divmod(rem, 60)
+        if d:
+            return f"{d}d {h}h" if h else f"{d}d"
+        if h:
+            return f"{h}h {m}m" if m else f"{h}h"
+        if m:
+            return f"{m}m"
+        return f"{sec}s"
+
+    def _build_uptime_tab(self):
+        frame = ctk.CTkFrame(self._content, fg_color="transparent")
+        self._tabs["uptime"] = frame
+        frame.grid_columnconfigure(0, weight=1)
+        frame.grid_rowconfigure(5, weight=1)
+
+        _section_header(frame, "📊  Uptime & Downtime", row=0)
+
+        ctk.CTkLabel(
+            frame,
+            text="A timestamped record of when the monitor was actually working.\n"
+                 "🟢 Monitoring = healthy checks · 🟠 Impaired = running but blocked/stale/signed-out · "
+                 "⚪ Down = laptop asleep, app closed, or no internet.",
+            text_color="gray60", justify="left",
+        ).grid(row=1, column=0, padx=20, pady=(0, 10), sticky="w")
+
+        # Current status
+        self._uptime_status_label = ctk.CTkLabel(
+            frame, text="⚪  Down", font=ctk.CTkFont(size=15, weight="bold"),
+            text_color=COLOR_GRAY, anchor="w",
+        )
+        self._uptime_status_label.grid(row=2, column=0, padx=20, pady=(0, 12), sticky="w")
+
+        # 24h + 7d summary blocks (label + stacked bar) live in one container.
+        summ_frame = ctk.CTkFrame(frame, fg_color=COLOR_BG_PANEL, corner_radius=8)
+        summ_frame.grid(row=3, column=0, padx=20, pady=(0, 10), sticky="ew")
+        summ_frame.grid_columnconfigure(0, weight=1)
+        self._uptime_bars: dict[str, dict] = {}
+        for i, (key, title) in enumerate((("24h", "Past 24 hours"), ("7d", "Past 7 days"))):
+            ctk.CTkLabel(
+                summ_frame, text=title, font=ctk.CTkFont(size=12, weight="bold"), anchor="w",
+            ).grid(row=i * 3, column=0, padx=14, pady=(10 if i == 0 else 6, 2), sticky="w")
+            text_lbl = ctk.CTkLabel(
+                summ_frame, text="—", font=ctk.CTkFont(size=11), text_color="gray70", anchor="w",
+            )
+            text_lbl.grid(row=i * 3 + 1, column=0, padx=14, pady=(0, 4), sticky="w")
+            bar = ctk.CTkFrame(summ_frame, fg_color="gray25", corner_radius=4, height=14)
+            bar.grid(row=i * 3 + 2, column=0, padx=14, pady=(0, 12 if i == 1 else 8), sticky="ew")
+            bar.grid_propagate(False)
+            self._uptime_bars[key] = {"text": text_lbl, "bar": bar, "segs": []}
+
+        # Full timeline (healthy + impaired + down)
+        ctk.CTkLabel(
+            frame, text="Timeline — every stretch of monitoring & downtime (last 7 days)",
+            font=ctk.CTkFont(size=12, weight="bold"), anchor="w",
+        ).grid(row=4, column=0, padx=20, pady=(0, 4), sticky="w")
+        self._uptime_list = ctk.CTkScrollableFrame(frame, fg_color=COLOR_BG_PANEL, corner_radius=8)
+        self._uptime_list.grid(row=5, column=0, padx=20, pady=(0, 14), sticky="nsew")
+        self._uptime_list.grid_columnconfigure(0, weight=1)
+
+        self._refresh_uptime_tab(force=True)
+
+    def _render_uptime_bar(self, bar: ctk.CTkFrame, summ: dict):
+        """Draw a stacked healthy/impaired/down bar using place() proportions."""
+        for w in bar.winfo_children():
+            w.destroy()
+        total = summ["total_s"]
+        if total <= 0:
+            return
+        offset = 0.0
+        for state_key, secs in (
+            ("healthy", summ["healthy_s"]),
+            ("impaired", summ["impaired_s"]),
+            ("down", summ["down_s"]),
+        ):
+            frac = secs / total
+            if frac <= 0:
+                continue
+            color = self._UPTIME_STYLE[state_key][2]
+            seg = ctk.CTkFrame(bar, fg_color=color, corner_radius=0)
+            seg.place(relx=offset, rely=0, relwidth=frac, relheight=1.0)
+            offset += frac
+
+    def _refresh_uptime_tab(self, force: bool = False):
+        segments = load_uptime_segments(UPTIME_FILE)
+        now = datetime.now(timezone.utc)
+        # Whether the monitor process is alive right now — lets a stopped monitor
+        # read as "down" immediately instead of waiting out the freshness slack.
+        running = bool(self._monitor_proc and self._monitor_proc.poll() is None)
+
+        # Current status line (always cheap — just a label reconfigure).
+        status = uptime_current_status(segments, now, monitor_running=running)
+        emoji, label, color = self._UPTIME_STYLE.get(
+            status["state"], self._UPTIME_STYLE["down"]
+        )
+        text = f"{emoji}  {label}"
+        reason = status.get("reason")
+        if status["state"] != "healthy" and reason:
+            text += f" ({self._UPTIME_REASON_TEXT.get(reason, reason)})"
+        # Current state is ongoing — show when it started, not a creeping duration.
+        since_disp = self._format_ts(status.get("since") or "")
+        if since_disp:
+            text += f"  ·  Ongoing since {since_disp}"
+        self._uptime_status_label.configure(text=text, text_color=color)
+
+        # 24h / 7d summaries + bars.
+        for key, hours in (("24h", 24), ("7d", 24 * 7)):
+            summ = summarize_uptime(segments, hours=hours, now=now, monitor_running=running)
+            widgets = self._uptime_bars[key]
+            widgets["text"].configure(
+                text=(
+                    f"{self._format_duration(summ['healthy_s'])} monitoring · "
+                    f"{self._format_duration(summ['impaired_s'])} impaired · "
+                    f"{self._format_duration(summ['down_s'])} down  —  "
+                    f"{summ['healthy_pct']}% healthy"
+                )
+            )
+            self._render_uptime_bar(widgets["bar"], summ)
+
+        # Full timeline — rebuild only when the set of rows changes. The ongoing
+        # row contributes a stable "ONGOING" token (not its creeping end time) so a
+        # still-running state doesn't re-render every poll — it only re-renders when
+        # the state actually switches and the segment finalizes.
+        rows = uptime_timeline(segments, hours=24 * 7, now=now, monitor_running=running)
+        sig = tuple(
+            (r["start"], r["state"], "ONGOING" if r["ongoing"] else r["end"]) for r in rows
+        )
+        if not force and sig == self._uptime_outage_sig:
+            return
+        self._uptime_outage_sig = sig
+
+        for w in self._uptime_list.winfo_children():
+            w.destroy()
+        if not rows:
+            ctk.CTkLabel(
+                self._uptime_list,
+                text="No monitoring recorded in the last 7 days yet.\n"
+                     "Start the monitor and every stretch of healthy monitoring, impairment,\n"
+                     "and downtime (laptop asleep, app closed, no internet, or blocking) shows up here.",
+                text_color="gray50", justify="center",
+            ).grid(row=0, column=0, padx=20, pady=40)
+            return
+
+        for i, r in enumerate(rows):
+            try:
+                self._render_timeline_row(i, r)
+            except Exception:
+                logging.exception("Failed to render timeline row %d", i)
+
+    def _render_timeline_row(self, i: int, r: dict):
+        state = r["state"]
+        emoji, label, color = self._UPTIME_STYLE.get(state, self._UPTIME_STYLE["down"])
+        start_disp = self._format_ts(r.get("start", ""))
+        reason = r.get("reason")
+        reason_txt = self._UPTIME_REASON_TEXT.get(reason, reason) if reason else ""
+
+        card = ctk.CTkFrame(self._uptime_list, fg_color=("gray17", "gray17"), corner_radius=6)
+        card.grid(row=i, column=0, padx=8, pady=4, sticky="ew")
+        card.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            card, text=f"{emoji} {label.upper()}",
+            font=ctk.CTkFont(size=11, weight="bold"), text_color=color,
+            width=110, anchor="w",
+        ).grid(row=0, column=0, padx=(10, 6), pady=8, sticky="w")
+
+        # Ongoing segments show "Ongoing" instead of a duration that keeps ticking;
+        # the real duration only lands once the state switches.
+        if r.get("ongoing"):
+            detail = f"{start_disp}  →  now   ·   Ongoing"
+        else:
+            end_disp = self._format_ts(r.get("end", ""))
+            dur = self._format_duration(r.get("duration_s", 0))
+            detail = f"{start_disp}  →  {end_disp}   ·   {dur}"
+        if reason_txt:
+            detail += f"   ·   {reason_txt}"
+        ctk.CTkLabel(
+            card, text=detail, font=ctk.CTkFont(size=11), text_color="gray70", anchor="w",
+        ).grid(row=0, column=1, padx=(4, 10), pady=8, sticky="w")
 
     # ── Monitor Tab ───────────────────────────────────────────────────────────
 
@@ -1265,7 +1618,14 @@ class TicketMonitorApp(ctk.CTk):
             health_frame, text="🟢 BINGOs in history (current configs): —",
             font=ctk.CTkFont(size=11), text_color=COLOR_GREEN, anchor="w", justify="left",
         )
-        self._health_bingo_label.grid(row=3, column=0, padx=14, pady=(0, 10), sticky="w")
+        self._health_bingo_label.grid(row=3, column=0, padx=14, pady=(0, 2), sticky="w")
+        # Peace of mind: appearances caught recently (a 0 here across days is a hint
+        # to double-check the monitor is actually working).
+        self._health_seen_label = ctk.CTkLabel(
+            health_frame, text="🎟 Tickets seen: —",
+            font=ctk.CTkFont(size=11), text_color="gray70", anchor="w", justify="left",
+        )
+        self._health_seen_label.grid(row=4, column=0, padx=14, pady=(0, 10), sticky="w")
 
         # ── Events status panel ───────────────────────────────────────────────
         self._monitor_events_frame = ctk.CTkScrollableFrame(
@@ -1499,9 +1859,14 @@ class TicketMonitorApp(ctk.CTk):
         self._update_status_bar(running)
         self._refresh_monitor_events_panel()
         self._refresh_monitor_health_stats()
-        # Auto-refresh history whenever the monitor is active.
-        if running:
+        # Only refresh the currently-visible data tab. History/uptime rebuild their
+        # widget lists only when the underlying file actually changed (see the
+        # signature guards), so this is cheap and avoids the churn that used to
+        # rebuild the whole history list every 10s (and crash on macOS Tk).
+        if self._current_tab == "history":
             self._refresh_history_tab()
+        elif self._current_tab == "uptime":
+            self._refresh_uptime_tab()
 
     def _refresh_monitor_health_stats(self):
         """Update the live "Monitor Health" panel from state.json + history."""
@@ -1530,42 +1895,47 @@ class TicketMonitorApp(ctk.CTk):
             self._health_alltime_label.configure(text="All-time: —")
 
         try:
-            summary = self._bingo_history_summary()
+            history = self._load_history()
+            summary = count_bingo_in_history(history, self._current_bingo_configs())
             self._health_bingo_label.configure(
                 text=f"🟢 BINGOs in history (current configs): {summary['total']}"
             )
+            self._health_seen_label.configure(text=self._tickets_seen_text(history))
         except Exception:
             pass
 
     def _degraded_banner_text(self, health: dict) -> tuple[str, str] | None:
-        """Render the SAME degraded condition that drives the manual-action ping
-        (persisted by the scheduler) so the GUI never shows green while a 'go fix it'
-        ping is live. Returns (text, color) or None when healthy."""
+        """Banner mirrors the monitor's persisted status. Blocks/stale are amber and
+        self-healing (no action); only a dead login is red + actionable.
+        Returns (text, color) or None when healthy."""
         if not health.get("degraded"):
             return None
         reason = health.get("reason")
-        attempted = bool(health.get("attention_alerted"))
-        delivered = bool(health.get("attention_alert_delivered"))
-        attempts = int(health.get("attention_alert_attempts", 0) or 0)
-        if reason == "auth_paused":
-            head = "🔴  Login expired — auto re-login failed."
-            fix = "Open the Login tab and click 'Log In to Ticketmaster', or use Re-authenticate below."
-        elif reason == "stale":
-            head = "🔴  No fresh data for your event(s) — auto-recovery is working on it."
-            fix = "If this persists, try Run Doctor / Re-authenticate below."
+
+        if reason in ("logged_out", "auth_paused"):
+            attempted = bool(health.get("attention_alerted"))
+            delivered = bool(health.get("attention_alert_delivered"))
+            attempts = int(health.get("attention_alert_attempts", 0) or 0)
+            head = "🔴  Signed out of Ticketmaster — please log back in."
+            fix = ("Double-click “Ticket Monitor Reauth.command” on your Desktop, or use the "
+                   "Login tab → “Log In to Ticketmaster”.")
+            if delivered:
+                tail = "A log-in alert has been sent to Discord."
+            elif attempted and attempts >= 6:
+                tail = "⚠️ Couldn't reach Discord — check your webhook URL in the Notifications tab."
+            elif attempted:
+                tail = "Sending a Discord alert…"
+            else:
+                tail = "This is the only thing that needs you — everything else self-heals."
+            return (f"{head}\n{fix}\n{tail}", COLOR_RED)
+
+        # Blocks / stale: self-healing, no action needed → amber, informational.
+        if reason == "stale":
+            head = "🟠  No fresh data right now — auto-recovery is working on it."
         else:
-            head = "🔴  Monitor blocked — Ticketmaster keeps returning blocked / no data."
-            fix = "Self-healing is backing off and retrying automatically."
-        # Tail reflects ACTUAL Discord delivery, never just an attempt.
-        if delivered:
-            tail = "An action alert has been sent to Discord."
-        elif attempted and attempts >= 6:
-            tail = "⚠️ Couldn't reach Discord — check your webhook URL in the Notifications tab."
-        elif attempted:
-            tail = "Trying to send a Discord alert…"
-        else:
-            tail = "Self-healing for up to 15 min before alerting you."
-        return (f"{head}\n{fix}\n{tail}", COLOR_RED)
+            head = "🟠  Ticketmaster is blocking checks — recovering automatically."
+        tail = "Backing off and retrying until it clears. No action needed."
+        return (f"{head}\n{tail}", COLOR_ORANGE)
 
     def _refresh_monitor_events_panel(self):
         state = load_state()
@@ -1586,7 +1956,8 @@ class TicketMonitorApp(ctk.CTk):
         banner = self._degraded_banner_text(health)
         if banner is not None:
             text, color = banner
-            bf = ctk.CTkFrame(self._monitor_events_frame, fg_color="#3a1416", corner_radius=8)
+            banner_bg = "#3a1416" if color == COLOR_RED else "#3a2c12"
+            bf = ctk.CTkFrame(self._monitor_events_frame, fg_color=banner_bg, corner_radius=8)
             bf.grid(row=0, column=0, padx=10, pady=(10, 6), sticky="ew")
             bf.grid_columnconfigure(0, weight=1)
             ctk.CTkLabel(
@@ -1622,6 +1993,7 @@ class TicketMonitorApp(ctk.CTk):
             ev_state = events_state.get(eid, {})
             last_ts = ev_state.get("last_check")
             in_outage = bool(ev_state.get("in_outage_state"))
+            consec_blocked = int(ev_state.get("consecutive_blocked", 0) or 0)
             if last_ts:
                 try:
                     dt = datetime.fromisoformat(last_ts)
@@ -1631,6 +2003,12 @@ class TicketMonitorApp(ctk.CTk):
                         # blocked / no usable data. Match the manual-action alert so
                         # the GUI never shows green while a "go fix it" ping is live.
                         status = f"🔴  Blocked / no data — recovering (last check {age_s}s ago)"
+                    elif consec_blocked > 0:
+                        # The latest check(s) came back blocked/challenged (e.g. the
+                        # "browsing activity paused" screen) but we haven't hit the
+                        # outage threshold yet. Don't show green — this is the state
+                        # the Uptime tab logs as impaired.
+                        status = f"🟠  Blocked — retrying ({consec_blocked} in a row, last check {age_s}s ago)"
                     elif age_s < stale_threshold // 2:
                         status = f"🟢  Last check: {age_s}s ago"
                     elif age_s < stale_threshold:
@@ -1695,6 +2073,13 @@ class TicketMonitorApp(ctk.CTk):
         alerts = self._cfg.get("alerts", {})
         self._non_bingo_var.set(bool(alerts.get("non_bingo_enabled", False)))
 
+        ntfy = self._cfg.get("ntfy", {})
+        self._ntfy_enabled_var.set(bool(ntfy.get("enabled", False)))
+        topics = ntfy.get("topics")
+        topic = topics[0] if isinstance(topics, list) and topics else str(ntfy.get("topic", ""))
+        self._ntfy_topic_var.set(topic)
+        self._ntfy_priority_var.set(str(ntfy.get("priority", "high")) or "high")
+
         self._render_bingo_config_cards(self._configured_bingo_configs())
 
         self._refresh_event_rows()
@@ -1724,6 +2109,13 @@ class TicketMonitorApp(ctk.CTk):
         # Global non-BINGO alert switch.
         cfg.setdefault("alerts", {})
         cfg["alerts"]["non_bingo_enabled"] = bool(self._non_bingo_var.get())
+
+        # ntfy push. GUI is authoritative for the single-topic form.
+        cfg.setdefault("ntfy", {})
+        cfg["ntfy"]["enabled"] = bool(self._ntfy_enabled_var.get())
+        cfg["ntfy"]["topic"] = self._ntfy_topic_var.get().strip()
+        cfg["ntfy"]["priority"] = self._ntfy_priority_var.get().strip() or "high"
+        cfg["ntfy"].pop("topics", None)
 
         # BINGO configs. Keep legacy preferences in sync with the first config.
         bingo_configs = self._bingo_configs_from_widgets()
