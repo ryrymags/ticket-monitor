@@ -10,8 +10,11 @@ config.yaml
 state.json
 state.json.lock
 state.json.bak.*
+state *.json
 ticket_history.json
 ticket_history.backup-*.json
+uptime_log.json
+.uptime-*.tmp
 
 # Ticketmaster session data, Chrome profiles, auth files
 secrets/

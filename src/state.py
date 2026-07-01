@@ -367,6 +367,15 @@ class MonitorState:
             "since": _iso_to_dt(health.get("degraded_since")),
         }
 
+    def get_session_logged_out(self) -> bool:
+        """True when the Ticketmaster session is dead (logged out / cookies wiped) —
+        the ONE condition that warrants a manual re-login ping."""
+        return bool(self._health().get("session_logged_out", False))
+
+    def set_session_logged_out(self, value: bool):
+        self._health()["session_logged_out"] = bool(value)
+        self.save()
+
     def get_challenge_cooldown_until(self) -> datetime | None:
         return _iso_to_dt(self._health().get("challenge_cooldown_until"))
 

@@ -9,7 +9,8 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 ## 📋 Recent Changes
 
 <!-- CHANGELOG_START -->
-- `a8fa058`  2026-06-24  Anti-block: headful Chrome, human-like nav, fast adaptive cadence
+- `969b0c8`  2026-07-01  Add Uptime tab, fix History-tab crash, ticket-seen stats, ntfy push UI
+- `dc7fefd`  2026-06-24  Anti-block: headful Chrome, human-like nav, fast adaptive cadence
 - `809c90f`  2026-06-24  Honest alert delivery, startup warmup grace, real login verification
 - `f1b7054`  2026-06-24  Sync GUI/ping degraded state, add in-app fixes, challenge cooldown
 - `4416213`  2026-06-24  Document ntfy push setup and iOS app deep-link mechanism in README
@@ -18,7 +19,6 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 - `6e53adc`  2026-06-23  Add re-runnable ticket-history dedupe cleanup
 - `61fb6c4`  2026-06-23  Dedup repeat detections in BINGO counter and ticket history
 - `94e965e`  2026-06-23  Provision Google Chrome in GUI setup scripts for the chrome channel
-- `d8b7e01`  2026-06-23  Add adaptive cadence, stealth, health stats, and BINGO history counter
 
 Full history: [CHANGELOG.md](CHANGELOG.md)
 <!-- CHANGELOG_END -->
@@ -89,7 +89,9 @@ Want friends notified too — without making them use Discord? The monitor can a
 ticket alerts to **[ntfy.sh](https://ntfy.sh)**, a free push app. Anyone who subscribes
 to your topic gets a phone notification the moment tickets are detected.
 
-**You (once):** in `config.yaml`, set the `ntfy:` block:
+**You (once):** the easiest way is the app's **Notifications** tab → **ntfy Push** section:
+flip **Enable ntfy push** on, pick a hard-to-guess **Topic**, and choose a **Priority**. Or set
+the same `ntfy:` block in `config.yaml` directly:
 ```yaml
 ntfy:
   enabled: true

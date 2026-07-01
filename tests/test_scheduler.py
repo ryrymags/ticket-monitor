@@ -11,7 +11,11 @@ from src.config import EventConfig, MonitorConfig
 from src.models import ProbeResult, ProbeSignalType
 from src.preferences import TicketPreferences
 from src.session_autofix import AutoReauthResult
-from src.scheduler import PROCESS_RESTART_EXIT_CODE, MonitorScheduler
+from src.scheduler import (
+    PROCESS_RESTART_EXIT_CODE,
+    MonitorScheduler,
+    _is_connectivity_error,
+)
 from src.state import MonitorState
 
 
@@ -691,6 +695,8 @@ class TestCycleBehavior:
         )
         scheduler = _make_scheduler(tmp_path, config=config)
         now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        # Pretend the monitor has been running a while (staleness only counts uptime).
+        scheduler._uptime_anchor = now - timedelta(hours=1)
 
         scheduler.state._event("event-1")["last_check"] = (now - timedelta(seconds=90)).isoformat()
         scheduler.state._event("event-2")["last_check"] = (now - timedelta(seconds=10)).isoformat()
@@ -792,9 +798,8 @@ class TestManualActionEscalation:
 
     def test_no_ping_before_grace_window(self, tmp_path):
         scheduler = _make_scheduler(tmp_path, _make_config(alerts_manual_action_after_seconds=900))
-        event = scheduler.config.events[0]
         base = datetime(2026, 1, 1, tzinfo=timezone.utc)
-        scheduler.state.set_in_outage_state(event.event_id, True)
+        scheduler.state.set_session_logged_out(True)
 
         scheduler._evaluate_manual_action_escalation(base)
         scheduler._evaluate_manual_action_escalation(base + timedelta(seconds=600))
@@ -804,9 +809,8 @@ class TestManualActionEscalation:
 
     def test_single_ping_after_grace_window(self, tmp_path):
         scheduler = _make_scheduler(tmp_path, _make_config(alerts_manual_action_after_seconds=900))
-        event = scheduler.config.events[0]
         base = datetime(2026, 1, 1, tzinfo=timezone.utc)
-        scheduler.state.set_in_outage_state(event.event_id, True)
+        scheduler.state.set_session_logged_out(True)
 
         scheduler._evaluate_manual_action_escalation(base)
         scheduler._evaluate_manual_action_escalation(base + timedelta(seconds=901))
@@ -819,28 +823,41 @@ class TestManualActionEscalation:
         scheduler._evaluate_manual_action_escalation(base + timedelta(seconds=950))
         assert scheduler.notifier.send_critical_attention.call_count == 1
 
-    def test_recovery_clears_escalation_state(self, tmp_path):
-        scheduler = _make_scheduler(tmp_path, _make_config(alerts_manual_action_after_seconds=900))
+    def test_blocks_and_stale_never_ping(self, tmp_path):
+        # The whole philosophy: blocks/stale self-heal — they set the GUI degraded state
+        # but must NEVER fire the manual-action ping. Only logged-out does.
+        scheduler = _make_scheduler(tmp_path, _make_config(alerts_manual_action_after_seconds=0))
         event = scheduler.config.events[0]
         base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
         scheduler.state.set_in_outage_state(event.event_id, True)
+        scheduler._evaluate_manual_action_escalation(base)
+        scheduler._evaluate_manual_action_escalation(base + timedelta(seconds=10))
+
+        scheduler.notifier.send_critical_attention.assert_not_called()
+        snap = scheduler.state.get_degraded_state()
+        assert snap["degraded"] is True and snap["reason"] == "outage"
+
+    def test_recovery_clears_escalation_state(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path, _make_config(alerts_manual_action_after_seconds=900))
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        scheduler.state.set_session_logged_out(True)
         scheduler._evaluate_manual_action_escalation(base)
         scheduler._evaluate_manual_action_escalation(base + timedelta(seconds=901))
 
-        scheduler.state.set_in_outage_state(event.event_id, False)
+        scheduler.state.set_session_logged_out(False)
         scheduler._evaluate_manual_action_escalation(base + timedelta(seconds=1000))
 
         assert scheduler.state.get_attention_since() is None
         assert scheduler.state.get_attention_alerted() is False
 
-    def test_auth_pause_copy_points_at_app_and_absolute_path(self, tmp_path):
+    def test_login_copy_points_at_double_click_and_app(self, tmp_path):
         scheduler = _make_scheduler(tmp_path)
-        message, steps = scheduler._manual_action_summary("auth_paused")
-        assert "log in" in message.lower()
+        message, steps = scheduler._manual_action_summary("logged_out")
+        assert "log back in" in message.lower()
         joined = " ".join(steps)
+        assert "Reauth.command" in joined
         assert "Login tab" in joined
-        # Fallback terminal command uses an absolute monitorctl.sh path, not a relative one.
-        assert any(s.startswith("/") and s.endswith("monitorctl.sh reauth") for s in steps)
 
 
 class TestNonBingoGlobalGate:
@@ -1078,9 +1095,9 @@ class TestCriticalAlertDelivery:
 
     @staticmethod
     def _degraded(tmp_path, *, delivered: bool):
+        # logged_out is the only reason that pings — use it to exercise delivery.
         scheduler = _make_scheduler(tmp_path, _make_config(alerts_manual_action_after_seconds=900))
-        event = scheduler.config.events[0]
-        scheduler.state.set_in_outage_state(event.event_id, True)
+        scheduler.state.set_session_logged_out(True)
         scheduler.notifier.send_critical_attention.return_value = delivered
         return scheduler
 
@@ -1123,13 +1140,12 @@ class TestCriticalAlertDelivery:
 
     def test_recovery_resets_delivery_state(self, tmp_path):
         scheduler = self._degraded(tmp_path, delivered=False)
-        event = scheduler.config.events[0]
         base = datetime(2026, 1, 1, tzinfo=timezone.utc)
         scheduler._evaluate_manual_action_escalation(base)
         scheduler._evaluate_manual_action_escalation(base + timedelta(seconds=901))
         assert scheduler.state.get_attention_alert_attempts() == 1
 
-        scheduler.state.set_in_outage_state(event.event_id, False)
+        scheduler.state.set_session_logged_out(False)
         scheduler._evaluate_manual_action_escalation(base + timedelta(seconds=950))
 
         assert scheduler.state.get_attention_alert_attempts() == 0
@@ -1210,3 +1226,87 @@ class TestActivityCadence:
         )
         scheduler._handle_probe_result(scheduler.config.events[0], blind)
         assert scheduler._cadence_backoff == 4.0
+
+
+class TestUptimeConnectivity:
+    def test_is_connectivity_error_detects_net_errors(self):
+        assert _is_connectivity_error(
+            BrowserProbeError("Browser probe failed: net::ERR_INTERNET_DISCONNECTED at http://x")
+        )
+        assert _is_connectivity_error(BrowserProbeError("net::ERR_NAME_NOT_RESOLVED"))
+        # Follows the __cause__ chain too.
+        cause = RuntimeError("page.goto: net::ERR_CONNECTION_REFUSED")
+        exc = BrowserProbeError("probe failed")
+        exc.__cause__ = cause
+        assert _is_connectivity_error(exc)
+
+    def test_is_connectivity_error_ignores_blocks_and_timeouts(self):
+        # A block page / http error is NOT a connectivity loss (page still loaded).
+        assert not _is_connectivity_error(BrowserProbeError("http_403 forbidden"))
+        assert not _is_connectivity_error(BrowserProbeError("Timeout 20000ms exceeded"))
+
+    def test_no_internet_cycle_records_down(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        scheduler.probe.check_event = MagicMock(
+            side_effect=BrowserProbeError(
+                "Browser probe failed for event-1: net::ERR_INTERNET_DISCONNECTED"
+            )
+        )
+        scheduler._run_cycle()
+        assert scheduler._cycle_connectivity_down is True
+
+        scheduler._record_uptime_heartbeat(True)
+        last = scheduler.uptime.segments[-1]
+        assert last["state"] == "down"
+        assert last["reason"] == "no_internet"
+
+    def test_block_page_records_impaired_not_down(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        blocked = _make_result(
+            available=False, blocked=True, signal_type=ProbeSignalType.NONE, dom_signals=[]
+        )
+        scheduler.probe.check_event = MagicMock(return_value=blocked)
+        needs_slow_retry = scheduler._run_cycle()
+        assert scheduler._cycle_connectivity_down is False
+
+        scheduler._record_uptime_heartbeat(needs_slow_retry)
+        last = scheduler.uptime.segments[-1]
+        assert last["state"] == "impaired"
+        assert last["reason"] != "no_internet"
+
+    def test_clean_soldout_cycle_records_healthy(self, tmp_path):
+        # Sold-out (available=False) but a clean, unblocked scan → healthy.
+        scheduler = _make_scheduler(tmp_path)
+        clean = _make_result(
+            available=False, blocked=False, signal_type=ProbeSignalType.NONE, dom_signals=[]
+        )
+        scheduler.probe.check_event = MagicMock(return_value=clean)
+        needs_slow_retry = scheduler._run_cycle()
+        scheduler._record_uptime_heartbeat(needs_slow_retry)
+        assert scheduler.uptime.segments[-1]["state"] == "healthy"
+
+    def test_clean_cycle_is_healthy_despite_lingering_needs_slow_retry(self, tmp_path):
+        # A stale outage flag on some event makes _run_cycle return needs_slow_retry
+        # even though this cycle's checks came back clean. Uptime must still be healthy.
+        scheduler = _make_scheduler(tmp_path)
+        clean = _make_result(
+            available=False, blocked=False, signal_type=ProbeSignalType.NONE, dom_signals=[]
+        )
+        scheduler.probe.check_event = MagicMock(return_value=clean)
+        scheduler._run_cycle()  # tallies one healthy check this cycle
+        # Simulate a lagging cadence signal that used to force impaired.
+        scheduler._record_uptime_heartbeat(needs_slow_retry=True)
+        assert scheduler.uptime.segments[-1]["state"] == "healthy"
+
+    def test_logged_out_session_records_impaired(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        clean = _make_result(
+            available=False, blocked=False, signal_type=ProbeSignalType.NONE, dom_signals=[]
+        )
+        scheduler.probe.check_event = MagicMock(return_value=clean)
+        scheduler.state.set_session_logged_out(True)
+        scheduler._run_cycle()
+        scheduler._record_uptime_heartbeat(needs_slow_retry=False)
+        last = scheduler.uptime.segments[-1]
+        assert last["state"] == "impaired"
+        assert last["reason"] == "logged_out"

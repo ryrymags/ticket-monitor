@@ -4,11 +4,13 @@ All notable changes to Ticket Monitor are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 <!-- CHANGELOG_START -->
-## [Unreleased] — 2026-06-24
+## [Unreleased] — 2026-07-01
 
 ### Changes
 
-- `a8fa058`  2026-06-24 23:53  Anti-block: headful Chrome, human-like nav, fast adaptive cadence
+- `969b0c8`  2026-07-01 16:00  Add Uptime tab, fix History-tab crash, ticket-seen stats, ntfy push UI
+
+- `dc7fefd`  2026-06-24 23:53  Anti-block: headful Chrome, human-like nav, fast adaptive cadence
 
 - `809c90f`  2026-06-24 23:28  Honest alert delivery, startup warmup grace, real login verification
 

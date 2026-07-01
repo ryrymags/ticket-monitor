@@ -8,6 +8,7 @@ the entry was first written.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 
@@ -135,3 +136,45 @@ def count_bingo_in_history(history: list[dict[str, Any]], configs: list) -> dict
             total += 1
 
     return {"total": total, "per_config": per_config}
+
+
+def count_recent_appearances(
+    history: list[dict[str, Any]], now: datetime | None = None, hours: int = 48
+) -> dict[str, int]:
+    """Count distinct ticket appearances first seen within the last ``hours``.
+
+    Collapses repeat detections of the same (event, listing-set) so a listing that
+    lingered across many checks counts once — mirroring the History tab. An entry is
+    in-window if its ``first_seen`` (falling back to ``timestamp``) is at or after
+    ``now - hours``. Returns ``{"total": int, "bingo": int}`` where ``bingo`` counts
+    the in-window rows flagged as a BINGO.
+
+    Used for the peace-of-mind "tickets seen in 48h / week" stat: a 0 there when no
+    alerts have fired is a hint to go check the monitor.
+    """
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=max(1, hours))
+    total = 0
+    bingo = 0
+    for entry in collapse_history(history):
+        raw = entry.get("first_seen") or entry.get("timestamp")
+        seen = _iso_to_dt(raw)
+        if seen is None or seen < cutoff:
+            continue
+        total += 1
+        if entry.get("bingo"):
+            bingo += 1
+    return {"total": total, "bingo": bingo}
+
+
+def _iso_to_dt(value: Any) -> datetime | None:
+    """Parse an ISO8601 string to an aware datetime; None on failure."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
