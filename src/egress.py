@@ -26,7 +26,13 @@ logger = logging.getLogger(__name__)
 
 # ip-api.com is free for low volume and returns ASN + mobile/hosting/proxy flags, which
 # is exactly the reputation signal Akamai keys on (mobile/CGNAT = trusted, hosting = not).
-_LOOKUP_URL = "http://ip-api.com/json/?fields=status,query,as,isp,mobile,proxy,hosting"
+# Its free tier is plain HTTP only — and iCloud Private Relay proxies ALL unencrypted
+# HTTP through Fastly, which made the self-lookup report Fastly's CDN IP instead of the
+# real egress. So: resolve the true IP over HTTPS first (Private Relay leaves HTTPS from
+# non-Safari apps alone), then ask ip-api about that explicit IP.
+_IP_URL = "https://api.ipify.org"
+_LOOKUP_URL_TEMPLATE = "http://ip-api.com/json/{ip}?fields=status,query,as,isp,mobile,proxy,hosting"
+_LOOKUP_URL_FALLBACK = "http://ip-api.com/json/?fields=status,query,as,isp,mobile,proxy,hosting"
 
 _cache: dict | None = None
 
@@ -39,11 +45,11 @@ def _classify(data: dict) -> str:
     return "residential"
 
 
-def _fetch(timeout: float) -> dict | None:
-    """Fetch the lookup JSON via a curl subprocess (fork-safe on macOS). Never raises."""
+def _curl(url: str, timeout: float) -> str | None:
+    """Fetch a URL via a curl subprocess (fork-safe on macOS). Never raises."""
     try:
         proc = subprocess.run(
-            ["curl", "-s", "--max-time", str(int(timeout)), _LOOKUP_URL],
+            ["curl", "-s", "--max-time", str(int(timeout)), url],
             capture_output=True,
             text=True,
             timeout=timeout + 2,
@@ -53,8 +59,21 @@ def _fetch(timeout: float) -> dict | None:
         return None
     if proc.returncode != 0 or not proc.stdout.strip():
         return None
+    return proc.stdout.strip()
+
+
+def _fetch(timeout: float) -> dict | None:
+    """Resolve the true egress IP over HTTPS, then classify it via ip-api."""
+    ip = _curl(_IP_URL, timeout)
+    if ip and all(part.isdigit() for part in ip.split(".")) and ip.count(".") == 3:
+        url = _LOOKUP_URL_TEMPLATE.format(ip=ip)
+    else:
+        url = _LOOKUP_URL_FALLBACK
+    raw = _curl(url, timeout)
+    if raw is None:
+        return None
     try:
-        return json.loads(proc.stdout)
+        return json.loads(raw)
     except Exception:
         return None
 
