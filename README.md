@@ -9,7 +9,8 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 ## 📋 Recent Changes
 
 <!-- CHANGELOG_START -->
-- `82596a6`  2026-07-02  Treat loaded Ticketmaster pages as healthy uptime
+- `3ad1ee4`  2026-07-02  Fix launchd uptime status in app
+- `121de4b`  2026-07-02  Treat loaded Ticketmaster pages as healthy uptime
 - `5588a69`  2026-07-02  Keep macOS monitor awake under launchd
 - `28a2f85`  2026-07-02  Close session-health tab after each check instead of parking it
 - `89fcb64`  2026-07-02  Switch self-heal reboot from FileVault authrestart to plain reboot
@@ -18,7 +19,6 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 - `5196372`  2026-07-02  Fix egress diagnostic: resolve IP over HTTPS before ip-api lookup
 - `a7ea8c1`  2026-07-02  Add one-command sudo setup script for self-heal reboot
 - `b1f4b1a`  2026-07-02  Slow cadence to 60-120s, variation probe, reboot self-heal, boot persistence
-- `159b288`  2026-07-01  Audit fixes: atomic JSON writes, gitignore, robustness, tests
 
 Full history: [CHANGELOG.md](CHANGELOG.md)
 <!-- CHANGELOG_END -->

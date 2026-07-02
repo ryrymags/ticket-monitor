@@ -75,3 +75,28 @@ def test_uptime_event_file_matches_gitignore_pattern():
     name = app.uptime_event_file("01006430FEAADAD2")
     assert name == "uptime_log_01006430FEAADAD2.json"
     assert name.startswith("uptime_log_") and name.endswith(".json")
+
+
+# ── monitor_running_state ────────────────────────────────────────────────────
+
+class _Proc:
+    def __init__(self, poll_value):
+        self._poll_value = poll_value
+
+    def poll(self):
+        return self._poll_value
+
+
+def test_monitor_running_state_prefers_launchd_running():
+    assert app.monitor_running_state(True, None) is True
+    assert app.monitor_running_state(True, _Proc(0)) is True
+
+
+def test_monitor_running_state_prefers_launchd_stopped():
+    assert app.monitor_running_state(False, _Proc(None)) is False
+
+
+def test_monitor_running_state_falls_back_to_gui_process():
+    assert app.monitor_running_state(None, _Proc(None)) is True
+    assert app.monitor_running_state(None, _Proc(0)) is False
+    assert app.monitor_running_state(None, None) is False

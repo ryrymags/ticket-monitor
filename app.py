@@ -58,6 +58,15 @@ UPTIME_FILE = "uptime_log.json"
 def uptime_event_file(event_id: str) -> str:
     """Per-concert uptime ledger filename (co-located with uptime_log.json)."""
     return f"uptime_log_{event_id}.json"
+
+
+def monitor_running_state(launchd_state: bool | None, monitor_proc: subprocess.Popen | None) -> bool:
+    """Return whether monitoring is running, preferring launchd when installed."""
+    if launchd_state is not None:
+        return launchd_state
+    return bool(monitor_proc and monitor_proc.poll() is None)
+
+
 LOG_FILE = os.path.join("logs", "monitor.log")
 LAUNCHD_MONITOR_LABEL = "com.ticketmonitor"
 LAUNCHD_OUT_LOG = os.path.join("logs", "launchd.out.log")
@@ -1435,7 +1444,7 @@ class TicketMonitorApp(ctk.CTk):
         ctk.CTkLabel(
             frame,
             text="A timestamped record of when the monitor was actually working.\n"
-                 "🟢 Monitoring = healthy checks · 🟠 Impaired = running but blocked/stale/signed-out · "
+                 "🟢 Monitoring = Ticketmaster loaded · 🟠 Impaired = no load/stale/signed-out · "
                  "⚪ Down = full sleep, lid close/logout, app stopped, or no internet.",
             text_color="gray60", justify="left",
         ).grid(row=1, column=0, padx=20, pady=(0, 10), sticky="w")
@@ -1510,9 +1519,11 @@ class TicketMonitorApp(ctk.CTk):
     def _refresh_uptime_tab(self, force: bool = False):
         segments = load_uptime_segments(UPTIME_FILE)
         now = datetime.now(timezone.utc)
-        # Whether the monitor process is alive right now — lets a stopped monitor
-        # read as "down" immediately instead of waiting out the freshness slack.
-        running = bool(self._monitor_proc and self._monitor_proc.poll() is None)
+        # Whether the monitor is alive right now. Launchd-managed installs do not
+        # have a GUI-owned subprocess, so check launchd before falling back to
+        # _monitor_proc. This prevents synthetic downtime while the background
+        # monitor keeps running through screen lock/display sleep.
+        running = self._monitor_running_state()
 
         # Current status line (always cheap — just a label reconfigure).
         status = uptime_current_status(segments, now, monitor_running=running)
@@ -1939,6 +1950,9 @@ class TicketMonitorApp(ctk.CTk):
             return None
         return "state = running" in (result.stdout + result.stderr)
 
+    def _monitor_running_state(self) -> bool:
+        return monitor_running_state(self._launchd_monitor_state(), self._monitor_proc)
+
     def _toggle_monitor(self):
         launchd_state = self._launchd_monitor_state()
         if launchd_state is not None:
@@ -2079,12 +2093,9 @@ class TicketMonitorApp(ctk.CTk):
 
     def _poll_status(self):
         launchd_state = self._launchd_monitor_state()
-        if launchd_state is not None:
-            running = launchd_state
-            if running:
-                self._poll_launchd_log()
-        else:
-            running = bool(self._monitor_proc and self._monitor_proc.poll() is None)
+        running = monitor_running_state(launchd_state, self._monitor_proc)
+        if launchd_state is not None and running:
+            self._poll_launchd_log()
         self._update_status_bar(running)
         self._refresh_monitor_events_panel()
         self._refresh_monitor_health_stats()
@@ -2136,7 +2147,7 @@ class TicketMonitorApp(ctk.CTk):
         # Per-concert healthy% (past 24h) — same source as the Uptime tab.
         try:
             now = datetime.now(timezone.utc)
-            running = bool(self._monitor_proc and self._monitor_proc.poll() is None)
+            running = self._monitor_running_state()
             lines = []
             for ev in self._events:
                 info = self._event_uptime_summary(ev.get("event_id", ""), 24, now, running)
