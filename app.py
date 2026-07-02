@@ -1554,6 +1554,16 @@ class TicketMonitorApp(ctk.CTk):
             return
         self._uptime_outage_sig = sig
 
+        # Per-event ledgers, loaded once per rebuild — timeline rows use these to say
+        # WHICH concert an impairment hit instead of an undifferentiated "IMPAIRED".
+        self._uptime_event_segs = [
+            (
+                self._event_short_label(ev),
+                load_uptime_segments(uptime_event_file(ev.get("event_id", ""))),
+            )
+            for ev in self._events
+        ]
+
         for w in self._uptime_list.winfo_children():
             w.destroy()
         if not rows:
@@ -1568,9 +1578,62 @@ class TicketMonitorApp(ctk.CTk):
 
         for i, r in enumerate(rows):
             try:
-                self._render_timeline_row(i, r)
+                self._render_timeline_row(i, r, now)
             except Exception:
                 logging.exception("Failed to render timeline row %d", i)
+
+    @staticmethod
+    def _event_short_label(ev: dict) -> str:
+        """Short human tag for a concert — the weekday+date ("Tue Jul 28") reads much
+        faster in dense rows than the full tour title."""
+        date_str = str(ev.get("date") or "")[:10]
+        try:
+            parsed = datetime.strptime(date_str, "%Y-%m-%d")
+            return parsed.strftime("%a %b %d").replace(" 0", " ")
+        except ValueError:
+            name = str(ev.get("name") or "?")
+            return name if len(name) <= 24 else name[:21] + "…"
+
+    def _timeline_event_breakdown(self, r: dict, now: datetime) -> str:
+        """For a non-healthy combined-timeline row, say which concert(s) it hit.
+
+        Each event's own ledger is clipped to the row's window; an event counts as
+        affected when most of its recorded time in that window was not healthy."""
+        event_segs = getattr(self, "_uptime_event_segs", None)
+        if r.get("state") == "healthy" or not event_segs or len(event_segs) < 2:
+            return ""
+        try:
+            win_start = datetime.fromisoformat(str(r["start"]))
+            win_end = now if r.get("ongoing") else datetime.fromisoformat(str(r["end"]))
+        except (KeyError, TypeError, ValueError):
+            return ""
+
+        affected: list[str] = []
+        fine: list[str] = []
+        for short, segs in event_segs:
+            healthy_s = bad_s = 0.0
+            for seg in segs:
+                try:
+                    seg_start = datetime.fromisoformat(str(seg["start"]))
+                    seg_end = datetime.fromisoformat(str(seg["end"]))
+                except (KeyError, TypeError, ValueError):
+                    continue
+                overlap = (min(seg_end, win_end) - max(seg_start, win_start)).total_seconds()
+                if overlap <= 0:
+                    continue
+                if seg.get("state") == "healthy":
+                    healthy_s += overlap
+                else:
+                    bad_s += overlap
+            if healthy_s + bad_s <= 0:
+                continue  # no per-event data for this window (e.g. monitor was down)
+            (affected if bad_s > healthy_s else fine).append(short)
+
+        if affected and fine:
+            return f"{', '.join(affected)} affected — {', '.join(fine)} kept monitoring"
+        if affected and not fine:
+            return "all concerts affected"
+        return ""
 
     def _event_uptime_summary(self, event_id: str, hours: int, now: datetime, running: bool) -> dict:
         """Per-concert 24h summary + current state, read from that event's ledger."""
@@ -1597,9 +1660,11 @@ class TicketMonitorApp(ctk.CTk):
             emoji, _label, color = self._UPTIME_STYLE.get(
                 info["state"], self._UPTIME_STYLE["down"]
             )
+            short = self._event_short_label(ev)
             ctk.CTkLabel(
-                self._uptime_per_event_frame, text=f"{emoji}  {name[:48]}",
+                self._uptime_per_event_frame, text=f"{emoji}  {short} — {name}",
                 font=ctk.CTkFont(size=12, weight="bold"), text_color=color, anchor="w",
+                wraplength=560, justify="left",
             ).grid(row=i * 2, column=0, padx=14, pady=(10 if i == 0 else 6, 0), sticky="w")
             if info["has_data"]:
                 detail = (
@@ -1615,12 +1680,13 @@ class TicketMonitorApp(ctk.CTk):
                 font=ctk.CTkFont(size=11), text_color="gray70", anchor="w",
             ).grid(row=i * 2 + 1, column=0, padx=14, pady=(0, 10 if i == len(self._events) - 1 else 4), sticky="w")
 
-    def _render_timeline_row(self, i: int, r: dict):
+    def _render_timeline_row(self, i: int, r: dict, now: datetime):
         state = r["state"]
         emoji, label, color = self._UPTIME_STYLE.get(state, self._UPTIME_STYLE["down"])
         start_disp = self._format_ts(r.get("start", ""))
         reason = r.get("reason")
         reason_txt = self._UPTIME_REASON_TEXT.get(reason, reason) if reason else ""
+        breakdown = self._timeline_event_breakdown(r, now)
 
         card = ctk.CTkFrame(self._uptime_list, fg_color=("gray17", "gray17"), corner_radius=6)
         card.grid(row=i, column=0, padx=8, pady=4, sticky="ew")
@@ -1642,8 +1708,11 @@ class TicketMonitorApp(ctk.CTk):
             detail = f"{start_disp}  →  {end_disp}   ·   {dur}"
         if reason_txt:
             detail += f"   ·   {reason_txt}"
+        if breakdown:
+            detail += f"\n{breakdown}"
         ctk.CTkLabel(
-            card, text=detail, font=ctk.CTkFont(size=11), text_color="gray70", anchor="w",
+            card, text=detail, font=ctk.CTkFont(size=11), text_color="gray70",
+            anchor="w", justify="left",
         ).grid(row=0, column=1, padx=(4, 10), pady=8, sticky="w")
 
     # ── Monitor Tab ───────────────────────────────────────────────────────────
