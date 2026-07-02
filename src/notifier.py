@@ -364,8 +364,11 @@ class DiscordNotifier:
         )
         sent = self._send(embeds=[embed], content=content, retries=2)
 
-        # Write to local history file for real detections only — skip synthetic test alerts.
-        if signal_type != "synthetic":
+        event_id_match = re.search(r"/event/([A-Z0-9]+)", event_url or "", re.IGNORECASE)
+        is_real_history_event = signal_type != "synthetic" and event_id_match is not None
+
+        # Write to local history for real Ticketmaster event detections only.
+        if is_real_history_event:
             try:
                 self._write_history_entry(
                     event_name=event_name,

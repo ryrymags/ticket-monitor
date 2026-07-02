@@ -10,6 +10,8 @@ failing the suite.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 app = pytest.importorskip("app")
@@ -100,3 +102,67 @@ def test_monitor_running_state_falls_back_to_gui_process():
     assert app.monitor_running_state(None, _Proc(None)) is True
     assert app.monitor_running_state(None, _Proc(0)) is False
     assert app.monitor_running_state(None, None) is False
+
+
+# ── history filtering ────────────────────────────────────────────────────────
+
+def test_visible_history_entries_hides_test_and_missing_event_id():
+    rows = [
+        {"event_name": "Test", "event_id": "ABC123"},
+        {"event_name": "Real Event", "event_id": ""},
+        {"event_name": "Real Event", "event_id": "ABC123"},
+    ]
+
+    assert app.visible_history_entries(rows) == [rows[2]]
+
+
+# ── monitor event status text ────────────────────────────────────────────────
+
+def test_monitor_event_status_recent_healthy_avoids_warning_colors():
+    now = datetime(2026, 7, 2, 17, 40, tzinfo=timezone.utc)
+    status = app.monitor_event_status_text(
+        {"last_check": (now - timedelta(minutes=4)).isoformat()},
+        now,
+        stale_threshold=180,
+        manual_action_after_seconds=900,
+    )
+
+    assert not status.startswith(("🔴", "🟡", "🟠"))
+
+
+def test_monitor_event_status_blocked_is_orange():
+    now = datetime(2026, 7, 2, 17, 40, tzinfo=timezone.utc)
+    status = app.monitor_event_status_text(
+        {
+            "last_check": (now - timedelta(seconds=30)).isoformat(),
+            "consecutive_blocked": 1,
+        },
+        now,
+    )
+
+    assert status.startswith("🟠")
+
+
+def test_monitor_event_status_outage_is_red():
+    now = datetime(2026, 7, 2, 17, 40, tzinfo=timezone.utc)
+    status = app.monitor_event_status_text(
+        {
+            "last_check": (now - timedelta(seconds=30)).isoformat(),
+            "in_outage_state": True,
+        },
+        now,
+    )
+
+    assert status.startswith("🔴")
+
+
+def test_monitor_event_status_manual_attention_stale_is_red():
+    now = datetime(2026, 7, 2, 17, 40, tzinfo=timezone.utc)
+    status = app.monitor_event_status_text(
+        {"last_check": (now - timedelta(minutes=16)).isoformat()},
+        now,
+        stale_threshold=180,
+        manual_action_after_seconds=900,
+    )
+
+    assert status.startswith("🔴")

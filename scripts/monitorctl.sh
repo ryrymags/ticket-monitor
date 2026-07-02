@@ -84,7 +84,9 @@ ensure_service_loaded() {
 
 is_service_running() {
   local target="$1"
-  launchctl print "${target}" 2>/dev/null | grep -q "state = running"
+  local output
+  output="$(launchctl print "${target}" 2>/dev/null || true)"
+  [[ "${output}" == *"state = running"* ]]
 }
 
 wait_for_service_running() {
@@ -130,6 +132,69 @@ stop_monitor_services() {
   launchctl bootout "${RELOADER_TARGET}" >/dev/null 2>&1 || launchctl unload "${RELOADER_PLIST}" >/dev/null 2>&1 || true
 }
 
+configured_browser_profile_dirs() {
+  "${PYTHON_BIN}" - <<'PY' "${CONFIG_PATH}" "${REPO_DIR}"
+import os
+import sys
+import yaml
+
+config_path, repo_dir = sys.argv[1], sys.argv[2]
+with open(config_path, "r", encoding="utf-8") as f:
+    raw = yaml.safe_load(f) or {}
+
+paths = []
+browser = raw.get("browser", {}) or {}
+browser_host = raw.get("browser_host", {}) or {}
+for value in (
+    browser.get("user_data_dir"),
+    browser_host.get("user_data_dir"),
+    "secrets/tm_profile",
+    "secrets/tm_chrome_profile",
+):
+    if not value:
+        continue
+    path = str(value).strip()
+    if not path:
+        continue
+    if not os.path.isabs(path):
+        path = os.path.normpath(os.path.join(repo_dir, path))
+    if path.startswith(repo_dir):
+        paths.append(path)
+
+for path in sorted(set(paths)):
+    print(path)
+PY
+}
+
+repo_scoped_leftover_pids() {
+  {
+    pgrep -f "${REPO_DIR}/monitor.py" 2>/dev/null || true
+    pgrep -f "${REPO_DIR}/scripts/guardian.py" 2>/dev/null || true
+    pgrep -f "${REPO_DIR}/scripts/reloader.py" 2>/dev/null || true
+    while IFS= read -r profile_dir; do
+      [ -n "${profile_dir}" ] || continue
+      pgrep -f -- "--user-data-dir=${profile_dir}" 2>/dev/null || true
+      pgrep -f -- "${profile_dir}" 2>/dev/null || true
+    done < <(configured_browser_profile_dirs)
+  } | awk -v self="$$" '$1 != self { print $1 }' | sort -u
+}
+
+terminate_repo_scoped_leftovers() {
+  local pids
+  pids="$(repo_scoped_leftover_pids | tr '\n' ' ')"
+  if [ -z "${pids// }" ]; then
+    return 0
+  fi
+  echo "Stopping leftover repo-scoped monitor processes: ${pids}"
+  kill -TERM ${pids} >/dev/null 2>&1 || true
+  sleep 2
+  pids="$(repo_scoped_leftover_pids | tr '\n' ' ')"
+  if [ -n "${pids// }" ]; then
+    echo "Force-stopping leftover repo-scoped monitor processes: ${pids}"
+    kill -KILL ${pids} >/dev/null 2>&1 || true
+  fi
+}
+
 ensure_browser_host() {
   if [ "$(is_cdp_attach_mode)" != "1" ]; then
     return 0
@@ -156,6 +221,8 @@ stop_all_services() {
   else
     launchctl bootout "${BROWSER_HOST_TARGET}" >/dev/null 2>&1 || launchctl unload "${BROWSER_HOST_PLIST}" >/dev/null 2>&1 || true
   fi
+  sleep 1
+  terminate_repo_scoped_leftovers
 }
 
 verify_health_json() {
