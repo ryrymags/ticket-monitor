@@ -9,7 +9,8 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 ## 📋 Recent Changes
 
 <!-- CHANGELOG_START -->
-- `b04bcd0`  2026-07-02  Keep macOS monitor awake under launchd
+- `82596a6`  2026-07-02  Treat loaded Ticketmaster pages as healthy uptime
+- `5588a69`  2026-07-02  Keep macOS monitor awake under launchd
 - `28a2f85`  2026-07-02  Close session-health tab after each check instead of parking it
 - `89fcb64`  2026-07-02  Switch self-heal reboot from FileVault authrestart to plain reboot
 - `d82b6b8`  2026-07-02  Fix self-heal reboot: root-owned wrapper instead of unreadable redirect
@@ -18,7 +19,6 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 - `a7ea8c1`  2026-07-02  Add one-command sudo setup script for self-heal reboot
 - `b1f4b1a`  2026-07-02  Slow cadence to 60-120s, variation probe, reboot self-heal, boot persistence
 - `159b288`  2026-07-01  Audit fixes: atomic JSON writes, gitignore, robustness, tests
-- `f6d2196`  2026-07-01  Add per-event Ticketmaster scheduler
 
 Full history: [CHANGELOG.md](CHANGELOG.md)
 <!-- CHANGELOG_END -->
@@ -221,6 +221,8 @@ Once you've set up your events, Discord, and logged in:
 **Getting "activity paused" / blocked a lot (staying healthy)**
 Ticketmaster's Akamai bot wall scores your **home IP + account together**, so the goal is to
 look like one calm human, not a poller:
+- If Ticketmaster loads successfully, uptime stays healthy even when the loaded page is a
+  bot wall/challenge; block and challenge counts are tracked separately for self-healing.
 - The monitor now checks **one event at a time with a randomized 60–120s gap between any two
   checks** (config: `per_event_min_gap_between_checks_seconds` / `per_event_max_gap_between_checks_seconds`).
   Slower is healthier — don't lower these.

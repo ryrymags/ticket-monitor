@@ -5,8 +5,9 @@ Records a timeline of *when monitoring was actually working* so the GUI can show
 outages ("Jun 28 10pm → Jun 29 4am · DOWN 6h").
 
 Three states are tracked:
-  - ``healthy``  — the monitor loop ran a cycle and checks succeeded.
-  - ``impaired`` — the loop ran but checks were blocked/stale/logged-out/errored.
+  - ``healthy``  — the monitor loop ran and Ticketmaster loaded.
+  - ``impaired`` — the loop ran but did not load Ticketmaster, or it was
+                   stale/logged-out/errored.
   - ``down``     — no heartbeat at all: laptop asleep/off, app closed, wifi killed
                    the loop, or a crash. Down segments are *inferred* from gaps in
                    the heartbeat stream, so they need no clean-shutdown hook.
