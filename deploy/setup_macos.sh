@@ -446,8 +446,10 @@ if [ "${BROWSER_HOST_ENABLED}" = "1" ]; then
 fi
 echo
 echo "Self-heal reboot (watchdog.reboot in config.yaml) — one-time sudo setup:"
-echo "  FileVault authenticated restart lets the guardian reboot this Mac and land"
-echo "  back in your session with zero interaction. Run once:"
+echo "  Requires FileVault OFF + automatic login configured (System Settings >"
+echo "  Privacy & Security > FileVault; then Users & Groups > Login Options) so a"
+echo "  guardian-triggered reboot lands back at the desktop with zero interaction."
+echo "  Once that's set up, run once:"
 echo "    sudo bash ${REPO_DIR}/scripts/setup_selfheal_reboot.sh"
 echo
 echo "Power settings to prevent interruption (run once):"

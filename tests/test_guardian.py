@@ -338,7 +338,7 @@ def test_impaired_since_walks_contiguous_non_healthy_segments():
     assert guardian.impaired_since(now, segments=[seg("healthy", 60, 0)]) is None
 
 
-def test_maybe_selfheal_reboot_notifies_when_authrestart_missing(tmp_path, monkeypatch):
+def test_maybe_selfheal_reboot_notifies_when_reboot_unavailable(tmp_path, monkeypatch):
     cfg = _make_config(watchdog_reboot_enabled=True)
     state = MonitorState(state_file=str(tmp_path / "state.json"))
     state.record_guardian_fix_attempt(datetime.now(timezone.utc))
@@ -350,13 +350,13 @@ def test_maybe_selfheal_reboot_notifies_when_authrestart_missing(tmp_path, monke
     )
     monkeypatch.setattr(guardian, "get_system_uptime_seconds", lambda _now=None: 7200.0)
     monkeypatch.setattr(
-        guardian, "authrestart_available", lambda: (False, "missing plist")
+        guardian, "reboot_available", lambda: (False, "FileVault is on")
     )
 
     rebooted = guardian.maybe_selfheal_reboot(cfg, state, notifier, now)
     assert rebooted is False
     assert len(notifier.critical_calls) == 1
-    assert "authrestart" in notifier.critical_calls[0][0]
+    assert "FileVault is on" in notifier.critical_calls[0][0]
     # No reboot recorded — nothing actually happened.
     assert state.get_last_selfheal_reboot_at() is None
 
@@ -372,7 +372,7 @@ def test_maybe_selfheal_reboot_records_before_rebooting(tmp_path, monkeypatch):
         guardian, "impaired_since", lambda _now, segments=None: now - timedelta(hours=2)
     )
     monkeypatch.setattr(guardian, "get_system_uptime_seconds", lambda _now=None: 7200.0)
-    monkeypatch.setattr(guardian, "authrestart_available", lambda: (True, "ok"))
+    monkeypatch.setattr(guardian, "reboot_available", lambda: (True, "ok"))
 
     commands = []
 
@@ -390,25 +390,50 @@ def test_maybe_selfheal_reboot_records_before_rebooting(tmp_path, monkeypatch):
 
     rebooted = guardian.maybe_selfheal_reboot(cfg, state, notifier, now)
     assert rebooted is True
-    # Must invoke the root-owned wrapper via sudo, NEVER a direct
-    # `fdesetup ... < plist` redirect — the calling (non-root) process can't open a
-    # 600 root-owned file, so that redirect would silently fail every time.
-    assert commands and commands[0] == guardian.AUTHRESTART_COMMAND
-    assert commands[0][:2] == ["sudo", "-n"]
-    assert str(guardian.AUTHRESTART_WRAPPER) in commands[0]
+    # Fixed command via a scoped sudoers NOPASSWD rule — no stored credentials.
+    assert commands and commands[0] == guardian.REBOOT_COMMAND
+    assert commands[0] == ["sudo", "-n", "/sbin/shutdown", "-r", "now"]
     # Reboot history + Discord notice recorded before the restart call.
     assert state.get_last_selfheal_reboot_at() is not None
     assert notifier.auto_fix_calls and notifier.auto_fix_calls[0][0] == "selfheal_reboot"
 
 
-def test_authrestart_available_requires_wrapper_script(tmp_path, monkeypatch):
-    """The plist alone isn't enough — without the root-owned wrapper, guardian would
-    fall back to a direct redirect that a non-root process can never open."""
-    plist = tmp_path / "authrestart.plist"
-    plist.write_text("<plist/>")
-    monkeypatch.setattr(guardian, "AUTHRESTART_INPUT_PLIST", plist)
-    monkeypatch.setattr(guardian, "AUTHRESTART_WRAPPER", tmp_path / "trigger_authrestart.sh")
+def test_reboot_available_requires_filevault_off(monkeypatch):
+    def _fake_run(cmd, **kwargs):
+        class _Proc:
+            stdout = "FileVault is On.\n"
+            stderr = ""
 
-    available, detail = guardian.authrestart_available()
+        return _Proc()
+
+    monkeypatch.setattr(guardian.subprocess, "run", _fake_run)
+    available, detail = guardian.reboot_available()
     assert available is False
-    assert "trigger_authrestart.sh" in detail
+    assert "FileVault" in detail
+
+
+def test_reboot_available_requires_autologin(monkeypatch):
+    def _fake_run(cmd, **kwargs):
+        class _Proc:
+            stdout = "FileVault is Off.\n" if cmd[:2] == ["fdesetup", "status"] else ""
+            stderr = ""
+
+        return _Proc()
+
+    monkeypatch.setattr(guardian.subprocess, "run", _fake_run)
+    available, detail = guardian.reboot_available()
+    assert available is False
+    assert "automatic login" in detail.lower()
+
+
+def test_reboot_available_when_filevault_off_and_autologin_set(monkeypatch):
+    def _fake_run(cmd, **kwargs):
+        class _Proc:
+            stdout = "FileVault is Off.\n" if cmd[:2] == ["fdesetup", "status"] else "testuser\n"
+            stderr = ""
+
+        return _Proc()
+
+    monkeypatch.setattr(guardian.subprocess, "run", _fake_run)
+    available, _detail = guardian.reboot_available()
+    assert available is True
