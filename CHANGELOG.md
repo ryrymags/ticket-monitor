@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `bf58e25`  2026-07-02 10:05  Fix egress diagnostic: resolve IP over HTTPS before ip-api lookup
+- `a43ce72`  2026-07-02 10:15  Fix doctor-lite profile clash (stray about:blank tabs), 30min reboot threshold, per-concert uptime timeline
+
+- `5196372`  2026-07-02 10:05  Fix egress diagnostic: resolve IP over HTTPS before ip-api lookup
 
 - `a7ea8c1`  2026-07-02 10:01  Add one-command sudo setup script for self-heal reboot
 

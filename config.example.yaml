@@ -196,7 +196,7 @@ watchdog:
   max_fix_attempts_per_hour: 6
   reboot:                               # Last-resort self-heal: reboot the Mac when an
     enabled: false                      # IP/device-scoped block outlasts every remedy.
-    after_impaired_seconds: 2700        # Impairment must persist this long first (45 min)
+    after_impaired_seconds: 1800        # Impairment must persist this long first (30 min)
     min_system_uptime_seconds: 1800     # Never reboot within 30 min of the last boot
     min_spacing_seconds: 7200           # ≥ 2h between self-heal reboots
     max_per_day: 3                      # Hard daily cap — never a reboot loop

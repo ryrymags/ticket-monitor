@@ -287,6 +287,15 @@ def run_doctor_lite(config_path: str):
     _validate_autologin_prereqs(config)
 
     print("\n[3/3] Browser launchability")
+    # NEVER launch on the live persistent profile while the monitor is running:
+    # Chrome's profile singleton forwards the second launch to the running browser
+    # (spawning stray about:blank tabs in the monitoring window) and the launch
+    # check fails anyway. The running monitor holding its lock IS the proof the
+    # browser launches fine.
+    if config.browser_session_mode == "persistent_profile" and monitor_lock_is_held():
+        print("      Monitor is running and owns the profile — browser launch check skipped")
+        print("\nDoctor-lite checks passed.")
+        return
     probe = BrowserProbe(
         storage_state_path=config.browser_storage_state_path,
         session_mode=config.browser_session_mode,
@@ -517,6 +526,22 @@ def acquire_single_instance_lock():
     lock_handle.write(str(os.getpid()))
     lock_handle.flush()
     return lock_handle
+
+
+def monitor_lock_is_held() -> bool:
+    """True when a running monitor holds the single-instance lock (without stealing it)."""
+    import fcntl
+
+    try:
+        with open(MONITOR_LOCK_FILE, "a+", encoding="utf-8") as handle:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return True
+            fcntl.flock(handle, fcntl.LOCK_UN)
+    except OSError:
+        return False
+    return False
 
 
 def run_monitor(config_path: str, once: bool = False):

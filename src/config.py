@@ -163,7 +163,7 @@ class MonitorConfig:
     # Last-resort reboot tier (guardian): only for IP/device-scoped blocks that outlast
     # every lighter remedy, and hard rate-limited so it can never loop.
     watchdog_reboot_enabled: bool = False
-    watchdog_reboot_after_impaired_seconds: int = 2700
+    watchdog_reboot_after_impaired_seconds: int = 1800
     watchdog_reboot_min_system_uptime_seconds: int = 1800
     watchdog_reboot_min_spacing_seconds: int = 7200
     watchdog_reboot_max_per_day: int = 3
@@ -570,7 +570,7 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
     watchdog_reboot = watchdog.get("reboot", {}) or {}
     watchdog_reboot_enabled = safe_bool(watchdog_reboot, "enabled", False)
     watchdog_reboot_after_impaired_seconds = safe_int(
-        watchdog_reboot, "after_impaired_seconds", 2700, "watchdog.reboot.after_impaired_seconds"
+        watchdog_reboot, "after_impaired_seconds", 1800, "watchdog.reboot.after_impaired_seconds"
     )
     watchdog_reboot_min_system_uptime_seconds = safe_int(
         watchdog_reboot, "min_system_uptime_seconds", 1800, "watchdog.reboot.min_system_uptime_seconds"
