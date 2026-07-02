@@ -53,6 +53,7 @@ CONFIG_FILE = "config.yaml"
 STATE_FILE = "state.json"
 HISTORY_FILE = "ticket_history.json"
 UPTIME_FILE = "uptime_log.json"
+HISTORY_RENDER_PAGE_SIZE = 75
 
 
 def uptime_event_file(event_id: str) -> str:
@@ -375,7 +376,8 @@ class TicketMonitorApp(ctk.CTk):
         self._status_poll_id: str | None = None
         self._events: list[dict[str, str]] = []  # [{event_id, name, date, url}]
         self._current_tab: str = "events"
-        self._history_sig: tuple | None = None  # (mtime, size) of last-rendered history
+        self._history_sig: tuple | None = None  # ((mtime, size), render_limit) last rendered
+        self._history_render_limit = HISTORY_RENDER_PAGE_SIZE
         self._uptime_outage_sig: tuple | None = None  # signature of last-rendered outages
 
         # Load or init config
@@ -1194,7 +1196,7 @@ class TicketMonitorApp(ctk.CTk):
         self._history_list.grid_columnconfigure(0, weight=1)
 
         self._history_empty_label: ctk.CTkLabel | None = None
-        self._refresh_history_tab()
+        self._render_history_placeholder("Open this tab to load ticket history.")
 
     @staticmethod
     def _format_ts(ts_raw: str) -> str:
@@ -1271,6 +1273,16 @@ class TicketMonitorApp(ctk.CTk):
         except OSError:
             return None
 
+    def _render_history_placeholder(self, text: str):
+        for widget in self._history_list.winfo_children():
+            widget.destroy()
+        self._history_empty_label = ctk.CTkLabel(
+            self._history_list,
+            text=text,
+            text_color="gray50", justify="center",
+        )
+        self._history_empty_label.grid(row=0, column=0, padx=20, pady=40)
+
     def _refresh_history_tab(self, force: bool = False):
         """Reload ticket_history.json and re-render the history list.
 
@@ -1279,9 +1291,10 @@ class TicketMonitorApp(ctk.CTk):
         The Refresh/Clear buttons pass ``force=True``.
         """
         sig = self._history_file_sig()
-        if not force and sig == self._history_sig:
+        render_sig = (sig, self._history_render_limit)
+        if not force and render_sig == self._history_sig:
             return
-        self._history_sig = sig
+        self._history_sig = render_sig
 
         for widget in self._history_list.winfo_children():
             widget.destroy()
@@ -1300,13 +1313,48 @@ class TicketMonitorApp(ctk.CTk):
             self._history_empty_label.grid(row=0, column=0, padx=20, pady=40)
             return
 
-        # Show newest first. Guard each card so one malformed entry can't take
+        # Show newest first, but do not materialize the entire history file into
+        # Tk widgets at once. Large scrollable frames have crashed macOS Tk before.
+        entries = list(reversed(history))
+        visible_entries = entries[: self._history_render_limit]
+
+        # Guard each card so one malformed entry can't take
         # down the whole tab (which is part of what made it crash-prone before).
-        for i, entry in enumerate(reversed(history)):
+        for i, entry in enumerate(visible_entries):
             try:
                 self._render_history_card(i, entry)
             except Exception:
                 logging.exception("Failed to render history entry %d", i)
+
+        if len(entries) > len(visible_entries):
+            self._render_history_more_row(len(visible_entries), len(entries))
+
+    def _render_history_more_row(self, row: int, total: int):
+        frame = ctk.CTkFrame(self._history_list, fg_color="transparent")
+        frame.grid(row=row, column=0, padx=8, pady=(8, 14), sticky="ew")
+        frame.grid_columnconfigure(0, weight=1)
+
+        shown = min(self._history_render_limit, total)
+        ctk.CTkLabel(
+            frame,
+            text=f"Showing latest {shown} of {total} appearances",
+            text_color="gray55",
+            font=ctk.CTkFont(size=11),
+            anchor="w",
+        ).grid(row=0, column=0, sticky="w")
+        ctk.CTkButton(
+            frame,
+            text="Show older",
+            width=110,
+            height=28,
+            fg_color="gray25",
+            hover_color="gray30",
+            command=self._show_older_history,
+        ).grid(row=0, column=1, padx=(8, 0), sticky="e")
+
+    def _show_older_history(self):
+        self._history_render_limit += HISTORY_RENDER_PAGE_SIZE
+        self._refresh_history_tab(force=True)
 
     def _render_history_card(self, i: int, entry: dict):
         is_bingo = bool(entry.get("bingo", False))
@@ -1396,6 +1444,7 @@ class TicketMonitorApp(ctk.CTk):
         except Exception as exc:
             _mb.showerror("Error", f"Could not clear history:\n{exc}", parent=self)
             return
+        self._history_render_limit = HISTORY_RENDER_PAGE_SIZE
         self._refresh_history_tab(force=True)
 
     # ── Uptime Tab ────────────────────────────────────────────────────────────

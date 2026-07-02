@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `3ad1ee4`  2026-07-02 12:47  Fix launchd uptime status in app
+- `78179ef`  2026-07-02 13:31  Page history tab rendering
+
+- `14e89c5`  2026-07-02 12:47  Fix launchd uptime status in app
 
 - `121de4b`  2026-07-02 12:21  Treat loaded Ticketmaster pages as healthy uptime
 
