@@ -447,22 +447,8 @@ fi
 echo
 echo "Self-heal reboot (watchdog.reboot in config.yaml) — one-time sudo setup:"
 echo "  FileVault authenticated restart lets the guardian reboot this Mac and land"
-echo "  back in your session with zero interaction. Run these once:"
-echo
-echo "  1) Credentials plist (root-only; stays on the encrypted disk):"
-echo "     sudo mkdir -p /etc/ticketmonitor && sudo tee /etc/ticketmonitor/authrestart.plist >/dev/null <<'PLIST'"
-echo "     <?xml version=\"1.0\" encoding=\"UTF-8\"?>"
-echo "     <plist version=\"1.0\"><dict>"
-echo "       <key>Username</key><string>$(whoami)</string>"
-echo "       <key>Password</key><string>YOUR-MAC-LOGIN-PASSWORD</string>"
-echo "     </dict></plist>"
-echo "     PLIST"
-echo "     sudo chown root:wheel /etc/ticketmonitor/authrestart.plist"
-echo "     sudo chmod 600 /etc/ticketmonitor/authrestart.plist"
-echo
-echo "  2) Passwordless sudo for exactly the authrestart command:"
-echo "     echo '$(whoami) ALL=(root) NOPASSWD: /usr/bin/fdesetup authrestart -inputplist' | sudo tee /etc/sudoers.d/ticketmonitor"
-echo "     sudo chmod 440 /etc/sudoers.d/ticketmonitor && sudo visudo -c"
+echo "  back in your session with zero interaction. Run once:"
+echo "    sudo bash ${REPO_DIR}/scripts/setup_selfheal_reboot.sh"
 echo
 echo "Power settings to prevent interruption (run once):"
 echo "  sudo pmset -a sleep 0 disksleep 0 displaysleep 10"

@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `e3e035a`  2026-07-02 10:00  Slow cadence to 60-120s, variation probe, reboot self-heal, boot persistence
+- `32205fd`  2026-07-02 10:01  Add one-command sudo setup script for self-heal reboot
+
+- `b1f4b1a`  2026-07-02 10:00  Slow cadence to 60-120s, variation probe, reboot self-heal, boot persistence
 
 - `159b288`  2026-07-01 23:19  Audit fixes: atomic JSON writes, gitignore, robustness, tests
 

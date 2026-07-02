@@ -9,7 +9,8 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 ## 📋 Recent Changes
 
 <!-- CHANGELOG_START -->
-- `e3e035a`  2026-07-02  Slow cadence to 60-120s, variation probe, reboot self-heal, boot persistence
+- `32205fd`  2026-07-02  Add one-command sudo setup script for self-heal reboot
+- `b1f4b1a`  2026-07-02  Slow cadence to 60-120s, variation probe, reboot self-heal, boot persistence
 - `159b288`  2026-07-01  Audit fixes: atomic JSON writes, gitignore, robustness, tests
 - `f6d2196`  2026-07-01  Add per-event Ticketmaster scheduler
 - `c57c29d`  2026-07-01  Fix session health block handling
@@ -18,7 +19,6 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 - `809c90f`  2026-06-24  Honest alert delivery, startup warmup grace, real login verification
 - `f1b7054`  2026-06-24  Sync GUI/ping degraded state, add in-app fixes, challenge cooldown
 - `4416213`  2026-06-24  Document ntfy push setup and iOS app deep-link mechanism in README
-- `4d73db2`  2026-06-24  Add ntfy.sh push notifications with iOS app deep-linking
 
 Full history: [CHANGELOG.md](CHANGELOG.md)
 <!-- CHANGELOG_END -->
