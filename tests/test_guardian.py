@@ -213,3 +213,188 @@ def test_run_guardian_pauses_after_max_attempts_for_error_burst(tmp_path, monkey
     assert exit_code == 1
     assert state.get_guardian_pause_until() is not None
     assert len(notifier.critical_calls) == 1
+
+
+# ── Last-resort reboot tier ──────────────────────────────────────────────────
+
+
+def _reboot_kwargs(now, **overrides):
+    """All-guards-pass baseline for evaluate_reboot; tests flip one guard at a time."""
+    kwargs = dict(
+        config=_make_config(watchdog_reboot_enabled=True),
+        now=now,
+        impaired_start=now - timedelta(seconds=3600),
+        probe_scope="ip_device",
+        system_uptime_seconds=7200.0,
+        last_reboot_at=None,
+        reboots_last_day=0,
+        fix_attempts_last_hour=2,
+    )
+    kwargs.update(overrides)
+    return kwargs
+
+
+def test_evaluate_reboot_all_guards_pass():
+    now = datetime.now(timezone.utc)
+    should, reason = guardian.evaluate_reboot(**_reboot_kwargs(now))
+    assert should is True
+    assert "ip_device" in reason
+
+
+def test_evaluate_reboot_disabled_by_default():
+    now = datetime.now(timezone.utc)
+    should, reason = guardian.evaluate_reboot(
+        **_reboot_kwargs(now, config=_make_config())
+    )
+    assert should is False
+    assert reason == "reboot_disabled"
+
+
+def test_evaluate_reboot_requires_impairment():
+    now = datetime.now(timezone.utc)
+    should, reason = guardian.evaluate_reboot(**_reboot_kwargs(now, impaired_start=None))
+    assert should is False
+    assert reason == "not_impaired"
+
+    # Impaired, but not long enough (default threshold 2700s).
+    should, _ = guardian.evaluate_reboot(
+        **_reboot_kwargs(now, impaired_start=now - timedelta(seconds=600))
+    )
+    assert should is False
+
+
+def test_evaluate_reboot_skips_targeted_remedy_scopes():
+    now = datetime.now(timezone.utc)
+    for scope in ("profile", "account", "none"):
+        should, reason = guardian.evaluate_reboot(**_reboot_kwargs(now, probe_scope=scope))
+        assert should is False, scope
+        assert "targeted_remedy" in reason
+    # ip_device, unknown, or no probe at all → reboot may proceed.
+    for scope in ("ip_device", "unknown", None):
+        should, _ = guardian.evaluate_reboot(**_reboot_kwargs(now, probe_scope=scope))
+        assert should is True, scope
+
+
+def test_evaluate_reboot_requires_lighter_remedies_first():
+    now = datetime.now(timezone.utc)
+    should, reason = guardian.evaluate_reboot(**_reboot_kwargs(now, fix_attempts_last_hour=0))
+    assert should is False
+    assert reason == "lighter_remedies_not_tried_yet"
+
+
+def test_evaluate_reboot_loop_guards():
+    now = datetime.now(timezone.utc)
+    # Fresh boot must get its chance first (default min uptime 1800s).
+    should, _ = guardian.evaluate_reboot(**_reboot_kwargs(now, system_uptime_seconds=300.0))
+    assert should is False
+    # Spacing: last self-heal reboot too recent (default spacing 7200s).
+    should, _ = guardian.evaluate_reboot(
+        **_reboot_kwargs(now, last_reboot_at=now - timedelta(seconds=3600))
+    )
+    assert should is False
+    # Daily cap (default 3/day).
+    should, reason = guardian.evaluate_reboot(**_reboot_kwargs(now, reboots_last_day=3))
+    assert should is False
+    assert reason == "daily_reboot_cap_reached"
+    # Spacing satisfied → allowed again.
+    should, _ = guardian.evaluate_reboot(
+        **_reboot_kwargs(now, last_reboot_at=now - timedelta(seconds=7300))
+    )
+    assert should is True
+
+
+def test_reboot_history_survives_in_state(tmp_path):
+    state = MonitorState(state_file=str(tmp_path / "state.json"))
+    now = datetime.now(timezone.utc)
+    state.record_selfheal_reboot(now - timedelta(hours=3))
+    state.record_selfheal_reboot(now - timedelta(hours=1))
+
+    # Re-open from disk — the history must persist across the reboot itself.
+    reopened = MonitorState(state_file=str(tmp_path / "state.json"))
+    assert reopened.get_selfheal_reboots_recent(86400, now=now) == 2
+    assert reopened.get_selfheal_reboots_recent(7200, now=now) == 1
+    last = reopened.get_last_selfheal_reboot_at()
+    assert last is not None and abs((last - (now - timedelta(hours=1))).total_seconds()) < 2
+
+
+def test_impaired_since_walks_contiguous_non_healthy_segments():
+    now = datetime.now(timezone.utc)
+    seg = lambda state, start_min, end_min: {
+        "state": state,
+        "start": (now - timedelta(minutes=start_min)).isoformat(),
+        "end": (now - timedelta(minutes=end_min)).isoformat(),
+    }
+    segments = [
+        seg("healthy", 180, 90),
+        seg("impaired", 90, 40),
+        seg("down", 40, 10),
+        seg("impaired", 10, 0),
+    ]
+    since = guardian.impaired_since(now, segments=segments)
+    assert since is not None
+    assert abs((since - (now - timedelta(minutes=90))).total_seconds()) < 2
+
+    # Currently healthy → no impairment window.
+    assert guardian.impaired_since(now, segments=[seg("healthy", 60, 0)]) is None
+
+
+def test_maybe_selfheal_reboot_notifies_when_authrestart_missing(tmp_path, monkeypatch):
+    cfg = _make_config(watchdog_reboot_enabled=True)
+    state = MonitorState(state_file=str(tmp_path / "state.json"))
+    state.record_guardian_fix_attempt(datetime.now(timezone.utc))
+    notifier = _FakeNotifier()
+    now = datetime.now(timezone.utc)
+
+    monkeypatch.setattr(
+        guardian, "impaired_since", lambda _now, segments=None: now - timedelta(hours=2)
+    )
+    monkeypatch.setattr(guardian, "get_system_uptime_seconds", lambda _now=None: 7200.0)
+    monkeypatch.setattr(
+        guardian, "authrestart_available", lambda: (False, "missing plist")
+    )
+
+    rebooted = guardian.maybe_selfheal_reboot(cfg, state, notifier, now)
+    assert rebooted is False
+    assert len(notifier.critical_calls) == 1
+    assert "authrestart" in notifier.critical_calls[0][0]
+    # No reboot recorded — nothing actually happened.
+    assert state.get_last_selfheal_reboot_at() is None
+
+
+def test_maybe_selfheal_reboot_records_before_rebooting(tmp_path, monkeypatch):
+    cfg = _make_config(watchdog_reboot_enabled=True)
+    state = MonitorState(state_file=str(tmp_path / "state.json"))
+    state.record_guardian_fix_attempt(datetime.now(timezone.utc))
+    notifier = _FakeNotifier()
+    now = datetime.now(timezone.utc)
+
+    monkeypatch.setattr(
+        guardian, "impaired_since", lambda _now, segments=None: now - timedelta(hours=2)
+    )
+    monkeypatch.setattr(guardian, "get_system_uptime_seconds", lambda _now=None: 7200.0)
+    monkeypatch.setattr(guardian, "authrestart_available", lambda: (True, "ok"))
+
+    commands = []
+
+    def _fake_run(cmd, **kwargs):
+        commands.append(cmd)
+
+        class _Proc:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _Proc()
+
+    monkeypatch.setattr(guardian.subprocess, "run", _fake_run)
+    monkeypatch.setattr(
+        guardian, "AUTHRESTART_INPUT_PLIST", tmp_path / "authrestart.plist"
+    )
+    (tmp_path / "authrestart.plist").write_text("<plist/>")
+
+    rebooted = guardian.maybe_selfheal_reboot(cfg, state, notifier, now)
+    assert rebooted is True
+    assert commands and commands[0][:2] == ["sudo", "-n"]
+    # Reboot history + Discord notice recorded before the restart call.
+    assert state.get_last_selfheal_reboot_at() is not None
+    assert notifier.auto_fix_calls and notifier.auto_fix_calls[0][0] == "selfheal_reboot"

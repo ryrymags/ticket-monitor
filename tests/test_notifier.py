@@ -540,6 +540,7 @@ class TestNtfyNotifier:
                 section_summary=None,
                 reason="manual_test",
                 listing_groups=[{"section": "LOGE", "row": "A", "price": 200.0, "count": 4}],
+                preferences=TicketPreferences(min_tickets=4, max_price_per_ticket=220.0),
             )
         mock_ntfy.assert_called_once()
         assert mock_ntfy.call_args[1]["event_url"] == "https://www.ticketmaster.com/event/ABC"
@@ -556,6 +557,7 @@ class TestNtfyNotifier:
                 signal_confidence=1.0, price_summary=None,
                 section_summary=None, reason="manual_test",
                 listing_groups=[{"section": "A", "row": "1", "price": 10.0, "count": 1}],
+                preferences=TicketPreferences(min_tickets=1, max_price_per_ticket=20.0),
             )
         assert sent is True  # discord path unaffected
 
@@ -589,5 +591,27 @@ class TestNtfyNotifier:
                 section_summary=None, reason="signature_changed",
                 listing_groups=[{"section": "A", "row": "1", "price": 10.0, "count": 1}],
                 mention=True,
+                preferences=TicketPreferences(min_tickets=1, max_price_per_ticket=20.0),
             )
         mock_ntfy.assert_called_once()
+
+    def test_no_ntfy_push_for_non_bingo(self):
+        """Yellow 'tickets available' (non-BINGO) never reaches ntfy — Discord only."""
+        from src.notifier import NtfyNotifier
+        ntfy = NtfyNotifier(topics=["t"])
+        notifier = DiscordNotifier(webhook_url="https://test", ntfy=ntfy)
+        with patch.object(notifier, "_send", return_value=True) as mock_send, \
+             patch.object(ntfy, "send_ticket", return_value=True) as mock_ntfy:
+            notifier.send_ticket_available(
+                event_name="E", event_date="2026-07-28",
+                event_url="http://x", signal_type="dom",
+                signal_confidence=1.0, price_summary=None,
+                section_summary=None, reason="signature_changed",
+                # 1 ticket at $10 vs min 4 tickets → availability but NOT a BINGO.
+                listing_groups=[{"section": "A", "row": "1", "price": 10.0, "count": 1}],
+                mention=True,
+                preferences=TicketPreferences(min_tickets=4, max_price_per_ticket=20.0,
+                                              alert_on_any_availability=True),
+            )
+        mock_ntfy.assert_not_called()      # ntfy is BINGO-only
+        mock_send.assert_called_once()     # Discord still posts

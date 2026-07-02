@@ -378,13 +378,14 @@ class DiscordNotifier:
             except Exception as _hist_exc:
                 logger.debug("History write skipped: %s", _hist_exc)
 
-        # Fan out to ntfy (friends' phones). Gated on `mention` so friends get the
-        # same burst cadence as the Discord @-ping (loud at first, ≤1/min, then quiet
-        # after the episode) instead of an urgent push on every cooldown reminder.
-        # Guarded so a push failure can never break the Discord path.
-        if self.ntfy is not None and mention:
+        # Fan out to ntfy (friends' phones) — BINGOs only, ever. Yellow non-BINGO
+        # sightings and all operational notices stay Discord-only; an ntfy push must
+        # always mean "buy now". Gated on `mention` too so friends get the same burst
+        # cadence as the Discord @-ping (loud at first, ≤1/min, then quiet after the
+        # episode). Guarded so a push failure can never break the Discord path.
+        if self.ntfy is not None and mention and is_bingo:
             try:
-                ntfy_title = f"{'🟢 ' if is_bingo else '🟡 '}{status_label}: {event_name}"
+                ntfy_title = f"🟢 {status_label}: {event_name}"
                 ntfy_body = self._ntfy_body(match.get("label", ""), groups, matched_group)
                 self.ntfy.send_ticket(
                     title=ntfy_title,

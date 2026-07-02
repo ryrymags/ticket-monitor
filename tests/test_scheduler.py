@@ -5,7 +5,7 @@ from __future__ import annotations
 import random
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from src.browser_probe import BrowserProbeError
 from src.config import EventConfig, MonitorConfig
@@ -1642,24 +1642,61 @@ class TestStartupWarmup:
         assert scheduler.state.get_challenge_cooldown_until() == now + timedelta(seconds=60)
 
 
-class TestActivityCadence:
-    def test_has_activity_signal(self, tmp_path):
+class TestDetailRetryCadence:
+    def test_needs_detail_retry(self, tmp_path):
         scheduler = _make_scheduler(tmp_path)
-        assert scheduler._has_activity_signal(_make_result(available=True)) is True
-        # A positive DOM signal counts even if not yet "available".
-        assert scheduler._has_activity_signal(
-            _make_result(available=False, signal_type=ProbeSignalType.DOM, dom_signals=["offer_card_ui"])
-        ) is True
-        # Sold-out / no-signal page is not activity.
-        assert scheduler._has_activity_signal(
-            _make_result(available=False, signal_type=ProbeSignalType.NONE, dom_signals=[])
-        ) is False
+        # Complete sighting (price+section+listing all parsed) → no retry.
+        assert scheduler._needs_detail_retry(_make_result(available=True)) is False
+        # Sighting with a missing detail → retry.
+        incomplete = _make_result(available=True)
+        incomplete.price_summary = None
+        assert scheduler._needs_detail_retry(incomplete) is True
+        incomplete = _make_result(available=True)
+        incomplete.listing_summary = None
+        assert scheduler._needs_detail_retry(incomplete) is True
+        # No availability → never a retry, regardless of missing fields.
+        assert scheduler._needs_detail_retry(_make_result(available=False)) is False
+        assert scheduler._needs_detail_retry(None) is False
 
-    def test_activity_resets_backoff_to_floor(self, tmp_path):
+    def test_incomplete_sighting_schedules_quick_retry(self, tmp_path):
+        from src.scheduler import (
+            DETAIL_RETRY_MAX_ATTEMPTS,
+            DETAIL_RETRY_MAX_SECONDS,
+            DETAIL_RETRY_MIN_SECONDS,
+        )
+        scheduler = _make_scheduler(tmp_path)
+        event_id = scheduler.config.events[0].event_id
+        incomplete = _make_result(available=True)
+        incomplete.price_summary = None
+        now = datetime.now(timezone.utc)
+
+        for attempt in range(1, DETAIL_RETRY_MAX_ATTEMPTS + 1):
+            scheduler._reschedule_event(event_id, now, incomplete)
+            delay = (scheduler._event_schedule[event_id] - now).total_seconds()
+            assert DETAIL_RETRY_MIN_SECONDS <= delay <= DETAIL_RETRY_MAX_SECONDS
+            assert scheduler._detail_retry_counts[event_id] == attempt
+
+        # Budget exhausted → back to the normal randomized cadence.
+        scheduler._reschedule_event(event_id, now, incomplete)
+        delay = (scheduler._event_schedule[event_id] - now).total_seconds()
+        assert delay >= scheduler.config.browser_per_event_poll_min_seconds
+
+    def test_complete_sighting_stays_on_normal_cadence(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        event_id = scheduler.config.events[0].event_id
+        scheduler._detail_retry_counts[event_id] = 2
+        now = datetime.now(timezone.utc)
+        scheduler._reschedule_event(event_id, now, _make_result(available=True))
+        delay = (scheduler._event_schedule[event_id] - now).total_seconds()
+        # Complete sighting → no fast polling and the retry budget resets.
+        assert delay >= scheduler.config.browser_per_event_poll_min_seconds
+        assert event_id not in scheduler._detail_retry_counts
+
+    def test_sighting_does_not_reset_backoff(self, tmp_path):
         scheduler = _make_scheduler(tmp_path)
         scheduler._cadence_backoff = 4.0
         scheduler._handle_probe_result(scheduler.config.events[0], _make_result(available=True))
-        assert scheduler._cadence_backoff == 1.0
+        assert scheduler._cadence_backoff == 4.0
 
     def test_blind_check_does_not_reset_backoff(self, tmp_path):
         scheduler = _make_scheduler(tmp_path)
@@ -1669,6 +1706,55 @@ class TestActivityCadence:
         )
         scheduler._handle_probe_result(scheduler.config.events[0], blind)
         assert scheduler._cadence_backoff == 4.0
+
+
+class TestVariationProbeHook:
+    def test_escalated_challenges_trigger_probe(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        scheduler._maybe_run_variation_probe = MagicMock()
+        now = scheduler.start_time + timedelta(hours=1)  # past startup warmup
+        result = SimpleNamespace(
+            challenge_detected=True,
+            raw_indicators={},
+            abck_flagged=False,
+            abck_trusted=False,
+        )
+        escalate_after = scheduler.config.browser_challenge_cooldown_escalate_after
+        for _ in range(escalate_after):
+            scheduler._update_challenge_cooldown(result=result, status=None, now=now)
+        scheduler._maybe_run_variation_probe.assert_called_once_with(now)
+
+    def test_probe_is_rate_limited(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        now = datetime.now(timezone.utc)
+        report = MagicMock()
+        report.scope = "none"
+        report.to_dict.return_value = {"scope": "none"}
+        with patch("src.variation_probe.run_variation_matrix", return_value=report) as mock_run:
+            scheduler._maybe_run_variation_probe(now)
+            scheduler._maybe_run_variation_probe(now + timedelta(seconds=60))
+        mock_run.assert_called_once()
+        assert scheduler.state.get_variation_probe_report() == {"scope": "none"}
+
+    def test_probe_disabled_by_config(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        scheduler.config.browser_variation_probe_enabled = False
+        with patch("src.variation_probe.run_variation_matrix") as mock_run:
+            scheduler._maybe_run_variation_probe(datetime.now(timezone.utc))
+        mock_run.assert_not_called()
+
+    def test_profile_scope_clears_block_cookies(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        scheduler.probe.clear_block_cookies = MagicMock(return_value=2)
+        scheduler._apply_variation_probe_remedy("profile")
+        scheduler.probe.clear_block_cookies.assert_called_once()
+
+    def test_non_profile_scopes_do_not_touch_cookies(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        scheduler.probe.clear_block_cookies = MagicMock()
+        for scope in ("account", "ip_device", "none", "unknown"):
+            scheduler._apply_variation_probe_remedy(scope)
+        scheduler.probe.clear_block_cookies.assert_not_called()
 
 
 class TestUptimeConnectivity:

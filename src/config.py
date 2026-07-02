@@ -147,8 +147,8 @@ class MonitorConfig:
     # Supports {url_encoded}, {url}, {event_id}. Empty = no "Open in App" button.
     ntfy_app_deep_link: str = ""
     browser_per_event_scheduler_enabled: bool = True
-    browser_per_event_poll_min_seconds: int = 45
-    browser_per_event_poll_max_seconds: int = 105
+    browser_per_event_poll_min_seconds: int = 60
+    browser_per_event_poll_max_seconds: int = 120
     browser_per_event_min_gap_between_checks_seconds: int = 60
     browser_per_event_max_gap_between_checks_seconds: int = 120
     browser_event_weights: dict[str, float] = field(default_factory=dict)
@@ -156,6 +156,17 @@ class MonitorConfig:
     browser_event_dwell_min_seconds: int = 3
     browser_event_dwell_max_seconds: int = 8
     browser_homepage_warmup_interval_seconds: int = 1800
+    # Variation probe (block-scope diagnosis on escalated pauses; src/variation_probe.py)
+    browser_variation_probe_enabled: bool = True
+    browser_variation_probe_min_interval_seconds: int = 1800
+    browser_variation_probe_event_url: str = ""
+    # Last-resort reboot tier (guardian): only for IP/device-scoped blocks that outlast
+    # every lighter remedy, and hard rate-limited so it can never loop.
+    watchdog_reboot_enabled: bool = False
+    watchdog_reboot_after_impaired_seconds: int = 2700
+    watchdog_reboot_min_system_uptime_seconds: int = 1800
+    watchdog_reboot_min_spacing_seconds: int = 7200
+    watchdog_reboot_max_per_day: int = 3
 
 
 DEFAULT_EVENT_WEIGHTS = {
@@ -290,19 +301,19 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
         "browser.cdp_connect_timeout_seconds",
     )
     browser_reuse_event_tabs = safe_bool(browser, "reuse_event_tabs", True)
-    browser_poll_min_seconds = safe_int(browser, "poll_min_seconds", 15, "browser.poll_min_seconds")
-    browser_poll_max_seconds = safe_int(browser, "poll_max_seconds", 25, "browser.poll_max_seconds")
+    browser_poll_min_seconds = safe_int(browser, "poll_min_seconds", 60, "browser.poll_min_seconds")
+    browser_poll_max_seconds = safe_int(browser, "poll_max_seconds", 120, "browser.poll_max_seconds")
     browser_per_event_scheduler_enabled = safe_bool(browser, "per_event_scheduler_enabled", True)
     browser_per_event_poll_min_seconds = safe_int(
         browser,
         "per_event_poll_min_seconds",
-        45,
+        60,
         "browser.per_event_poll_min_seconds",
     )
     browser_per_event_poll_max_seconds = safe_int(
         browser,
         "per_event_poll_max_seconds",
-        105,
+        120,
         "browser.per_event_poll_max_seconds",
     )
     browser_per_event_min_gap_between_checks_seconds = safe_int(
@@ -336,6 +347,15 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
         1800,
         "browser.homepage_warmup_interval_seconds",
     )
+    variation_probe = browser.get("variation_probe", {}) or {}
+    browser_variation_probe_enabled = safe_bool(variation_probe, "enabled", True)
+    browser_variation_probe_min_interval_seconds = safe_int(
+        variation_probe,
+        "min_interval_seconds",
+        1800,
+        "browser.variation_probe.min_interval_seconds",
+    )
+    browser_variation_probe_event_url = str(variation_probe.get("event_url_override", "")).strip()
     browser_event_weights = dict(DEFAULT_EVENT_WEIGHTS)
     raw_event_weights = browser.get("event_weights")
     if raw_event_weights is not None:
@@ -547,6 +567,20 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
         6,
         "watchdog.max_fix_attempts_per_hour",
     )
+    watchdog_reboot = watchdog.get("reboot", {}) or {}
+    watchdog_reboot_enabled = safe_bool(watchdog_reboot, "enabled", False)
+    watchdog_reboot_after_impaired_seconds = safe_int(
+        watchdog_reboot, "after_impaired_seconds", 2700, "watchdog.reboot.after_impaired_seconds"
+    )
+    watchdog_reboot_min_system_uptime_seconds = safe_int(
+        watchdog_reboot, "min_system_uptime_seconds", 1800, "watchdog.reboot.min_system_uptime_seconds"
+    )
+    watchdog_reboot_min_spacing_seconds = safe_int(
+        watchdog_reboot, "min_spacing_seconds", 7200, "watchdog.reboot.min_spacing_seconds"
+    )
+    watchdog_reboot_max_per_day = safe_int(
+        watchdog_reboot, "max_per_day", 3, "watchdog.reboot.max_per_day"
+    )
 
     # Updates
     updates_enabled = safe_bool(updates, "enabled", True)
@@ -648,6 +682,20 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
         errors.append("browser.per_event_poll_min_seconds must be <= browser.per_event_poll_max_seconds")
     if browser_per_event_min_gap_between_checks_seconds < 0:
         errors.append("browser.per_event_min_gap_between_checks_seconds must be >= 0")
+    # Anti-block guard: floors under 45s burned DataDome/IP reputation once already
+    # (June 2026 pause spike). Loud warning so an aggressive cadence can't sneak back.
+    for floor_name, floor_value in (
+        ("browser.poll_min_seconds", browser_poll_min_seconds),
+        ("browser.per_event_poll_min_seconds", browser_per_event_poll_min_seconds),
+        ("browser.per_event_min_gap_between_checks_seconds", browser_per_event_min_gap_between_checks_seconds),
+    ):
+        if 0 < floor_value < 45:
+            logger.warning(
+                "%s=%d is aggressive (< 45s) — cadences this fast have previously "
+                "triggered Ticketmaster bot-detection pauses; 60-120s is the safe range",
+                floor_name,
+                floor_value,
+            )
     if browser_per_event_max_gap_between_checks_seconds < browser_per_event_min_gap_between_checks_seconds:
         errors.append(
             "browser.per_event_max_gap_between_checks_seconds must be >= "
@@ -849,4 +897,12 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
         browser_event_dwell_min_seconds=browser_event_dwell_min_seconds,
         browser_event_dwell_max_seconds=browser_event_dwell_max_seconds,
         browser_homepage_warmup_interval_seconds=browser_homepage_warmup_interval_seconds,
+        browser_variation_probe_enabled=browser_variation_probe_enabled,
+        browser_variation_probe_min_interval_seconds=browser_variation_probe_min_interval_seconds,
+        browser_variation_probe_event_url=browser_variation_probe_event_url,
+        watchdog_reboot_enabled=watchdog_reboot_enabled,
+        watchdog_reboot_after_impaired_seconds=watchdog_reboot_after_impaired_seconds,
+        watchdog_reboot_min_system_uptime_seconds=watchdog_reboot_min_system_uptime_seconds,
+        watchdog_reboot_min_spacing_seconds=watchdog_reboot_min_spacing_seconds,
+        watchdog_reboot_max_per_day=watchdog_reboot_max_per_day,
     )

@@ -184,6 +184,7 @@ MAIN_PLIST="$PLIST_DIR/com.ticketmonitor.plist"
 GUARDIAN_PLIST="$PLIST_DIR/com.ticketmonitor.guardian.plist"
 RELOADER_PLIST="$PLIST_DIR/com.ticketmonitor.reloader.plist"
 BROWSER_HOST_PLIST="$PLIST_DIR/com.ticketmonitor.browser-host.plist"
+GUI_PLIST="$PLIST_DIR/com.ticketmonitor.gui.plist"
 mkdir -p "$PLIST_DIR"
 
 cat > "$MAIN_PLIST" <<EOF
@@ -281,6 +282,36 @@ cat > "$RELOADER_PLIST" <<EOF
 </plist>
 EOF
 
+# GUI dashboard at login: opens the app window after every boot/authrestart. No
+# KeepAlive — closing the window is allowed; the headless stack keeps monitoring.
+cat > "$GUI_PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.ticketmonitor.gui</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${REPO_DIR}/venv/bin/python</string>
+    <string>${REPO_DIR}/app.py</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>${REPO_DIR}</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>LimitLoadToSessionType</key>
+  <string>Aqua</string>
+  <key>StandardOutPath</key>
+  <string>${REPO_DIR}/logs/gui.launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>${REPO_DIR}/logs/gui.launchd.err.log</string>
+  <key>ProcessType</key>
+  <string>Interactive</string>
+</dict>
+</plist>
+EOF
+
 BROWSER_HOST_ENABLED="$(python - <<'PY'
 import yaml
 
@@ -373,6 +404,7 @@ fi
 launchctl unload "$MAIN_PLIST" >/dev/null 2>&1 || true
 launchctl unload "$GUARDIAN_PLIST" >/dev/null 2>&1 || true
 launchctl unload "$RELOADER_PLIST" >/dev/null 2>&1 || true
+launchctl unload "$GUI_PLIST" >/dev/null 2>&1 || true
 launchctl unload "$BROWSER_HOST_PLIST" >/dev/null 2>&1 || true
 launchctl bootout "gui/$(id -u)/com.ticketmonitor.browser-host" >/dev/null 2>&1 || true
 
@@ -383,6 +415,7 @@ fi
 launchctl load "$MAIN_PLIST"
 launchctl load "$GUARDIAN_PLIST"
 launchctl load "$RELOADER_PLIST"
+launchctl load "$GUI_PLIST" || true
 
 if [ "${BROWSER_HOST_ENABLED}" = "1" ]; then
   launchctl kickstart -k "gui/$(id -u)/com.ticketmonitor.browser-host" || true
@@ -407,9 +440,29 @@ echo "LaunchAgents:"
 echo "  $MAIN_PLIST"
 echo "  $GUARDIAN_PLIST"
 echo "  $RELOADER_PLIST"
+echo "  $GUI_PLIST"
 if [ "${BROWSER_HOST_ENABLED}" = "1" ]; then
   echo "  $BROWSER_HOST_PLIST"
 fi
+echo
+echo "Self-heal reboot (watchdog.reboot in config.yaml) — one-time sudo setup:"
+echo "  FileVault authenticated restart lets the guardian reboot this Mac and land"
+echo "  back in your session with zero interaction. Run these once:"
+echo
+echo "  1) Credentials plist (root-only; stays on the encrypted disk):"
+echo "     sudo mkdir -p /etc/ticketmonitor && sudo tee /etc/ticketmonitor/authrestart.plist >/dev/null <<'PLIST'"
+echo "     <?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+echo "     <plist version=\"1.0\"><dict>"
+echo "       <key>Username</key><string>$(whoami)</string>"
+echo "       <key>Password</key><string>YOUR-MAC-LOGIN-PASSWORD</string>"
+echo "     </dict></plist>"
+echo "     PLIST"
+echo "     sudo chown root:wheel /etc/ticketmonitor/authrestart.plist"
+echo "     sudo chmod 600 /etc/ticketmonitor/authrestart.plist"
+echo
+echo "  2) Passwordless sudo for exactly the authrestart command:"
+echo "     echo '$(whoami) ALL=(root) NOPASSWD: /usr/bin/fdesetup authrestart -inputplist' | sudo tee /etc/sudoers.d/ticketmonitor"
+echo "     sudo chmod 440 /etc/sudoers.d/ticketmonitor && sudo visudo -c"
 echo
 echo "Power settings to prevent interruption (run once):"
 echo "  sudo pmset -a sleep 0 disksleep 0 displaysleep 10"

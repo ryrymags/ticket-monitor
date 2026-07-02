@@ -68,3 +68,16 @@ def test_ticket_alert_matrix_exits_nonzero_on_send_failure(monkeypatch):
 
     assert exc.value.code == 1
     assert len(notifier.calls) == 3
+
+
+def test_single_instance_lock_mutual_exclusion(tmp_path, monkeypatch):
+    monkeypatch.setattr(monitor, "MONITOR_LOCK_FILE", str(tmp_path / "locks" / "monitor.lock"))
+    first = monitor.acquire_single_instance_lock()
+    assert first is not None
+    # A second monitor (same host) must be refused while the first holds the lock.
+    assert monitor.acquire_single_instance_lock() is None
+    first.close()
+    # Lock released → next start succeeds.
+    third = monitor.acquire_single_instance_lock()
+    assert third is not None
+    third.close()

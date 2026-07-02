@@ -4,11 +4,13 @@ All notable changes to Ticket Monitor are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 <!-- CHANGELOG_START -->
-## [Unreleased] — 2026-07-01
+## [Unreleased] — 2026-07-02
 
 ### Changes
 
-- `8614128`  2026-07-01 23:19  Audit fixes: atomic JSON writes, gitignore, robustness, tests
+- `e3e035a`  2026-07-02 10:00  Slow cadence to 60-120s, variation probe, reboot self-heal, boot persistence
+
+- `159b288`  2026-07-01 23:19  Audit fixes: atomic JSON writes, gitignore, robustness, tests
 
 - `f6d2196`  2026-07-01 19:05  Add per-event Ticketmaster scheduler
 
