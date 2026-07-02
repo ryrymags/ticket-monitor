@@ -1330,24 +1330,24 @@ class TestPerEventUptime:
         scheduler = _make_scheduler(tmp_path, self._two_event_config())
         assert set(scheduler._event_uptime.keys()) == {"ev-a", "ev-b"}
 
-    def test_loaded_block_page_records_healthy_for_uptime(self, tmp_path):
+    def test_block_page_records_impaired_for_event_uptime(self, tmp_path):
         scheduler = _make_scheduler(tmp_path, self._two_event_config())
         ev_a, ev_b = scheduler.config.events[0], scheduler.config.events[1]
         base = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
         scheduler._handle_probe_result(ev_a, _make_result(available=False, blocked=True), now=base)
         scheduler._handle_probe_result(ev_b, _make_result(available=False), now=base)
-        assert scheduler._event_state["ev-a"] == "healthy"
+        assert scheduler._event_state["ev-a"] == "impaired"
         assert scheduler._event_state["ev-b"] == "healthy"
         assert scheduler._cycle_bad_checks == 1
-        assert scheduler._cycle_healthy_checks == 2
+        assert scheduler._cycle_healthy_checks == 1
 
-        # A loaded block page still proves Ticketmaster loaded, even if outage state is set.
+        # A loaded block/challenge page means Ticketmaster is not actually visible.
         scheduler.state.set_in_outage_state("ev-a", True)
-        scheduler._record_event_uptime_heartbeats(base, "healthy", None, gap=10)
+        scheduler._record_event_uptime_heartbeats(base, "impaired", "blocked", gap=10)
         a_states = {s["state"] for s in scheduler._event_uptime["ev-a"].segments}
         b_states = {s["state"] for s in scheduler._event_uptime["ev-b"].segments}
-        assert a_states == {"healthy"}
+        assert a_states == {"impaired"}
         assert b_states == {"healthy"}
 
     def test_no_internet_marks_all_events_down(self, tmp_path):
@@ -1792,7 +1792,7 @@ class TestUptimeConnectivity:
         assert last["state"] == "down"
         assert last["reason"] == "no_internet"
 
-    def test_block_page_records_healthy_uptime(self, tmp_path):
+    def test_block_page_records_impaired_uptime(self, tmp_path):
         scheduler = _make_scheduler(tmp_path)
         blocked = _make_result(
             available=False, blocked=True, signal_type=ProbeSignalType.NONE, dom_signals=[]
@@ -1802,12 +1802,12 @@ class TestUptimeConnectivity:
         needs_slow_retry = scheduler._run_cycle()
         assert scheduler._cycle_connectivity_down is False
         assert scheduler._cycle_bad_checks == 1
-        assert scheduler._cycle_healthy_checks == 1
+        assert scheduler._cycle_healthy_checks == 0
 
         scheduler._record_uptime_heartbeat(needs_slow_retry)
         last = scheduler.uptime.segments[-1]
-        assert last["state"] == "healthy"
-        assert last["reason"] is None
+        assert last["state"] == "impaired"
+        assert last["reason"] == "blocked"
 
     def test_unhealthy_no_signal_response_records_impaired(self, tmp_path):
         scheduler = _make_scheduler(tmp_path)

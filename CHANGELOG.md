@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `5683102`  2026-07-02 14:11  Stabilize monitor history and stop controls
+- `3c1c1a0`  2026-07-02 16:21  Record blocked checks as impaired uptime
+
+- `e1e56da`  2026-07-02 14:11  Stabilize monitor history and stop controls
 
 - `1fe2cf2`  2026-07-02 13:31  Page history tab rendering
 
