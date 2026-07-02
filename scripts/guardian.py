@@ -30,16 +30,15 @@ BROWSER_HOST_LABEL = f"{MONITOR_LABEL}.browser-host"
 LOG_FILE = ROOT_DIR / "logs" / "guardian.log"
 UPTIME_LOG_FILE = ROOT_DIR / "uptime_log.json"
 
-# Last-resort reboot: FileVault authenticated restart. The credentials plist and the
-# matching NOPASSWD sudoers entry are one-time manual setup (see deploy/setup_macos.sh
-# output) — without them the reboot tier degrades to a Discord notice.
-AUTHRESTART_INPUT_PLIST = Path("/etc/ticketmonitor/authrestart.plist")
-# A root-owned wrapper, NOT a direct `fdesetup ... < plist` invocation: a shell
-# redirect is opened by the CALLING (non-root) process before sudo elevates, so it
-# can never read a 600 root-owned file. sudo execs the wrapper as root first, and the
-# wrapper (now running as root) opens the plist itself. See setup_selfheal_reboot.sh.
-AUTHRESTART_WRAPPER = Path("/etc/ticketmonitor/trigger_authrestart.sh")
-AUTHRESTART_COMMAND = ["sudo", "-n", str(AUTHRESTART_WRAPPER)]
+# Last-resort reboot: a plain `shutdown -r now` via a scoped NOPASSWD sudoers rule
+# (one-time manual setup — see scripts/setup_selfheal_reboot.sh). This ONLY reaches
+# the desktop unattended when FileVault is off and automatic login is configured; with
+# FileVault on, `fdesetup authrestart` unlocks the disk silently but still leaves a
+# login-window flash requiring a password on this machine/macOS version (verified via
+# a real reboot — the "onetimeAutoLogin" auto-completion did not occur), so it does
+# NOT achieve zero-touch and isn't used here.
+REBOOT_COMMAND = ["sudo", "-n", "/sbin/shutdown", "-r", "now"]
+LOGINWINDOW_PREFS = Path("/Library/Preferences/com.apple.loginwindow")
 
 
 @dataclass
@@ -274,25 +273,30 @@ def evaluate_reboot(
     return True, f"impaired_{int(impaired_seconds)}s_scope_{probe_scope or 'unknown'}"
 
 
-def authrestart_available() -> tuple[bool, str]:
-    if not AUTHRESTART_INPUT_PLIST.exists():
-        return False, f"missing {AUTHRESTART_INPUT_PLIST} (run the one-time sudo setup)"
-    if not AUTHRESTART_WRAPPER.exists():
-        return False, f"missing {AUTHRESTART_WRAPPER} (run the one-time sudo setup)"
+def reboot_available() -> tuple[bool, str]:
+    """A reboot only reaches the desktop unattended when FileVault is off (nothing to
+    unlock pre-boot) and macOS automatic login is configured for this account."""
     try:
-        proc = subprocess.run(
-            ["fdesetup", "supportsauthrestart"], capture_output=True, text=True, timeout=5
-        )
+        proc = subprocess.run(["fdesetup", "status"], capture_output=True, text=True, timeout=5)
     except Exception as exc:
         return False, f"fdesetup unavailable: {exc}"
-    if "true" not in (proc.stdout or "").lower():
-        return False, "this Mac does not support FileVault authenticated restart"
+    if "filevault is off" not in (proc.stdout or "").lower():
+        return False, "FileVault is on — an unattended reboot would strand at the login screen"
+    try:
+        proc = subprocess.run(
+            ["defaults", "read", str(LOGINWINDOW_PREFS), "autoLoginUser"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except Exception as exc:
+        return False, f"could not check automatic login: {exc}"
+    if not (proc.stdout or "").strip():
+        return False, "Automatic login is not configured (System Settings > Users & Groups > Login Options)"
     return True, "ok"
 
 
 def trigger_selfheal_reboot(state: MonitorState, notifier: DiscordNotifier, reason: str, now: datetime) -> bool:
-    """Record the reboot, tell Discord, then authrestart. Recording happens FIRST so
-    the rate-limiter survives even if the machine goes down mid-call."""
+    """Record the reboot, tell Discord, then reboot. Recording happens FIRST so the
+    rate-limiter survives even if the machine goes down mid-call."""
     logger = logging.getLogger("guardian")
     state.record_selfheal_reboot(now)
     try:
@@ -300,19 +304,19 @@ def trigger_selfheal_reboot(state: MonitorState, notifier: DiscordNotifier, reas
             action="selfheal_reboot",
             reason=reason,
             context={"reason_code": "guardian_selfheal_reboot"},
-            auto_fix_planned="filevault_authrestart",
+            auto_fix_planned="reboot",
         )
     except Exception as exc:  # Discord must never block the reboot
         logger.warning("Reboot notice failed to send: %s", exc)
     logger.warning("Triggering self-heal reboot: %s", reason)
     try:
-        proc = subprocess.run(AUTHRESTART_COMMAND, capture_output=True, text=True, timeout=60)
+        proc = subprocess.run(REBOOT_COMMAND, capture_output=True, text=True, timeout=60)
     except Exception as exc:
-        logger.error("authrestart failed to launch: %s", exc)
+        logger.error("reboot failed to launch: %s", exc)
         return False
     if proc.returncode != 0:
         logger.error(
-            "authrestart exited %d: %s", proc.returncode, (proc.stderr or proc.stdout).strip()
+            "reboot exited %d: %s", proc.returncode, (proc.stderr or proc.stdout).strip()
         )
         return False
     return True
@@ -339,15 +343,14 @@ def maybe_selfheal_reboot(
     if not should:
         logger.debug("Reboot tier: not warranted (%s)", reason)
         return False
-    available, detail = authrestart_available()
+    available, detail = reboot_available()
     if not available:
-        logger.error("Reboot warranted (%s) but authrestart unavailable: %s", reason, detail)
+        logger.error("Reboot warranted (%s) but reboot unavailable: %s", reason, detail)
         if should_alert_critical(state, now=now):
             notifier.send_critical_attention(
-                f"A self-heal reboot is warranted ({reason}) but FileVault authrestart "
-                f"is not set up: {detail}",
+                f"A self-heal reboot is warranted ({reason}) but isn't safe to trigger: {detail}",
                 context={"reason_code": "guardian_reboot_unavailable"},
-                next_steps=["Run the one-time sudo setup printed by deploy/setup_macos.sh"],
+                next_steps=["Run scripts/setup_selfheal_reboot.sh (one-time sudo setup)"],
             )
             state.set_guardian_last_critical_alert_at(now)
         return False

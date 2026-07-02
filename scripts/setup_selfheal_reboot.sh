@@ -1,8 +1,16 @@
 #!/bin/bash
-# One-time setup for the guardian's last-resort self-heal reboot (FileVault
-# authenticated restart). Stores your macOS login credentials root-only at
-# /etc/ticketmonitor/authrestart.plist (never leaves the encrypted disk) and adds a
-# NOPASSWD sudoers entry for exactly the authrestart command.
+# One-time setup for the guardian's last-resort self-heal reboot.
+#
+# Requires FileVault OFF + macOS automatic login configured for your account first
+# (System Settings > Privacy & Security > FileVault > Turn Off; then
+# System Settings > Users & Groups > Login Options > Automatically log in as you).
+# With FileVault on, `fdesetup authrestart` unlocks the disk silently but still
+# leaves a login-window flash requiring a password on some macOS versions — verified
+# not to be zero-touch here, so it isn't used. Your account password is untouched by
+# any of this; only the boot-time login screen is skipped.
+#
+# This just grants a NOPASSWD sudo rule for one fixed reboot command — no
+# credentials are stored anywhere.
 #
 # Run:  sudo bash scripts/setup_selfheal_reboot.sh
 set -euo pipefail
@@ -18,54 +26,29 @@ if [ -z "${TARGET_USER}" ]; then
   exit 1
 fi
 
-if ! fdesetup supportsauthrestart 2>/dev/null | grep -qi true; then
-  echo "This Mac does not support FileVault authenticated restart; aborting."
+if fdesetup status | grep -qi "filevault is on"; then
+  echo "FileVault is still on. Turn it off first (System Settings > Privacy &"
+  echo "Security > FileVault) and enable automatic login (Users & Groups > Login"
+  echo "Options), then re-run this script."
   exit 1
 fi
 
-read -r -s -p "macOS login password for ${TARGET_USER}: " USER_PW
-echo
-
-# Verify the password before storing it — a wrong one would strand every reboot.
-if ! dscl . -authonly "${TARGET_USER}" "${USER_PW}" >/dev/null 2>&1; then
-  echo "Password check failed for ${TARGET_USER}; nothing written."
+if ! defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser >/dev/null 2>&1; then
+  echo "Automatic login is not configured. Enable it in System Settings > Users &"
+  echo "Groups > Login Options > Automatically log in as ${TARGET_USER}, then re-run."
   exit 1
 fi
 
-mkdir -p /etc/ticketmonitor
-TARGET_USER="${TARGET_USER}" USER_PW="${USER_PW}" /usr/bin/python3 - <<'PY'
-import os
-import plistlib
+# Clean up the old FileVault-authrestart approach if a previous run set it up —
+# that plaintext-password plist is unnecessary now that FileVault is off.
+rm -f /etc/ticketmonitor/authrestart.plist /etc/ticketmonitor/trigger_authrestart.sh
 
-with open("/etc/ticketmonitor/authrestart.plist", "wb") as f:
-    plistlib.dump(
-        {"Username": os.environ["TARGET_USER"], "Password": os.environ["USER_PW"]}, f
-    )
-PY
-chown root:wheel /etc/ticketmonitor/authrestart.plist
-chmod 600 /etc/ticketmonitor/authrestart.plist
-
-# Wrapper script, NOT a direct `fdesetup ... < plist` sudoers rule: a shell redirect
-# is opened by the CALLING shell before sudo elevates, so a non-root user can never
-# redirect a 600 root-owned file into a command, even under sudo. The wrapper runs
-# AS ROOT (sudo elevates first, then execs this script), so it can open the plist
-# itself — no permission-denied trap either at setup-verification or at guardian
-# reboot time.
-cat > /etc/ticketmonitor/trigger_authrestart.sh <<'WRAPPER'
-#!/bin/bash
-exec /usr/bin/fdesetup authrestart -inputplist < /etc/ticketmonitor/authrestart.plist
-WRAPPER
-chown root:wheel /etc/ticketmonitor/trigger_authrestart.sh
-chmod 700 /etc/ticketmonitor/trigger_authrestart.sh
-
-echo "${TARGET_USER} ALL=(root) NOPASSWD: /etc/ticketmonitor/trigger_authrestart.sh" \
+echo "${TARGET_USER} ALL=(root) NOPASSWD: /sbin/shutdown -r now" \
   > /etc/sudoers.d/ticketmonitor
 chmod 440 /etc/sudoers.d/ticketmonitor
 visudo -c >/dev/null
 
 echo "OK: self-heal reboot is armed."
-echo "  Credentials: /etc/ticketmonitor/authrestart.plist (root-only, 600)"
-echo "  Wrapper:     /etc/ticketmonitor/trigger_authrestart.sh (root-only, 700)"
-echo "  Sudoers:     /etc/sudoers.d/ticketmonitor (that wrapper only)"
-echo "Test any time with: sudo -n /etc/ticketmonitor/trigger_authrestart.sh"
-echo "(That command WILL reboot the Mac.)"
+echo "  Sudoers: /etc/sudoers.d/ticketmonitor (only 'shutdown -r now', nothing else)"
+echo "Test any time with: sudo -n /sbin/shutdown -r now"
+echo "(That command WILL reboot the Mac. It should land back at your desktop with no input.)"

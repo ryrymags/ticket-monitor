@@ -9,7 +9,8 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 ## 📋 Recent Changes
 
 <!-- CHANGELOG_START -->
-- `0332e49`  2026-07-02  Fix self-heal reboot: root-owned wrapper instead of unreadable redirect
+- `5c7c0cf`  2026-07-02  Switch self-heal reboot from FileVault authrestart to plain reboot
+- `d82b6b8`  2026-07-02  Fix self-heal reboot: root-owned wrapper instead of unreadable redirect
 - `36643e5`  2026-07-02  Fix doctor-lite profile clash (stray about:blank tabs), 30min reboot threshold, per-concert uptime timeline
 - `5196372`  2026-07-02  Fix egress diagnostic: resolve IP over HTTPS before ip-api lookup
 - `a7ea8c1`  2026-07-02  Add one-command sudo setup script for self-heal reboot
@@ -18,7 +19,6 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 - `f6d2196`  2026-07-01  Add per-event Ticketmaster scheduler
 - `c57c29d`  2026-07-01  Fix session health block handling
 - `b31a0f3`  2026-07-01  Add Uptime tab, fix History-tab crash, ticket-seen stats, ntfy push UI
-- `dc7fefd`  2026-06-24  Anti-block: headful Chrome, human-like nav, fast adaptive cadence
 
 Full history: [CHANGELOG.md](CHANGELOG.md)
 <!-- CHANGELOG_END -->

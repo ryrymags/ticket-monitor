@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `0332e49`  2026-07-02 10:19  Fix self-heal reboot: root-owned wrapper instead of unreadable redirect
+- `5c7c0cf`  2026-07-02 10:47  Switch self-heal reboot from FileVault authrestart to plain reboot
+
+- `d82b6b8`  2026-07-02 10:19  Fix self-heal reboot: root-owned wrapper instead of unreadable redirect
 
 - `36643e5`  2026-07-02 10:15  Fix doctor-lite profile clash (stray about:blank tabs), 30min reboot threshold, per-concert uptime timeline
 
