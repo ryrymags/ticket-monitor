@@ -495,11 +495,44 @@ def run_test_ticket_alert_matrix(config_path: str):
     print("Synthetic ticket alert matrix sent.")
 
 
+MONITOR_LOCK_FILE = "logs/monitor.lock"
+
+
+def acquire_single_instance_lock():
+    """Take an exclusive flock so launchd and a GUI-spawned monitor can never run
+    (and fight over the Chrome profile) at the same time. Returns the open lock
+    file handle to keep alive for the process lifetime, or None if another
+    monitor already holds it."""
+    import fcntl
+
+    os.makedirs(os.path.dirname(MONITOR_LOCK_FILE), exist_ok=True)
+    lock_handle = open(MONITOR_LOCK_FILE, "a+", encoding="utf-8")
+    try:
+        fcntl.flock(lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        lock_handle.close()
+        return None
+    lock_handle.seek(0)
+    lock_handle.truncate()
+    lock_handle.write(str(os.getpid()))
+    lock_handle.flush()
+    return lock_handle
+
+
 def run_monitor(config_path: str, once: bool = False):
     """Start the monitoring loop."""
     config = load_config(config_path)
     setup_logging(config.log_level, config.log_file, config.log_max_file_size_mb, config.log_backup_count)
     logger = logging.getLogger("monitor")
+
+    lock_handle = acquire_single_instance_lock()
+    if lock_handle is None:
+        logger.error(
+            "Another monitor instance already holds %s — exiting. "
+            "(Use scripts/monitorctl.sh or the GUI to manage the running one.)",
+            MONITOR_LOCK_FILE,
+        )
+        sys.exit(1)
 
     notifier = build_notifier(config)
     state = MonitorState()

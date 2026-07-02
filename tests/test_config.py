@@ -86,11 +86,11 @@ class TestLoadConfig:
         assert config.browser_cdp_endpoint_url == "http://127.0.0.1:9222"
         assert config.browser_cdp_connect_timeout_seconds == 10
         assert config.browser_reuse_event_tabs is True
-        assert config.browser_poll_min_seconds == 15
-        assert config.browser_poll_max_seconds == 25
+        assert config.browser_poll_min_seconds == 60
+        assert config.browser_poll_max_seconds == 120
         assert config.browser_per_event_scheduler_enabled is True
-        assert config.browser_per_event_poll_min_seconds == 45
-        assert config.browser_per_event_poll_max_seconds == 105
+        assert config.browser_per_event_poll_min_seconds == 60
+        assert config.browser_per_event_poll_max_seconds == 120
         assert config.browser_per_event_min_gap_between_checks_seconds == 60
         assert config.browser_per_event_max_gap_between_checks_seconds == 120
         assert config.browser_event_weights["EXAMPLEEVENT0001"] == 2.0

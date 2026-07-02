@@ -365,6 +365,51 @@ class MonitorState:
         self._health()["auth_pause_until"] = _dt_to_iso(dt) if dt else None
         self.save()
 
+    # ---- Variation probe (block-scope diagnosis) ----
+
+    def get_last_variation_probe_at(self) -> datetime | None:
+        return _iso_to_dt(self._health().get("last_variation_probe_at"))
+
+    def set_last_variation_probe_at(self, dt: datetime | None):
+        self._health()["last_variation_probe_at"] = _dt_to_iso(dt) if dt else None
+        self.save()
+
+    def get_variation_probe_report(self) -> dict | None:
+        """Latest block-scope verdict from src.variation_probe (guardian reads this to
+        decide whether a last-resort reboot could even help)."""
+        report = self._health().get("variation_probe_report")
+        return report if isinstance(report, dict) else None
+
+    def set_variation_probe_report(self, report: dict | None):
+        self._health()["variation_probe_report"] = report
+        self.save()
+
+    # ---- Self-heal reboot history (survives the reboot — that's the point) ----
+
+    def record_selfheal_reboot(self, dt: datetime | None = None):
+        now = dt or datetime.now(timezone.utc)
+        health = self._health()
+        events = health.setdefault("selfheal_reboot_events", [])
+        events.append(_dt_to_iso(now))
+        # Keep a bounded history; the rate-limiter only looks 24h back.
+        del events[:-20]
+        self.save()
+
+    def get_selfheal_reboots_recent(self, window_seconds: int, now: datetime | None = None) -> int:
+        if window_seconds < 1:
+            return 0
+        return self._count_iso_list_within(
+            self._health().get("selfheal_reboot_events", []),
+            now=now or datetime.now(timezone.utc),
+            window=timedelta(seconds=window_seconds),
+        )
+
+    def get_last_selfheal_reboot_at(self) -> datetime | None:
+        events = self._health().get("selfheal_reboot_events", [])
+        if not isinstance(events, list) or not events:
+            return None
+        return _iso_to_dt(events[-1])
+
     def set_degraded_state(
         self,
         degraded: bool,

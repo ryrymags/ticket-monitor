@@ -38,6 +38,15 @@ MAX_ATTENTION_ALERT_ATTEMPTS = 6
 # Cap on a single challenge-cooldown sleep so the loop keeps re-evaluating the
 # manual-action escalation (the cooldown itself persists in state and resumes).
 CHALLENGE_COOLDOWN_SLEEP_CAP_SECONDS = 120
+
+# Detail-completion retry: when a sighting's price/section/quantity didn't all parse
+# (common on the first check or two of a drop), re-check that event a few times on a
+# short leash, then return to the normal 60-120s cadence. This is deliberately the
+# ONLY situation that speeds polling up — fast polling after a complete sighting buys
+# nothing and invites a bot-detection pause.
+DETAIL_RETRY_MAX_ATTEMPTS = 3
+DETAIL_RETRY_MIN_SECONDS = 20.0
+DETAIL_RETRY_MAX_SECONDS = 30.0
 # Absolute path so the fallback terminal commands work from any directory — the old
 # relative "scripts/monitorctl.sh" only worked if you'd already cd'd into the repo.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -204,6 +213,8 @@ class MonitorScheduler:
         self._cycle_bad_checks: int = 0
         self._event_schedule: dict[str, datetime] = {}
         self._next_event_check_not_before: datetime | None = None
+        # Per-event count of consecutive detail-completion retries (see module constants).
+        self._detail_retry_counts: dict[str, int] = {}
 
     def stop(self):
         """Signal the loop to stop."""
@@ -609,11 +620,34 @@ class MonitorScheduler:
 
     def _reschedule_event(self, event_id: str, checked_at: datetime, result: Any | None):
         interval = self._event_interval_seconds(event_id)
+        gap = self._next_check_gap_seconds()
         if self._result_needs_event_cooldown(result):
             interval = max(interval, self._blocked_event_cooldown_seconds(result, checked_at))
+            self._detail_retry_counts.pop(event_id, None)
+        elif self._needs_detail_retry(result):
+            attempts = self._detail_retry_counts.get(event_id, 0)
+            if attempts < DETAIL_RETRY_MAX_ATTEMPTS:
+                self._detail_retry_counts[event_id] = attempts + 1
+                interval = self._rand.uniform(DETAIL_RETRY_MIN_SECONDS, DETAIL_RETRY_MAX_SECONDS)
+                # Let the follow-up through the global gap too — but only this one check.
+                gap = interval
+                logger.info(
+                    "[%s] sighting missing price/section/quantity — detail retry %d/%d in %.0fs",
+                    event_id,
+                    attempts + 1,
+                    DETAIL_RETRY_MAX_ATTEMPTS,
+                    interval,
+                )
+            else:
+                logger.info(
+                    "[%s] detail retries exhausted (%d) — back to normal cadence",
+                    event_id,
+                    attempts,
+                )
+        else:
+            self._detail_retry_counts.pop(event_id, None)
         self._event_schedule[event_id] = checked_at + timedelta(seconds=interval)
 
-        gap = self._next_check_gap_seconds()
         if gap > 0:
             self._next_event_check_not_before = checked_at + timedelta(seconds=gap)
         else:
@@ -849,11 +883,10 @@ class MonitorScheduler:
         # stop feeding the block; clear it the moment a check comes back clean.
         self._update_challenge_cooldown(result=result, status=status, now=now)
 
-        # Any sign of life → force max-speed polling (reset adaptive backoff) so we catch
-        # the rest of a live ~2-min drop window at the floor cadence instead of a backed-off
-        # one. Blind checks are excluded — those should keep backing off.
-        if not blind and self._has_activity_signal(result):
-            self._cadence_backoff = 1.0
+        # Deliberately NO fast polling on a sighting: the alert already fired, and
+        # hammering right when inventory appears is when bot detection is most likely
+        # to pause us. The only speed-up is the bounded detail-completion retry in
+        # _reschedule_event, for sightings whose price/section/quantity didn't parse.
 
         if blind:
             count = self.state.increment_consecutive_blocked(event_id)
@@ -1164,18 +1197,17 @@ class MonitorScheduler:
             )
 
     @staticmethod
-    def _has_activity_signal(result) -> bool:
-        """Any sign of life on the page — availability, a positive probe signal, or an
-        offer/CTA DOM hit — used to snap the cadence back to max speed for a live drop."""
-        if getattr(result, "available", False):
-            return True
-        if result.signal_type != ProbeSignalType.NONE:
-            return True
-        indicators = result.raw_indicators if isinstance(result.raw_indicators, dict) else {}
-        dom = indicators.get("dom_signals") or []
-        # Only STRONG inventory signals — generic Buy/Find CTAs are noisy and present
-        # even while offsale (see BrowserProbe._is_available), so they don't count.
-        return any(sig in {"offer_card_ui", "tickets_available_text"} for sig in dom)
+    def _needs_detail_retry(result: Any | None) -> bool:
+        """A ticket was sighted but the payload is missing price, section, or the
+        listing (quantity) breakdown — worth a couple of quick follow-up checks so the
+        alert carries complete details."""
+        if result is None or not getattr(result, "available", False):
+            return False
+        return not (
+            getattr(result, "price_summary", None)
+            and getattr(result, "section_summary", None)
+            and getattr(result, "listing_summary", None)
+        )
 
     @staticmethod
     def _is_auth_like_failure(result) -> bool:
@@ -1617,6 +1649,64 @@ class MonitorScheduler:
             self._consecutive_challenges,
             retry_after,
         )
+        # An escalated (tiered) block means the lighter remedies aren't landing — find
+        # out what scope the block actually has so the next remedy isn't a guess.
+        if self._consecutive_challenges >= escalate_after and not self._in_startup_warmup(now):
+            self._maybe_run_variation_probe(now)
+
+    def _maybe_run_variation_probe(self, now: datetime):
+        """Run the 4-way block-scope diagnosis (rate-limited) and apply its remedy.
+
+        Runs inline: the loop is already in a tiered cooldown, so the few minutes the
+        matrix takes are minutes we weren't going to poll anyway.
+        """
+        if not self.config.browser_variation_probe_enabled:
+            return
+        min_interval = max(60, int(self.config.browser_variation_probe_min_interval_seconds))
+        last = self.state.get_last_variation_probe_at()
+        if last is not None and (now - last).total_seconds() < min_interval:
+            return
+        self.state.set_last_variation_probe_at(now)
+        try:
+            from .variation_probe import run_variation_matrix
+
+            report = run_variation_matrix(
+                self.config,
+                event_url=self.config.browser_variation_probe_event_url or None,
+            )
+        except Exception as exc:
+            logger.warning("Variation probe failed: %s", exc)
+            return
+        self.state.set_variation_probe_report(report.to_dict())
+        self._apply_variation_probe_remedy(report.scope)
+
+    def _apply_variation_probe_remedy(self, scope: str):
+        if scope == "profile":
+            # The real profile's bot cookies are the problem — shed them so the next
+            # check gets a fresh DataDome evaluation. (Only on this verdict: clearing
+            # a *trusted* cookie would throw away accumulated trust for nothing.)
+            try:
+                removed = self.probe.clear_block_cookies()
+                logger.warning(
+                    "Variation probe: profile-scoped block — cleared %d bot cookie(s)", removed
+                )
+            except Exception as exc:
+                logger.warning("Variation probe: cookie clear failed: %s", exc)
+        elif scope == "account":
+            # Account-flagged: signed-out contexts are fine, signed-in are blocked.
+            # The existing session-health + auto-reauth machinery owns login state;
+            # the verdict in state.json tells it (and the user) what's going on.
+            logger.warning(
+                "Variation probe: account-scoped block — deferring to session-health/re-login flow"
+            )
+        elif scope == "ip_device":
+            # Nothing cookie-scoped explains it. Waiting is the remedy; if it outlasts
+            # the guardian's threshold, the guardian's reboot tier takes over.
+            logger.warning(
+                "Variation probe: IP/device-scoped block — cooling down; guardian may reboot"
+            )
+        else:
+            logger.info("Variation probe: scope=%s — no automatic remedy", scope)
 
     def _apply_challenge_cooldown(self, sleep_time: float, now: datetime) -> float:
         """Extend this cycle's sleep to cover an active challenge cooldown, but clamp a

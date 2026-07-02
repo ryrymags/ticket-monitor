@@ -59,6 +59,8 @@ def uptime_event_file(event_id: str) -> str:
     """Per-concert uptime ledger filename (co-located with uptime_log.json)."""
     return f"uptime_log_{event_id}.json"
 LOG_FILE = os.path.join("logs", "monitor.log")
+LAUNCHD_MONITOR_LABEL = "com.ticketmonitor"
+LAUNCHD_OUT_LOG = os.path.join("logs", "launchd.out.log")
 
 # Colors
 COLOR_GREEN = "#2ECC71"
@@ -240,12 +242,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "storage_state_path": "secrets/tm_storage_state.json",
         "user_data_dir": "secrets/tm_profile",
         "channel": "chrome",
-        "poll_min_seconds": 12,
-        "poll_max_seconds": 24,
+        "poll_min_seconds": 60,
+        "poll_max_seconds": 120,
         "per_event_scheduler_enabled": True,
-        "per_event_poll_min_seconds": 45,
-        "per_event_poll_max_seconds": 105,
-        "per_event_min_gap_between_checks_seconds": 20,
+        "per_event_poll_min_seconds": 60,
+        "per_event_poll_max_seconds": 120,
+        "per_event_min_gap_between_checks_seconds": 60,
+        "per_event_max_gap_between_checks_seconds": 120,
         "event_weights": {
             "EXAMPLEEVENT0001": 2,
             "EXAMPLEEVENT0002": 1,
@@ -1842,8 +1845,39 @@ class TicketMonitorApp(ctk.CTk):
         threading.Thread(target=run, daemon=True).start()
 
     # ── Monitor process management ────────────────────────────────────────────
+    #
+    # Two modes:
+    #  • launchd-managed (dashboard mode): the com.ticketmonitor LaunchAgent owns the
+    #    monitor (survives reboots; guardian watches it). The GUI drives it through
+    #    monitorctl.sh and tails logs/launchd.out.log. Never spawn a second monitor —
+    #    monitor.py's single-instance lock would reject it anyway.
+    #  • standalone: no LaunchAgent installed → original behavior (GUI spawns
+    #    monitor.py as a subprocess and reads its pipe).
+
+    def _launchd_monitor_state(self) -> bool | None:
+        """True/False = LaunchAgent installed and running/stopped; None = not installed."""
+        try:
+            result = subprocess.run(
+                ["launchctl", "print", f"gui/{os.getuid()}/{LAUNCHD_MONITOR_LABEL}"],
+                capture_output=True, text=True, timeout=5,
+            )
+        except Exception:
+            return None
+        if result.returncode != 0:
+            return None
+        return "state = running" in (result.stdout + result.stderr)
 
     def _toggle_monitor(self):
+        launchd_state = self._launchd_monitor_state()
+        if launchd_state is not None:
+            if launchd_state:
+                self._append_log("\n--- Stopping launchd-managed monitor ---\n")
+                self._run_monitorctl("stop")
+            else:
+                self._save_config()
+                self._append_log("\n--- Starting launchd-managed monitor ---\n")
+                self._run_monitorctl("start")
+            return
         if self._monitor_proc and self._monitor_proc.poll() is None:
             self._stop_monitor()
         else:
@@ -1948,8 +1982,37 @@ class TicketMonitorApp(ctk.CTk):
         self._poll_status()
         self._status_poll_id = self.after(10_000, self._schedule_status_poll)
 
+    def _poll_launchd_log(self):
+        """Append new lines from the launchd monitor log to Live Logs (dashboard mode)."""
+        try:
+            size = os.path.getsize(LAUNCHD_OUT_LOG)
+        except OSError:
+            return
+        pos = getattr(self, "_launchd_log_pos", None)
+        if pos is None or pos > size:
+            # First poll (or log rotated): start from the tail, don't dump history.
+            self._launchd_log_pos = size
+            return
+        if size == pos:
+            return
+        try:
+            with open(LAUNCHD_OUT_LOG, "r", encoding="utf-8", errors="replace") as fh:
+                fh.seek(pos)
+                chunk = fh.read(min(size - pos, 65536))
+                self._launchd_log_pos = fh.tell()
+        except OSError:
+            return
+        if chunk:
+            self._append_log(chunk)
+
     def _poll_status(self):
-        running = bool(self._monitor_proc and self._monitor_proc.poll() is None)
+        launchd_state = self._launchd_monitor_state()
+        if launchd_state is not None:
+            running = launchd_state
+            if running:
+                self._poll_launchd_log()
+        else:
+            running = bool(self._monitor_proc and self._monitor_proc.poll() is None)
         self._update_status_bar(running)
         self._refresh_monitor_events_panel()
         self._refresh_monitor_health_stats()

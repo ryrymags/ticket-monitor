@@ -23,10 +23,18 @@ if str(ROOT_DIR) not in sys.path:
 from src.config import MonitorConfig, load_config
 from src.notifier import DiscordNotifier
 from src.state import MonitorState
+from src.uptime import current_status, load_uptime_segments
 
 MONITOR_LABEL = "com.ticketmonitor"
 BROWSER_HOST_LABEL = f"{MONITOR_LABEL}.browser-host"
 LOG_FILE = ROOT_DIR / "logs" / "guardian.log"
+UPTIME_LOG_FILE = ROOT_DIR / "uptime_log.json"
+
+# Last-resort reboot: FileVault authenticated restart. The credentials plist and the
+# matching NOPASSWD sudoers entry are one-time manual setup (see deploy/setup_macos.sh
+# output) — without them the reboot tier degrades to a Discord notice.
+AUTHRESTART_INPUT_PLIST = Path("/etc/ticketmonitor/authrestart.plist")
+AUTHRESTART_COMMAND = ["sudo", "-n", "/usr/bin/fdesetup", "authrestart", "-inputplist"]
 
 
 @dataclass
@@ -183,6 +191,163 @@ def build_unhealthy_reason(service: ServiceStatus, stale: bool, stale_age_second
     return ", ".join(reasons) or "unknown_health_issue"
 
 
+def get_system_uptime_seconds(now: datetime | None = None) -> float:
+    """Seconds since the Mac booted (0.0 when unknown, which fails the uptime guard)."""
+    try:
+        proc = subprocess.run(
+            ["sysctl", "-n", "kern.boottime"], capture_output=True, text=True, timeout=5
+        )
+    except Exception:
+        return 0.0
+    match = re.search(r"sec\s*=\s*(\d+)", proc.stdout or "")
+    if not match:
+        return 0.0
+    booted = datetime.fromtimestamp(int(match.group(1)), tz=timezone.utc)
+    return max(0.0, ((now or datetime.now(timezone.utc)) - booted).total_seconds())
+
+
+def impaired_since(now: datetime, segments: list[dict] | None = None) -> datetime | None:
+    """Start of the current contiguous non-healthy stretch in the uptime ledger,
+    or None when the monitor is currently healthy."""
+    if segments is None:
+        segments = load_uptime_segments(str(UPTIME_LOG_FILE))
+    if not segments:
+        return None
+    status = current_status(segments, now=now)
+    if status.get("state") == "healthy":
+        return None
+    since: datetime | None = None
+    for segment in reversed(segments):
+        if segment.get("state") == "healthy":
+            break
+        start = segment.get("start")
+        try:
+            since = datetime.fromisoformat(str(start))
+        except (TypeError, ValueError):
+            break
+    return since
+
+
+def evaluate_reboot(
+    *,
+    config: MonitorConfig,
+    now: datetime,
+    impaired_start: datetime | None,
+    probe_scope: str | None,
+    system_uptime_seconds: float,
+    last_reboot_at: datetime | None,
+    reboots_last_day: int,
+    fix_attempts_last_hour: int,
+) -> tuple[bool, str]:
+    """Decide whether a last-resort self-heal reboot is warranted (pure function).
+
+    Returns (should_reboot, reason). Every guard is designed so a reboot can never
+    loop: minimum impairment duration, minimum system uptime since the LAST boot,
+    minimum spacing between self-heal reboots, and a hard daily cap.
+    """
+    if not config.watchdog_reboot_enabled:
+        return False, "reboot_disabled"
+    if impaired_start is None:
+        return False, "not_impaired"
+    impaired_seconds = (now - impaired_start).total_seconds()
+    if impaired_seconds < config.watchdog_reboot_after_impaired_seconds:
+        return False, f"impaired_only_{int(impaired_seconds)}s"
+    # A reboot only plausibly helps when the block isn't cookie- or account-scoped.
+    # Those scopes have targeted remedies; rebooting would burn a slot for nothing.
+    if probe_scope in {"profile", "account", "none"}:
+        return False, f"scope_{probe_scope}_has_targeted_remedy"
+    if fix_attempts_last_hour < 1:
+        return False, "lighter_remedies_not_tried_yet"
+    if system_uptime_seconds < config.watchdog_reboot_min_system_uptime_seconds:
+        return False, f"system_uptime_only_{int(system_uptime_seconds)}s"
+    if last_reboot_at is not None:
+        spacing = (now - last_reboot_at).total_seconds()
+        if spacing < config.watchdog_reboot_min_spacing_seconds:
+            return False, f"last_selfheal_reboot_{int(spacing)}s_ago"
+    if reboots_last_day >= config.watchdog_reboot_max_per_day:
+        return False, "daily_reboot_cap_reached"
+    return True, f"impaired_{int(impaired_seconds)}s_scope_{probe_scope or 'unknown'}"
+
+
+def authrestart_available() -> tuple[bool, str]:
+    if not AUTHRESTART_INPUT_PLIST.exists():
+        return False, f"missing {AUTHRESTART_INPUT_PLIST} (run the one-time sudo setup)"
+    try:
+        proc = subprocess.run(
+            ["fdesetup", "supportsauthrestart"], capture_output=True, text=True, timeout=5
+        )
+    except Exception as exc:
+        return False, f"fdesetup unavailable: {exc}"
+    if "true" not in (proc.stdout or "").lower():
+        return False, "this Mac does not support FileVault authenticated restart"
+    return True, "ok"
+
+
+def trigger_selfheal_reboot(state: MonitorState, notifier: DiscordNotifier, reason: str, now: datetime) -> bool:
+    """Record the reboot, tell Discord, then authrestart. Recording happens FIRST so
+    the rate-limiter survives even if the machine goes down mid-call."""
+    logger = logging.getLogger("guardian")
+    state.record_selfheal_reboot(now)
+    try:
+        notifier.send_auto_fix_action(
+            action="selfheal_reboot",
+            reason=reason,
+            context={"reason_code": "guardian_selfheal_reboot"},
+            auto_fix_planned="filevault_authrestart",
+        )
+    except Exception as exc:  # Discord must never block the reboot
+        logger.warning("Reboot notice failed to send: %s", exc)
+    logger.warning("Triggering self-heal reboot: %s", reason)
+    try:
+        with open(AUTHRESTART_INPUT_PLIST, "rb") as plist:
+            proc = subprocess.run(AUTHRESTART_COMMAND, stdin=plist, capture_output=True, text=True, timeout=60)
+    except Exception as exc:
+        logger.error("authrestart failed to launch: %s", exc)
+        return False
+    if proc.returncode != 0:
+        logger.error(
+            "authrestart exited %d: %s", proc.returncode, (proc.stderr or proc.stdout).strip()
+        )
+        return False
+    return True
+
+
+def maybe_selfheal_reboot(
+    config: MonitorConfig, state: MonitorState, notifier: DiscordNotifier, now: datetime
+) -> bool:
+    """Run the reboot decision; returns True when a reboot was triggered."""
+    logger = logging.getLogger("guardian")
+    if not config.watchdog_reboot_enabled:
+        return False
+    probe_report = state.get_variation_probe_report() or {}
+    should, reason = evaluate_reboot(
+        config=config,
+        now=now,
+        impaired_start=impaired_since(now),
+        probe_scope=probe_report.get("scope"),
+        system_uptime_seconds=get_system_uptime_seconds(now),
+        last_reboot_at=state.get_last_selfheal_reboot_at(),
+        reboots_last_day=state.get_selfheal_reboots_recent(86400, now=now),
+        fix_attempts_last_hour=state.get_guardian_fix_attempts_last_hour(),
+    )
+    if not should:
+        logger.debug("Reboot tier: not warranted (%s)", reason)
+        return False
+    available, detail = authrestart_available()
+    if not available:
+        logger.error("Reboot warranted (%s) but authrestart unavailable: %s", reason, detail)
+        if should_alert_critical(state, now=now):
+            notifier.send_critical_attention(
+                f"A self-heal reboot is warranted ({reason}) but FileVault authrestart "
+                f"is not set up: {detail}",
+                context={"reason_code": "guardian_reboot_unavailable"},
+                next_steps=["Run the one-time sudo setup printed by deploy/setup_macos.sh"],
+            )
+            state.set_guardian_last_critical_alert_at(now)
+        return False
+    return trigger_selfheal_reboot(state, notifier, reason, now)
+
+
 def should_alert_critical(state: MonitorState, now: datetime, cooldown_seconds: int = 1800) -> bool:
     last = state.get_guardian_last_critical_alert_at()
     if last is None:
@@ -222,6 +387,13 @@ def run_guardian(config: MonitorConfig, force_fix: bool = False) -> int:
     if config.browser_session_mode == "cdp_attach":
         cdp_reachable = _cdp_endpoint_reachable(config.browser_cdp_endpoint_url)
     unhealthy = force_fix or not service.running or stale or error_burst or not cdp_reachable
+
+    # Last-resort tier runs on every pass, independent of process liveness: a monitor
+    # that is alive but has been blocked for 45+ minutes looks "healthy" to the
+    # process checks above, yet is exactly the case a reboot exists for.
+    if maybe_selfheal_reboot(config, state, notifier, now):
+        logger.warning("Self-heal reboot triggered; the machine is going down")
+        return 0
 
     if not unhealthy:
         logger.info(
