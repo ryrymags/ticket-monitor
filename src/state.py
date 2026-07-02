@@ -47,6 +47,28 @@ logger = logging.getLogger(__name__)
 _DELETE_SENTINEL = object()
 
 
+def write_json_atomic(path: str, payload: object, *, indent: int = 2, sort_keys: bool = False) -> None:
+    """Serialize *payload* to *path* atomically and durably.
+
+    Writes to a temp file in the same directory, fsyncs it, then ``os.replace``s
+    it over the target — so a crash mid-write can never leave a truncated or
+    half-written file: readers see either the old file or the complete new one.
+    Used for every JSON file the monitor rewrites in place (state, history, uptime).
+    """
+    dir_name = os.path.dirname(path) or "."
+    os.makedirs(dir_name, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=indent, sort_keys=sort_keys, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+
 def _dt_to_iso(value: datetime) -> str:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
@@ -632,16 +654,7 @@ class MonitorState:
         return loaded
 
     def _write_state_file_unlocked(self, payload: dict):
-        dir_name = os.path.dirname(self.state_file) or "."
-        os.makedirs(dir_name, exist_ok=True)
-        fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(payload, f, indent=2, sort_keys=True)
-            os.replace(tmp_path, self.state_file)
-        finally:
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
+        write_json_atomic(self.state_file, payload, sort_keys=True)
 
     @classmethod
     def _collect_state_updates(cls, previous: object, current: object, path: tuple[str, ...] = ()) -> list[tuple[tuple[str, ...], object]]:

@@ -91,7 +91,8 @@ class TestLoadConfig:
         assert config.browser_per_event_scheduler_enabled is True
         assert config.browser_per_event_poll_min_seconds == 45
         assert config.browser_per_event_poll_max_seconds == 105
-        assert config.browser_per_event_min_gap_between_checks_seconds == 20
+        assert config.browser_per_event_min_gap_between_checks_seconds == 60
+        assert config.browser_per_event_max_gap_between_checks_seconds == 120
         assert config.browser_event_weights["EXAMPLEEVENT0001"] == 2.0
         assert config.browser_event_weights["EXAMPLEEVENT0002"] == 1.0
         assert config.browser_single_event_page is True

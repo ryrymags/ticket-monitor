@@ -53,6 +53,11 @@ CONFIG_FILE = "config.yaml"
 STATE_FILE = "state.json"
 HISTORY_FILE = "ticket_history.json"
 UPTIME_FILE = "uptime_log.json"
+
+
+def uptime_event_file(event_id: str) -> str:
+    """Per-concert uptime ledger filename (co-located with uptime_log.json)."""
+    return f"uptime_log_{event_id}.json"
 LOG_FILE = os.path.join("logs", "monitor.log")
 
 # Colors
@@ -1417,7 +1422,7 @@ class TicketMonitorApp(ctk.CTk):
         frame = ctk.CTkFrame(self._content, fg_color="transparent")
         self._tabs["uptime"] = frame
         frame.grid_columnconfigure(0, weight=1)
-        frame.grid_rowconfigure(5, weight=1)
+        frame.grid_rowconfigure(7, weight=1)
 
         _section_header(frame, "📊  Uptime & Downtime", row=0)
 
@@ -1454,13 +1459,23 @@ class TicketMonitorApp(ctk.CTk):
             bar.grid_propagate(False)
             self._uptime_bars[key] = {"text": text_lbl, "bar": bar, "segs": []}
 
-        # Full timeline (healthy + impaired + down)
+        # Per-concert breakdown — one healthy%/impaired/down line per event, so you can
+        # see which show is getting blocked more. The block above is the combined view.
         ctk.CTkLabel(
-            frame, text="Timeline — every stretch of monitoring & downtime (last 7 days)",
+            frame, text="By concert (past 24 hours)",
             font=ctk.CTkFont(size=12, weight="bold"), anchor="w",
-        ).grid(row=4, column=0, padx=20, pady=(0, 4), sticky="w")
+        ).grid(row=4, column=0, padx=20, pady=(2, 4), sticky="w")
+        self._uptime_per_event_frame = ctk.CTkFrame(frame, fg_color=COLOR_BG_PANEL, corner_radius=8)
+        self._uptime_per_event_frame.grid(row=5, column=0, padx=20, pady=(0, 10), sticky="ew")
+        self._uptime_per_event_frame.grid_columnconfigure(0, weight=1)
+
+        # Full timeline (healthy + impaired + down) — combined across all concerts.
+        ctk.CTkLabel(
+            frame, text="Timeline — every stretch of monitoring & downtime (last 7 days, all concerts)",
+            font=ctk.CTkFont(size=12, weight="bold"), anchor="w",
+        ).grid(row=6, column=0, padx=20, pady=(0, 4), sticky="w")
         self._uptime_list = ctk.CTkScrollableFrame(frame, fg_color=COLOR_BG_PANEL, corner_radius=8)
-        self._uptime_list.grid(row=5, column=0, padx=20, pady=(0, 14), sticky="nsew")
+        self._uptime_list.grid(row=7, column=0, padx=20, pady=(0, 14), sticky="nsew")
         self._uptime_list.grid_columnconfigure(0, weight=1)
 
         self._refresh_uptime_tab(force=True)
@@ -1522,6 +1537,8 @@ class TicketMonitorApp(ctk.CTk):
             )
             self._render_uptime_bar(widgets["bar"], summ)
 
+        self._render_uptime_per_event(now, running)
+
         # Full timeline — rebuild only when the set of rows changes. The ongoing
         # row contributes a stable "ONGOING" token (not its creeping end time) so a
         # still-running state doesn't re-render every poll — it only re-renders when
@@ -1551,6 +1568,49 @@ class TicketMonitorApp(ctk.CTk):
                 self._render_timeline_row(i, r)
             except Exception:
                 logging.exception("Failed to render timeline row %d", i)
+
+    def _event_uptime_summary(self, event_id: str, hours: int, now: datetime, running: bool) -> dict:
+        """Per-concert 24h summary + current state, read from that event's ledger."""
+        segs = load_uptime_segments(uptime_event_file(event_id))
+        summ = summarize_uptime(segs, hours=hours, now=now, monitor_running=running)
+        status = uptime_current_status(segs, now, monitor_running=running)
+        return {"summ": summ, "state": status.get("state", "down"), "has_data": bool(segs)}
+
+    def _render_uptime_per_event(self, now: datetime, running: bool):
+        for w in self._uptime_per_event_frame.winfo_children():
+            w.destroy()
+        if not self._events:
+            ctk.CTkLabel(
+                self._uptime_per_event_frame,
+                text="Add concerts in the Events tab to see per-concert uptime.",
+                text_color="gray50", anchor="w",
+            ).grid(row=0, column=0, padx=14, pady=10, sticky="w")
+            return
+        for i, ev in enumerate(self._events):
+            eid = ev.get("event_id", "")
+            name = ev.get("name") or ev.get("url", "Unknown")
+            info = self._event_uptime_summary(eid, 24, now, running)
+            summ = info["summ"]
+            emoji, _label, color = self._UPTIME_STYLE.get(
+                info["state"], self._UPTIME_STYLE["down"]
+            )
+            ctk.CTkLabel(
+                self._uptime_per_event_frame, text=f"{emoji}  {name[:48]}",
+                font=ctk.CTkFont(size=12, weight="bold"), text_color=color, anchor="w",
+            ).grid(row=i * 2, column=0, padx=14, pady=(10 if i == 0 else 6, 0), sticky="w")
+            if info["has_data"]:
+                detail = (
+                    f"{summ['healthy_pct']}% healthy  ·  "
+                    f"{self._format_duration(summ['healthy_s'])} monitoring · "
+                    f"{self._format_duration(summ['impaired_s'])} impaired · "
+                    f"{self._format_duration(summ['down_s'])} down"
+                )
+            else:
+                detail = "No data yet."
+            ctk.CTkLabel(
+                self._uptime_per_event_frame, text=detail,
+                font=ctk.CTkFont(size=11), text_color="gray70", anchor="w",
+            ).grid(row=i * 2 + 1, column=0, padx=14, pady=(0, 10 if i == len(self._events) - 1 else 4), sticky="w")
 
     def _render_timeline_row(self, i: int, r: dict):
         state = r["state"]
@@ -1644,7 +1704,14 @@ class TicketMonitorApp(ctk.CTk):
             health_frame, text="🎟 Tickets seen: —",
             font=ctk.CTkFont(size=11), text_color="gray70", anchor="w", justify="left",
         )
-        self._health_seen_label.grid(row=4, column=0, padx=14, pady=(0, 10), sticky="w")
+        self._health_seen_label.grid(row=4, column=0, padx=14, pady=(0, 2), sticky="w")
+        # Per-concert healthy% (past 24h), from the same per-event uptime ledgers the
+        # Uptime tab reads — so the two tabs always agree on which show is impaired.
+        self._health_per_event_label = ctk.CTkLabel(
+            health_frame, text="",
+            font=ctk.CTkFont(size=11), text_color="gray60", anchor="w", justify="left",
+        )
+        self._health_per_event_label.grid(row=5, column=0, padx=14, pady=(0, 10), sticky="w")
 
         # ── Events status panel ───────────────────────────────────────────────
         self._monitor_events_frame = ctk.CTkScrollableFrame(
@@ -1730,9 +1797,17 @@ class TicketMonitorApp(ctk.CTk):
         self._log_text.delete("1.0", "end")
         self._log_text.configure(state="disabled")
 
+    # Cap the live-log widget so a 24/7 session doesn't grow the textbox buffer
+    # unbounded (RAM creep + sluggish rendering). Keep the most recent N lines.
+    _MAX_LOG_LINES = 1500
+
     def _append_log(self, line: str):
         self._log_text.configure(state="normal")
         self._log_text.insert("end", line)
+        # Trim from the top once we exceed the cap so memory/latency stay flat.
+        line_count = int(self._log_text.index("end-1c").split(".")[0])
+        if line_count > self._MAX_LOG_LINES:
+            self._log_text.delete("1.0", f"{line_count - self._MAX_LOG_LINES}.0")
         self._log_text.see("end")
         self._log_text.configure(state="disabled")
 
@@ -1922,6 +1997,25 @@ class TicketMonitorApp(ctk.CTk):
             self._health_seen_label.configure(text=self._tickets_seen_text(history))
         except Exception:
             pass
+
+        # Per-concert healthy% (past 24h) — same source as the Uptime tab.
+        try:
+            now = datetime.now(timezone.utc)
+            running = bool(self._monitor_proc and self._monitor_proc.poll() is None)
+            lines = []
+            for ev in self._events:
+                info = self._event_uptime_summary(ev.get("event_id", ""), 24, now, running)
+                name = (ev.get("name") or ev.get("url", "Unknown"))[:40]
+                if info["has_data"]:
+                    emoji = self._UPTIME_STYLE.get(info["state"], self._UPTIME_STYLE["down"])[0]
+                    lines.append(f"{emoji} {name}: {info['summ']['healthy_pct']}% healthy")
+                else:
+                    lines.append(f"⚪ {name}: no data yet")
+            self._health_per_event_label.configure(
+                text=("By concert (24h):  " + "     ".join(lines)) if lines else ""
+            )
+        except Exception:
+            self._health_per_event_label.configure(text="")
 
     def _degraded_banner_text(self, health: dict) -> tuple[str, str] | None:
         """Banner mirrors the monitor's persisted status. Blocks/stale are amber and

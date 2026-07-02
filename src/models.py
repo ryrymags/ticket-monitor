@@ -27,6 +27,11 @@ class ProbeResult:
     section_summary: str | None
     raw_indicators: dict[str, Any]
     listing_summary: str | None = None
+    # Akamai _abck trust readout at check time: trusted once sensor.js validates the
+    # session ("~0~"), flagged while unvalidated/suspicious ("~-1~"). Often flips to
+    # flagged before the visible "activity paused" screen appears.
+    abck_trusted: bool = False
+    abck_flagged: bool = False
 
 
 @dataclass

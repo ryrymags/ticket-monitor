@@ -9,7 +9,8 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 ## 📋 Recent Changes
 
 <!-- CHANGELOG_START -->
-- `6dbf995`  2026-07-01  Add per-event Ticketmaster scheduler
+- `8614128`  2026-07-01  Audit fixes: atomic JSON writes, gitignore, robustness, tests
+- `f6d2196`  2026-07-01  Add per-event Ticketmaster scheduler
 - `c57c29d`  2026-07-01  Fix session health block handling
 - `b31a0f3`  2026-07-01  Add Uptime tab, fix History-tab crash, ticket-seen stats, ntfy push UI
 - `dc7fefd`  2026-06-24  Anti-block: headful Chrome, human-like nav, fast adaptive cadence
@@ -18,7 +19,6 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 - `4416213`  2026-06-24  Document ntfy push setup and iOS app deep-link mechanism in README
 - `4d73db2`  2026-06-24  Add ntfy.sh push notifications with iOS app deep-linking
 - `9ea780a`  2026-06-23  Make history de-duper runnable from terminal anywhere + add Mac launcher
-- `6e53adc`  2026-06-23  Add re-runnable ticket-history dedupe cleanup
 
 Full history: [CHANGELOG.md](CHANGELOG.md)
 <!-- CHANGELOG_END -->
@@ -214,6 +214,21 @@ Once you've set up your events, Discord, and logged in:
 
 **Monitor crashes repeatedly**
 → Re-run `setup_mac.command` / `setup_windows.bat` to reinstall dependencies, then try again.
+
+**Getting "activity paused" / blocked a lot (staying healthy)**
+Ticketmaster's Akamai bot wall scores your **home IP + account together**, so the goal is to
+look like one calm human, not a poller:
+- The monitor now checks **one event at a time with a randomized 60–120s gap between any two
+  checks** (config: `per_event_min_gap_between_checks_seconds` / `per_event_max_gap_between_checks_seconds`).
+  Slower is healthier — don't lower these.
+- When it detects a flag/pause it now goes **fully silent** for a cooldown so the block can
+  actually decay, then resumes once Akamai's `_abck` trust cookie reads healthy again. (Watch the
+  `abck=trusted/flagged` field and `Egress network:` line in `logs/monitor.log`.)
+- **Do not stay logged into the same Ticketmaster account on your phone or other browsers while
+  the monitor runs** — simultaneous sessions on one account read as bot-like coordination and
+  raise your risk score. One account, one device (the monitor), at a time.
+- Don't add privacy extensions/adblockers or a VPN to the monitor's Chrome — Ticketmaster treats
+  those as bot signals; a clean, normal browser is safer.
 
 ---
 
