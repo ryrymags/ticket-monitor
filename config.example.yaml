@@ -213,6 +213,10 @@ updates:
     - "requirements.txt"
     - "pyproject.toml"
 
+# ── macOS launchd behavior ─────────────────────────────────────────────────
+macos:
+  prevent_idle_sleep: true              # launchd monitor runs under caffeinate -i -s; display can still lock/sleep
+
 # ── Logging ───────────────────────────────────────────────────────────────
 logging:
   level: "INFO"

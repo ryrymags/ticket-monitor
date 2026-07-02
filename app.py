@@ -333,6 +333,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "stability_delay_seconds": 20,
         "watch_globs": ["monitor.py", "src/**/*.py", "config.yaml", "requirements.txt"],
     },
+    "macos": {
+        "prevent_idle_sleep": True,
+    },
     "logging": {
         "level": "INFO",
         "file": "logs/monitor.log",
@@ -1433,7 +1436,7 @@ class TicketMonitorApp(ctk.CTk):
             frame,
             text="A timestamped record of when the monitor was actually working.\n"
                  "🟢 Monitoring = healthy checks · 🟠 Impaired = running but blocked/stale/signed-out · "
-                 "⚪ Down = laptop asleep, app closed, or no internet.",
+                 "⚪ Down = full sleep, lid close/logout, app stopped, or no internet.",
             text_color="gray60", justify="left",
         ).grid(row=1, column=0, padx=20, pady=(0, 10), sticky="w")
 
@@ -1570,8 +1573,9 @@ class TicketMonitorApp(ctk.CTk):
             ctk.CTkLabel(
                 self._uptime_list,
                 text="No monitoring recorded in the last 7 days yet.\n"
-                     "Start the monitor and every stretch of healthy monitoring, impairment,\n"
-                     "and downtime (laptop asleep, app closed, no internet, or blocking) shows up here.",
+                     "Start the monitor and every stretch of healthy monitoring,\n"
+                     "impairment (such as blocking), and downtime (full sleep, lid close/logout,\n"
+                     "app stopped, or no internet) shows up here.",
                 text_color="gray50", justify="center",
             ).grid(row=0, column=0, padx=20, pady=40)
             return
@@ -1731,17 +1735,16 @@ class TicketMonitorApp(ctk.CTk):
         uptime_frame.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(
             uptime_frame,
-            text="⚠️  Keep this app open (or minimized) and your computer awake 24/7",
+            text="⚠️  macOS launchd keeps monitoring through screen lock/display sleep",
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color="#F39C12", anchor="w",
         ).grid(row=0, column=0, padx=14, pady=(10, 2), sticky="w")
         ctk.CTkLabel(
             uptime_frame,
             text=(
-                "The monitor only runs while this window is open. If your computer sleeps, loses internet,\n"
-                "or this app closes, monitoring stops and you could miss tickets.\n"
-                "Tip: plug in your charger and disable sleep in System Settings → Battery (Mac)\n"
-                "or Settings → System → Power & Sleep (Windows)."
+                "With macOS setup, the background monitor prevents idle sleep while the screen can still lock.\n"
+                "Full system sleep, lid close, logout, shutdown, or internet loss still pauses checks.\n"
+                "Standalone/manual runs still need this app open and the computer awake."
             ),
             font=ctk.CTkFont(size=11), text_color="#c49a2a", anchor="w", justify="left",
         ).grid(row=1, column=0, padx=14, pady=(0, 10), sticky="w")

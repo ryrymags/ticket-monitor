@@ -174,6 +174,20 @@ print(max(10, value))
 PY
 )"
 
+MACOS_PREVENT_IDLE_SLEEP="$(python - <<'PY'
+import yaml
+
+with open("config.yaml", "r", encoding="utf-8") as f:
+    raw = yaml.safe_load(f) or {}
+value = (raw.get("macos", {}) or {}).get("prevent_idle_sleep", True)
+if isinstance(value, str):
+    enabled = value.strip().lower() not in {"false", "0", "no", "n", "off"}
+else:
+    enabled = bool(value)
+print("1" if enabled else "0")
+PY
+)"
+
 if [ "${SESSION_MODE}" != "cdp_attach" ]; then
   echo "Running doctor-lite checks..."
   python monitor.py --doctor-lite --config config.yaml
@@ -187,6 +201,27 @@ BROWSER_HOST_PLIST="$PLIST_DIR/com.ticketmonitor.browser-host.plist"
 GUI_PLIST="$PLIST_DIR/com.ticketmonitor.gui.plist"
 mkdir -p "$PLIST_DIR"
 
+if [ "${MACOS_PREVENT_IDLE_SLEEP}" = "1" ]; then
+  MAIN_PROGRAM_ARGUMENTS="$(cat <<EOF
+    <string>/usr/bin/caffeinate</string>
+    <string>-i</string>
+    <string>-s</string>
+    <string>${REPO_DIR}/venv/bin/python</string>
+    <string>${REPO_DIR}/monitor.py</string>
+    <string>--config</string>
+    <string>${REPO_DIR}/config.yaml</string>
+EOF
+)"
+else
+  MAIN_PROGRAM_ARGUMENTS="$(cat <<EOF
+    <string>${REPO_DIR}/venv/bin/python</string>
+    <string>${REPO_DIR}/monitor.py</string>
+    <string>--config</string>
+    <string>${REPO_DIR}/config.yaml</string>
+EOF
+)"
+fi
+
 cat > "$MAIN_PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -196,10 +231,7 @@ cat > "$MAIN_PLIST" <<EOF
   <string>com.ticketmonitor</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${REPO_DIR}/venv/bin/python</string>
-    <string>${REPO_DIR}/monitor.py</string>
-    <string>--config</string>
-    <string>${REPO_DIR}/config.yaml</string>
+${MAIN_PROGRAM_ARGUMENTS}
   </array>
   <key>WorkingDirectory</key>
   <string>${REPO_DIR}</string>
@@ -444,6 +476,11 @@ echo "  $GUI_PLIST"
 if [ "${BROWSER_HOST_ENABLED}" = "1" ]; then
   echo "  $BROWSER_HOST_PLIST"
 fi
+if [ "${MACOS_PREVENT_IDLE_SLEEP}" = "1" ]; then
+  echo "Sleep prevention: enabled for monitor service (caffeinate -i -s; display can still lock/sleep)"
+else
+  echo "Sleep prevention: disabled (macos.prevent_idle_sleep=false)"
+fi
 echo
 echo "Self-heal reboot (watchdog.reboot in config.yaml) — one-time sudo setup:"
 echo "  Requires FileVault OFF + automatic login configured (System Settings >"
@@ -453,7 +490,7 @@ echo "  Once that's set up, run once:"
 echo "    sudo bash ${REPO_DIR}/scripts/setup_selfheal_reboot.sh"
 echo
 echo "Power settings to prevent interruption (run once):"
-echo "  sudo pmset -a sleep 0 disksleep 0 displaysleep 10"
+echo "  Optional backup to caffeinate: sudo pmset -a sleep 0 disksleep 0 displaysleep 10"
 echo "  sudo pmset -a tcpkeepalive 1 powernap 0"
 echo
 echo "Friendly controls:"
