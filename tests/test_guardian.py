@@ -387,14 +387,28 @@ def test_maybe_selfheal_reboot_records_before_rebooting(tmp_path, monkeypatch):
         return _Proc()
 
     monkeypatch.setattr(guardian.subprocess, "run", _fake_run)
-    monkeypatch.setattr(
-        guardian, "AUTHRESTART_INPUT_PLIST", tmp_path / "authrestart.plist"
-    )
-    (tmp_path / "authrestart.plist").write_text("<plist/>")
 
     rebooted = guardian.maybe_selfheal_reboot(cfg, state, notifier, now)
     assert rebooted is True
-    assert commands and commands[0][:2] == ["sudo", "-n"]
+    # Must invoke the root-owned wrapper via sudo, NEVER a direct
+    # `fdesetup ... < plist` redirect — the calling (non-root) process can't open a
+    # 600 root-owned file, so that redirect would silently fail every time.
+    assert commands and commands[0] == guardian.AUTHRESTART_COMMAND
+    assert commands[0][:2] == ["sudo", "-n"]
+    assert str(guardian.AUTHRESTART_WRAPPER) in commands[0]
     # Reboot history + Discord notice recorded before the restart call.
     assert state.get_last_selfheal_reboot_at() is not None
     assert notifier.auto_fix_calls and notifier.auto_fix_calls[0][0] == "selfheal_reboot"
+
+
+def test_authrestart_available_requires_wrapper_script(tmp_path, monkeypatch):
+    """The plist alone isn't enough — without the root-owned wrapper, guardian would
+    fall back to a direct redirect that a non-root process can never open."""
+    plist = tmp_path / "authrestart.plist"
+    plist.write_text("<plist/>")
+    monkeypatch.setattr(guardian, "AUTHRESTART_INPUT_PLIST", plist)
+    monkeypatch.setattr(guardian, "AUTHRESTART_WRAPPER", tmp_path / "trigger_authrestart.sh")
+
+    available, detail = guardian.authrestart_available()
+    assert available is False
+    assert "trigger_authrestart.sh" in detail

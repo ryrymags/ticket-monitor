@@ -34,7 +34,12 @@ UPTIME_LOG_FILE = ROOT_DIR / "uptime_log.json"
 # matching NOPASSWD sudoers entry are one-time manual setup (see deploy/setup_macos.sh
 # output) — without them the reboot tier degrades to a Discord notice.
 AUTHRESTART_INPUT_PLIST = Path("/etc/ticketmonitor/authrestart.plist")
-AUTHRESTART_COMMAND = ["sudo", "-n", "/usr/bin/fdesetup", "authrestart", "-inputplist"]
+# A root-owned wrapper, NOT a direct `fdesetup ... < plist` invocation: a shell
+# redirect is opened by the CALLING (non-root) process before sudo elevates, so it
+# can never read a 600 root-owned file. sudo execs the wrapper as root first, and the
+# wrapper (now running as root) opens the plist itself. See setup_selfheal_reboot.sh.
+AUTHRESTART_WRAPPER = Path("/etc/ticketmonitor/trigger_authrestart.sh")
+AUTHRESTART_COMMAND = ["sudo", "-n", str(AUTHRESTART_WRAPPER)]
 
 
 @dataclass
@@ -272,6 +277,8 @@ def evaluate_reboot(
 def authrestart_available() -> tuple[bool, str]:
     if not AUTHRESTART_INPUT_PLIST.exists():
         return False, f"missing {AUTHRESTART_INPUT_PLIST} (run the one-time sudo setup)"
+    if not AUTHRESTART_WRAPPER.exists():
+        return False, f"missing {AUTHRESTART_WRAPPER} (run the one-time sudo setup)"
     try:
         proc = subprocess.run(
             ["fdesetup", "supportsauthrestart"], capture_output=True, text=True, timeout=5
@@ -299,8 +306,7 @@ def trigger_selfheal_reboot(state: MonitorState, notifier: DiscordNotifier, reas
         logger.warning("Reboot notice failed to send: %s", exc)
     logger.warning("Triggering self-heal reboot: %s", reason)
     try:
-        with open(AUTHRESTART_INPUT_PLIST, "rb") as plist:
-            proc = subprocess.run(AUTHRESTART_COMMAND, stdin=plist, capture_output=True, text=True, timeout=60)
+        proc = subprocess.run(AUTHRESTART_COMMAND, capture_output=True, text=True, timeout=60)
     except Exception as exc:
         logger.error("authrestart failed to launch: %s", exc)
         return False
