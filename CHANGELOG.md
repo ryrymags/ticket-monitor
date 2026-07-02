@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `efc9118`  2026-07-02 11:07  Close session-health tab after each check instead of parking it
+- `b04bcd0`  2026-07-02 12:14  Keep macOS monitor awake under launchd
+
+- `28a2f85`  2026-07-02 11:07  Close session-health tab after each check instead of parking it
 
 - `89fcb64`  2026-07-02 10:47  Switch self-heal reboot from FileVault authrestart to plain reboot
 

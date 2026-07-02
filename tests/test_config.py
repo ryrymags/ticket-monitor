@@ -129,9 +129,15 @@ class TestLoadConfig:
         assert config.auth_session_logout_confirmations_required == 2
         assert config.watchdog_interval_seconds == 120
         assert config.updates_interval_seconds == 60
+        assert config.macos_prevent_idle_sleep is True
         assert len(config.bingo_configs) == 1
         assert config.bingo_configs[0].name == "BINGO"
         assert config.timezone == "US/Eastern"
+
+    def test_macos_prevent_idle_sleep_can_be_disabled(self, tmp_path):
+        path = _write_config(tmp_path, {"macos.prevent_idle_sleep": False})
+        config = load_config(path)
+        assert config.macos_prevent_idle_sleep is False
 
     def test_loads_multiple_bingo_configs(self, tmp_path):
         path = _write_config(

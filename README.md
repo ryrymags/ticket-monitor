@@ -9,7 +9,8 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 ## 📋 Recent Changes
 
 <!-- CHANGELOG_START -->
-- `efc9118`  2026-07-02  Close session-health tab after each check instead of parking it
+- `b04bcd0`  2026-07-02  Keep macOS monitor awake under launchd
+- `28a2f85`  2026-07-02  Close session-health tab after each check instead of parking it
 - `89fcb64`  2026-07-02  Switch self-heal reboot from FileVault authrestart to plain reboot
 - `d82b6b8`  2026-07-02  Fix self-heal reboot: root-owned wrapper instead of unreadable redirect
 - `36643e5`  2026-07-02  Fix doctor-lite profile clash (stray about:blank tabs), 30min reboot threshold, per-concert uptime timeline
@@ -18,7 +19,6 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 - `b1f4b1a`  2026-07-02  Slow cadence to 60-120s, variation probe, reboot self-heal, boot persistence
 - `159b288`  2026-07-01  Audit fixes: atomic JSON writes, gitignore, robustness, tests
 - `f6d2196`  2026-07-01  Add per-event Ticketmaster scheduler
-- `c57c29d`  2026-07-01  Fix session health block handling
 
 Full history: [CHANGELOG.md](CHANGELOG.md)
 <!-- CHANGELOG_END -->
@@ -183,7 +183,10 @@ Once you've set up your events, Discord, and logged in:
 2. Click **▶ Start Monitor**
 3. You'll see live logs in the app and get Discord alerts when tickets appear
 
-> **Keep the app running** — the monitor stops when you close the app. For 24/7 monitoring, leave your computer on and the app open.
+> **Mac 24/7 note:** `setup_mac.command` installs a launchd background monitor that runs under
+> `caffeinate -i -s`, so screen lock and display sleep are okay. Full system sleep,
+> lid close, logout, shutdown, or internet loss still pauses checks and appears as downtime.
+> Standalone/manual runs still need the app open and the computer awake.
 
 ---
 

@@ -167,6 +167,8 @@ class MonitorConfig:
     watchdog_reboot_min_system_uptime_seconds: int = 1800
     watchdog_reboot_min_spacing_seconds: int = 7200
     watchdog_reboot_max_per_day: int = 3
+    # macOS launchd integration: wrap monitor with caffeinate during setup.
+    macos_prevent_idle_sleep: bool = True
 
 
 DEFAULT_EVENT_WEIGHTS = {
@@ -200,6 +202,7 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
     watchdog = raw.get("watchdog", {})
     updates = raw.get("updates", {})
     browser_host = raw.get("browser_host", {})
+    macos = raw.get("macos", {})
 
     # Backward compat: ignore legacy API keys if present in old config files
     if raw.get("ticketmaster", {}).get("api_key") or os.environ.get("TM_API_KEY"):
@@ -798,6 +801,9 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
     if not updates_watch_globs:
         errors.append("updates.watch_globs must include at least one glob")
 
+    # macOS launchd integration
+    macos_prevent_idle_sleep = safe_bool(macos, "prevent_idle_sleep", True)
+
     if errors:
         print("Configuration errors:")
         for e in errors:
@@ -880,6 +886,7 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
         updates_interval_seconds=updates_interval_seconds,
         updates_stability_delay_seconds=updates_stability_delay_seconds,
         updates_watch_globs=updates_watch_globs,
+        macos_prevent_idle_sleep=macos_prevent_idle_sleep,
         preferences=preferences,
         bingo_configs=bingo_configs,
         timezone=timezone_str,
