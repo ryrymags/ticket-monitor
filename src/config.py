@@ -149,7 +149,8 @@ class MonitorConfig:
     browser_per_event_scheduler_enabled: bool = True
     browser_per_event_poll_min_seconds: int = 45
     browser_per_event_poll_max_seconds: int = 105
-    browser_per_event_min_gap_between_checks_seconds: int = 20
+    browser_per_event_min_gap_between_checks_seconds: int = 60
+    browser_per_event_max_gap_between_checks_seconds: int = 120
     browser_event_weights: dict[str, float] = field(default_factory=dict)
     browser_single_event_page: bool = True
     browser_event_dwell_min_seconds: int = 3
@@ -307,8 +308,14 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
     browser_per_event_min_gap_between_checks_seconds = safe_int(
         browser,
         "per_event_min_gap_between_checks_seconds",
-        20,
+        60,
         "browser.per_event_min_gap_between_checks_seconds",
+    )
+    browser_per_event_max_gap_between_checks_seconds = safe_int(
+        browser,
+        "per_event_max_gap_between_checks_seconds",
+        120,
+        "browser.per_event_max_gap_between_checks_seconds",
     )
     browser_single_event_page = safe_bool(browser, "single_event_page", True)
     browser_event_dwell_min_seconds = safe_int(
@@ -641,6 +648,11 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
         errors.append("browser.per_event_poll_min_seconds must be <= browser.per_event_poll_max_seconds")
     if browser_per_event_min_gap_between_checks_seconds < 0:
         errors.append("browser.per_event_min_gap_between_checks_seconds must be >= 0")
+    if browser_per_event_max_gap_between_checks_seconds < browser_per_event_min_gap_between_checks_seconds:
+        errors.append(
+            "browser.per_event_max_gap_between_checks_seconds must be >= "
+            "browser.per_event_min_gap_between_checks_seconds"
+        )
     if browser_event_dwell_min_seconds < 0:
         errors.append("browser.event_dwell_min_seconds must be >= 0")
     if browser_event_dwell_max_seconds < 0:
@@ -831,6 +843,7 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
         browser_per_event_poll_min_seconds=browser_per_event_poll_min_seconds,
         browser_per_event_poll_max_seconds=browser_per_event_poll_max_seconds,
         browser_per_event_min_gap_between_checks_seconds=browser_per_event_min_gap_between_checks_seconds,
+        browser_per_event_max_gap_between_checks_seconds=browser_per_event_max_gap_between_checks_seconds,
         browser_event_weights=browser_event_weights,
         browser_single_event_page=browser_single_event_page,
         browser_event_dwell_min_seconds=browser_event_dwell_min_seconds,

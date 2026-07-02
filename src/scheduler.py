@@ -55,6 +55,10 @@ REAUTH_MANUAL_STEPS = LOGIN_MANUAL_STEPS
 # After this many consecutive blind checks, escalate the flush: clear the DataDome token
 # (keeping login cookies) to shed a poisoned block cookie. ~2x the outage threshold.
 PROLONGED_BLOCK_COOKIE_FLUSH_MULTIPLIER = 2
+# Consecutive checks with a flagged Akamai `_abck` (~-1~) before we treat it as an early
+# block signal. >1 so the cookie's brief unvalidated state right after a load doesn't
+# trip the circuit-breaker on its own.
+ABCK_FLAG_THRESHOLD = 2
 # A loop iteration that wakes this many seconds later than intended means the system was
 # suspended (sleep) — not the monitor going stale. Re-anchor instead of crying stale.
 SLEEP_OVERSHOOT_SECONDS = 120
@@ -121,10 +125,20 @@ class MonitorScheduler:
         # per cycle; down intervals are inferred from gaps in the stream. Co-located
         # with the state file so it lands beside state.json in prod and inside the
         # tmp dir under tests.
-        uptime_path = os.path.join(
-            os.path.dirname(getattr(state, "state_file", "")) or ".", "uptime_log.json"
-        )
-        self.uptime = UptimeLedger(path=uptime_path)
+        uptime_dir = os.path.dirname(getattr(state, "state_file", "")) or "."
+        self.uptime = UptimeLedger(path=os.path.join(uptime_dir, "uptime_log.json"))
+        # Per-concert timelines: each event gets its own ledger so the Uptime tab can
+        # show "Tuesday 88% healthy / Wednesday 94% healthy" alongside the combined
+        # view, and the Monitor tab's per-event status stays consistent with it.
+        self._event_uptime: dict[str, UptimeLedger] = {
+            ev.event_id: UptimeLedger(
+                path=os.path.join(uptime_dir, f"uptime_log_{ev.event_id}.json")
+            )
+            for ev in self.config.events
+        }
+        # Latest per-event health ("healthy"/"impaired"), set when an event is checked
+        # and reused on cycles that checked a *different* event (round-robin).
+        self._event_state: dict[str, str] = {}
 
         self.probe = probe or BrowserProbe(
             storage_state_path=config.browser_storage_state_path,
@@ -170,6 +184,10 @@ class MonitorScheduler:
         # Challenge circuit-breaker: consecutive captcha/challenge (or 429) checks drive
         # an exponential cooldown so we stop hammering a fingerprint that's being blocked.
         self._consecutive_challenges: int = 0
+        # Consecutive checks whose Akamai `_abck` cookie read as flagged (~-1~). A single
+        # flagged read is normal right after a load (the cookie is briefly unvalidated),
+        # so we only treat it as an early block signal once it's sustained.
+        self._consecutive_abck_flagged: int = 0
         # Staleness only counts time the monitor is actually running — anchored at start
         # and re-anchored after a detected system sleep (set in run()).
         self._uptime_anchor: datetime = start_time
@@ -194,6 +212,12 @@ class MonitorScheduler:
     def run(self):
         """Main loop — runs until stop() is called or interrupted."""
         logger.info("Monitor started. Checking %d event(s).", len(self.config.events))
+        try:
+            from .egress import get_egress, describe
+
+            logger.info("Egress network: %s", describe(get_egress()))
+        except Exception as exc:  # diagnostics only — never block startup on this
+            logger.debug("Egress diagnostic unavailable: %s", exc)
         # Fresh run: don't inherit a stale degraded/attention clock from before a restart
         # or sleep. The stale clock only counts time the monitor is actually running.
         self._uptime_anchor = datetime.now(timezone.utc)
@@ -203,6 +227,8 @@ class MonitorScheduler:
         # Close any downtime gap right at startup so the recorded "down" spans
         # last-check → this moment (monitor start), not last-check → first pull.
         self.uptime.mark_online()
+        for _led in self._event_uptime.values():
+            _led.mark_online()
         try:
             self.probe.start()
         except BrowserProbeError as exc:
@@ -305,6 +331,8 @@ class MonitorScheduler:
 
         self.probe.close()
         self.uptime.flush()
+        for _led in self._event_uptime.values():
+            _led.flush()
 
     def _record_uptime_heartbeat(
         self,
@@ -326,15 +354,13 @@ class MonitorScheduler:
             # can't see tickets at all. Ticketmaster *blocking* still returns a page,
             # so that path never sets this flag and stays impaired.
             if connectivity_lost or self._cycle_connectivity_down:
-                self.uptime.heartbeat(now, "down", "no_internet", expected_gap_seconds=gap)
-                return
-
+                state, out_reason = "down", "no_internet"
             # Classify from THIS cycle's actual results — not lagging cadence/outage
             # flags. Clean scans (even sold-out) are healthy. A block/challenge/error
             # from this cycle is impaired. Session-only problems are used only when
             # no event data flowed this cycle, so the timeline measures monitor
             # visibility while the banner reports auth state.
-            if reason is not None or self._cycle_bad_checks > 0:
+            elif reason is not None or self._cycle_bad_checks > 0:
                 state, out_reason = "impaired", (reason or "blocked")
             elif self._cycle_healthy_checks > 0:
                 state, out_reason = "healthy", None
@@ -351,8 +377,44 @@ class MonitorScheduler:
                         out_reason = "blocked" if needs_slow_retry else None
 
             self.uptime.heartbeat(now, state, out_reason, expected_gap_seconds=gap)
+            self._record_event_uptime_heartbeats(now, state, out_reason, gap)
         except Exception as exc:  # pragma: no cover - telemetry must never crash the loop
             logger.debug("uptime heartbeat failed: %s", exc)
+
+    def _record_event_uptime_heartbeats(
+        self, now: datetime, combined_state: str, combined_reason: str | None, gap: float | None
+    ):
+        """Heartbeat each per-concert ledger for the cycle just completed.
+
+        Monitor-wide conditions apply to every concert: no internet -> down for all;
+        an active challenge cooldown (we go fully silent) -> impaired for all. Otherwise
+        each event uses its own most recent check outcome (``_event_state``) or its
+        persisted outage flag, so a concert that's paused while the other is healthy is
+        recorded as such — keeping the Uptime tab's per-concert view in step with the
+        Monitor tab's per-event status.
+        """
+        if not self._event_uptime:
+            return
+        cooldown_until = self.state.get_challenge_cooldown_until()
+        in_cooldown = cooldown_until is not None and now < cooldown_until
+        for event_id, led in self._event_uptime.items():
+            if combined_state == "down":
+                ev_state, ev_reason = "down", combined_reason or "no_internet"
+            elif in_cooldown or self.state.get_in_outage_state(event_id):
+                ev_state, ev_reason = "impaired", "blocked"
+            else:
+                cached = self._event_state.get(event_id)
+                if cached == "impaired":
+                    ev_state, ev_reason = "impaired", "blocked"
+                elif cached == "healthy":
+                    ev_state, ev_reason = "healthy", None
+                else:
+                    # No fresh per-event signal yet this session — mirror combined.
+                    ev_state, ev_reason = combined_state, combined_reason
+            try:
+                led.heartbeat(now, ev_state, ev_reason, expected_gap_seconds=gap)
+            except Exception:  # pragma: no cover - telemetry must never crash the loop
+                pass
 
     def run_once(self):
         """Run a single check cycle and return (for --once mode)."""
@@ -468,11 +530,12 @@ class MonitorScheduler:
             return _EventCheckOutcome(needs_slow_retry=True)
 
         logger.info(
-            "[%s] available=%s blocked=%s challenge=%s signal=%s confidence=%.2f",
+            "[%s] available=%s blocked=%s challenge=%s abck=%s signal=%s confidence=%.2f",
             event_cfg.name,
             probe_result.available,
             probe_result.blocked,
             probe_result.challenge_detected,
+            self._abck_label(probe_result),
             probe_result.signal_type.value,
             probe_result.signal_confidence,
         )
@@ -510,7 +573,16 @@ class MonitorScheduler:
             return None, max(0.0, (gap_target - now).total_seconds())
 
         event_by_id = {event.event_id: event for event in self.config.events}
-        earliest_due = min(self._event_schedule[event.event_id] for event in self.config.events)
+        due_times = [
+            self._event_schedule[event.event_id]
+            for event in self.config.events
+            if event.event_id in self._event_schedule
+        ]
+        if not due_times:
+            # Schedule unexpectedly empty (corrupted/cleared) — back off a beat and let
+            # the next cycle re-seed it via _ensure_event_schedule rather than raising.
+            return None, 1.0
+        earliest_due = min(due_times)
         if earliest_due > now:
             return None, max(0.0, (earliest_due - now).total_seconds())
 
@@ -541,11 +613,40 @@ class MonitorScheduler:
             interval = max(interval, self._blocked_event_cooldown_seconds(result, checked_at))
         self._event_schedule[event_id] = checked_at + timedelta(seconds=interval)
 
-        gap = max(0, int(self.config.browser_per_event_min_gap_between_checks_seconds))
+        gap = self._next_check_gap_seconds()
         if gap > 0:
             self._next_event_check_not_before = checked_at + timedelta(seconds=gap)
         else:
             self._next_event_check_not_before = checked_at
+
+    @staticmethod
+    def _abck_label(result: Any) -> str:
+        """Compact Akamai trust label for the per-check log line."""
+        if getattr(result, "abck_trusted", False):
+            return "trusted"
+        if getattr(result, "abck_flagged", False):
+            return "flagged"
+        return "n/a"
+
+    def _next_check_gap_seconds(self) -> float:
+        """Randomized floor between *any* two Ticketmaster checks, globally.
+
+        This is the primary anti-block lever: with several events configured the
+        round-robin would otherwise touch Ticketmaster as often as the smallest
+        per-event interval allows. A single randomized 60-120s global gap keeps the
+        browser's aggregate request rate low and non-robotic regardless of how many
+        events are being watched.
+        """
+        low = max(0, int(self.config.browser_per_event_min_gap_between_checks_seconds))
+        high = max(low, int(self.config.browser_per_event_max_gap_between_checks_seconds))
+        # Never allow a literal 0 gap: with several events all due at once (e.g. at
+        # startup) a 0 floor would fire back-to-back checks with no spacing — the exact
+        # request burst this lever exists to prevent. Keep at least a 1s floor.
+        low = max(1, low)
+        high = max(low, high)
+        if high <= low:
+            return float(low)
+        return self._rand.uniform(float(low), float(high))
 
     def _event_interval_seconds(self, event_id: str) -> float:
         low = float(self.config.browser_per_event_poll_min_seconds)
@@ -723,6 +824,10 @@ class MonitorScheduler:
         http_unhealthy = isinstance(status, int) and not (200 <= status < 400)
         no_signal = result.signal_type == ProbeSignalType.NONE and http_unhealthy
         blind = result.blocked or result.challenge_detected or no_signal
+
+        # Remember this concert's latest health so its per-event uptime ledger keeps
+        # recording the right state on cycles that check the *other* concert.
+        self._event_state[event_cfg.event_id] = "impaired" if blind else "healthy"
 
         # Per-cycle uptime tally: a blind check (blocked/challenge/no-signal) is bad,
         # anything else is a clean scan. Drives healthy-vs-impaired for the Uptime tab.
@@ -1451,12 +1556,29 @@ class MonitorScheduler:
         Captcha/challenge or HTTP 429 -> exponential cooldown, then tiered quiet
         periods for persistent blocks. A clean check resets it.
         """
-        is_challenge = bool(result.challenge_detected) or status == 429
+        # Track sustained Akamai `_abck` flagging as an early block signal. The cookie is
+        # briefly unvalidated (~-1~) right after a load, so one flagged read isn't enough;
+        # a trusted read (~0~) is our confirmation the session has recovered.
+        abck_flagged = bool(getattr(result, "abck_flagged", False))
+        abck_trusted = bool(getattr(result, "abck_trusted", False))
+        if abck_flagged and not abck_trusted:
+            self._consecutive_abck_flagged += 1
+        else:
+            self._consecutive_abck_flagged = 0
+        abck_block = self._consecutive_abck_flagged >= ABCK_FLAG_THRESHOLD
+
+        is_challenge = bool(result.challenge_detected) or status == 429 or abck_block
         if not is_challenge:
             if self._consecutive_challenges or self.state.get_challenge_cooldown_until() is not None:
                 self._consecutive_challenges = 0
                 self.state.set_challenge_cooldown_until(None)
             return
+        if abck_block and not (result.challenge_detected or status == 429):
+            logger.info(
+                "Akamai _abck flagged for %d consecutive checks — cooling down early "
+                "(before a visible pause)",
+                self._consecutive_abck_flagged,
+            )
 
         self._consecutive_challenges += 1
         base = max(1, int(self.config.browser_challenge_cooldown_base_seconds))

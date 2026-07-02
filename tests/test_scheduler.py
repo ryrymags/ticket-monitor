@@ -1316,11 +1316,78 @@ class TestDegradedStatePersistence:
         assert scheduler.state.get_degraded_state()["reason"] is None
 
 
+class TestPerEventUptime:
+    @staticmethod
+    def _two_event_config():
+        return _make_config(
+            events=[
+                EventConfig(event_id="ev-a", name="Night A", date="2026-07-28", url="http://a"),
+                EventConfig(event_id="ev-b", name="Night B", date="2026-07-29", url="http://b"),
+            ]
+        )
+
+    def test_per_event_ledgers_created(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path, self._two_event_config())
+        assert set(scheduler._event_uptime.keys()) == {"ev-a", "ev-b"}
+
+    def test_blocked_and_healthy_recorded_separately(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path, self._two_event_config())
+        ev_a, ev_b = scheduler.config.events[0], scheduler.config.events[1]
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        scheduler._handle_probe_result(ev_a, _make_result(available=False, blocked=True), now=base)
+        scheduler._handle_probe_result(ev_b, _make_result(available=False), now=base)
+        assert scheduler._event_state["ev-a"] == "impaired"
+        assert scheduler._event_state["ev-b"] == "healthy"
+
+        # A cycle heartbeat records each concert with its own state, not the combined one.
+        scheduler._record_event_uptime_heartbeats(base, "healthy", None, gap=10)
+        a_states = {s["state"] for s in scheduler._event_uptime["ev-a"].segments}
+        b_states = {s["state"] for s in scheduler._event_uptime["ev-b"].segments}
+        assert "impaired" in a_states
+        assert b_states == {"healthy"}
+
+    def test_no_internet_marks_all_events_down(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path, self._two_event_config())
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        scheduler._record_event_uptime_heartbeats(base, "down", "no_internet", gap=10)
+        for led in scheduler._event_uptime.values():
+            assert {s["state"] for s in led.segments} == {"down"}
+
+
+class TestGlobalCheckGap:
+    def test_gap_stays_within_configured_bounds(self, tmp_path):
+        scheduler = _make_scheduler(
+            tmp_path,
+            _make_config(
+                browser_per_event_min_gap_between_checks_seconds=60,
+                browser_per_event_max_gap_between_checks_seconds=120,
+            ),
+        )
+        scheduler._rand = random.Random(1234)
+        gaps = [scheduler._next_check_gap_seconds() for _ in range(100)]
+        assert all(60.0 <= g <= 120.0 for g in gaps)
+        # Actually randomized, not a constant.
+        assert min(gaps) < max(gaps)
+
+    def test_gap_is_constant_when_min_equals_max(self, tmp_path):
+        scheduler = _make_scheduler(
+            tmp_path,
+            _make_config(
+                browser_per_event_min_gap_between_checks_seconds=90,
+                browser_per_event_max_gap_between_checks_seconds=90,
+            ),
+        )
+        assert scheduler._next_check_gap_seconds() == 90.0
+
+
 class TestChallengeCircuitBreaker:
     @staticmethod
-    def _result(*, challenge=False, retry_after=None):
+    def _result(*, challenge=False, retry_after=None, abck_flagged=False, abck_trusted=False):
         return SimpleNamespace(
             challenge_detected=challenge,
+            abck_flagged=abck_flagged,
+            abck_trusted=abck_trusted,
             raw_indicators={"retry_after_seconds": retry_after},
         )
 
@@ -1377,6 +1444,43 @@ class TestChallengeCircuitBreaker:
                 result=self._result(challenge=True), status=None, now=base
             )
             assert scheduler.state.get_challenge_cooldown_until() == base + timedelta(seconds=seconds)
+
+    def test_single_abck_flag_does_not_cooldown(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        scheduler._rand = _FixedRand()
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        scheduler._update_challenge_cooldown(
+            result=self._result(abck_flagged=True), status=None, now=base
+        )
+        # One flagged read is the cookie's normal post-load state — not enough to act.
+        assert scheduler.state.get_challenge_cooldown_until() is None
+        assert scheduler._consecutive_abck_flagged == 1
+
+    def test_sustained_abck_flag_triggers_early_cooldown(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        scheduler._rand = _FixedRand()
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        for _ in range(2):  # reaches ABCK_FLAG_THRESHOLD
+            scheduler._update_challenge_cooldown(
+                result=self._result(abck_flagged=True), status=None, now=base
+            )
+        assert scheduler.state.get_challenge_cooldown_until() is not None
+
+    def test_abck_trusted_read_recovers(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        scheduler._rand = _FixedRand()
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        for _ in range(2):
+            scheduler._update_challenge_cooldown(
+                result=self._result(abck_flagged=True), status=None, now=base
+            )
+        assert scheduler.state.get_challenge_cooldown_until() is not None
+        # A trusted (~0~) read is the recovery gate — it clears the cooldown.
+        scheduler._update_challenge_cooldown(
+            result=self._result(abck_trusted=True), status=200, now=base
+        )
+        assert scheduler.state.get_challenge_cooldown_until() is None
+        assert scheduler._consecutive_abck_flagged == 0
 
     def test_clean_check_resets_cooldown(self, tmp_path):
         scheduler = _make_scheduler(tmp_path)

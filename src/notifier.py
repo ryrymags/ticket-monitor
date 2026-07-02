@@ -15,6 +15,8 @@ from dateutil import tz
 
 import requests
 
+from .state import write_json_atomic
+
 HISTORY_FILE = "ticket_history.json"
 MAX_HISTORY_ENTRIES = 500
 
@@ -730,16 +732,14 @@ class DiscordNotifier:
                     ):
                         prev["last_seen"] = now_iso
                         prev["seen_count"] = int(prev.get("seen_count", 1)) + 1
-                        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-                            json.dump(history, f, indent=2, ensure_ascii=False)
+                        write_json_atomic(HISTORY_FILE, history)
                         return
 
             history.append(entry)
             if len(history) > MAX_HISTORY_ENTRIES:
                 history = history[-MAX_HISTORY_ENTRIES:]
 
-            with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-                json.dump(history, f, indent=2, ensure_ascii=False)
+            write_json_atomic(HISTORY_FILE, history)
         except Exception as exc:
             logging.getLogger(__name__).warning("Failed to write ticket history: %s", exc)
 

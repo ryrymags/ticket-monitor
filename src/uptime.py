@@ -21,8 +21,9 @@ from __future__ import annotations
 import json
 import logging
 import os
-import tempfile
 from datetime import datetime, timedelta, timezone
+
+from .state import write_json_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -112,16 +113,8 @@ class UptimeLedger:
         now = now or datetime.now(timezone.utc)
         self._prune(now)
         payload = {"segments": self._segments}
-        directory = os.path.dirname(self.path) or "."
         try:
-            fd, tmp = tempfile.mkstemp(dir=directory, prefix=".uptime-", suffix=".tmp")
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    json.dump(payload, f)
-                os.replace(tmp, self.path)
-            finally:
-                if os.path.exists(tmp):
-                    os.remove(tmp)
+            write_json_atomic(self.path, payload, indent=None)
         except Exception as exc:  # pragma: no cover - disk errors are non-fatal
             logger.warning("Could not write uptime ledger %s: %s", self.path, exc)
             return

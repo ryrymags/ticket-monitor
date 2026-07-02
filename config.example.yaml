@@ -103,7 +103,8 @@ browser:
   per_event_scheduler_enabled: true     # true = check one due event per wake; false = legacy all-event cycles
   per_event_poll_min_seconds: 45        # Each event gets its own randomized next-due time
   per_event_poll_max_seconds: 105
-  per_event_min_gap_between_checks_seconds: 20
+  per_event_min_gap_between_checks_seconds: 60   # Global floor between ANY two checks (all events share it)
+  per_event_max_gap_between_checks_seconds: 120  # Randomized 60-120s gap keeps request volume low & human
   event_weights:                        # Soft priority; higher weight gets earlier randomized due times
     "01006444D7AFFD78": 2               # Wednesday default bias
     "01006430FEAADAD2": 1               # Tuesday default baseline

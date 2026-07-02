@@ -325,6 +325,35 @@ class BrowserProbe:
             return 0
         return removed
 
+    def read_akamai_state(self) -> dict:
+        """Read Akamai's `_abck` trust cookie without navigating (cheap cookie-jar read).
+
+        The value's validation field is ``0`` once sensor.js has validated the session
+        (trusted) and ``-1`` while it is unvalidated / flagged. This often flips to
+        flagged *before* the visible "activity paused" screen, so it is a useful leading
+        signal — and it is how we confirm recovery (trusted again) after a cooldown.
+        Returns {abck_present, abck_trusted, abck_flagged}.
+        """
+        state = {"abck_present": False, "abck_trusted": False, "abck_flagged": False}
+        if self._context is None:
+            return state
+        try:
+            cookies = self._context.cookies()
+        except Exception:
+            return state
+        for c in cookies:
+            if str(c.get("name", "")).lower() != "_abck":
+                continue
+            state["abck_present"] = True
+            parts = str(c.get("value", "")).split("~")
+            flag = parts[1] if len(parts) > 1 else ""
+            if flag == "0":
+                state["abck_trusted"] = True
+            elif flag == "-1":
+                state["abck_flagged"] = True
+            break
+        return state
+
     @property
     def cdp_connected(self) -> bool:
         return bool(self._cdp_connected and self._started and self.session_mode == "cdp_attach")
@@ -578,6 +607,7 @@ class BrowserProbe:
             confidence = self._confidence(signal_type, blocked)
             prices = self._collect_prices(network_snapshot.prices)
             sections = sorted(network_snapshot.sections)
+            abck = self.read_akamai_state()
 
             return ProbeResult(
                 event_id=event_id,
@@ -597,8 +627,13 @@ class BrowserProbe:
                     "listing_groups": self._listing_groups_debug(network_snapshot.listing_groups),
                     "page_title": page_title,
                     "retry_after_seconds": retry_after_seconds,
+                    "abck_present": abck["abck_present"],
+                    "abck_trusted": abck["abck_trusted"],
+                    "abck_flagged": abck["abck_flagged"],
                 },
                 listing_summary=self._listing_summary(network_snapshot.listing_groups),
+                abck_trusted=abck["abck_trusted"],
+                abck_flagged=abck["abck_flagged"],
             )
         except Exception:
             if self.session_mode == "cdp_attach" and allow_retry:
@@ -664,13 +699,63 @@ class BrowserProbe:
 
     @staticmethod
     def _human_jitter(page: Any):
-        """A small, random scroll some of the time so interaction isn't perfectly static."""
+        """Small, random human-like activity so the session isn't perfectly static:
+        a little curved cursor movement (Akamai scores empty/synthetic mouse motion as
+        bot near-instantly), an occasional hover, and sometimes a light scroll."""
+        try:
+            BrowserProbe._human_mouse_move(page)
+        except Exception:
+            pass
         if random.random() < 0.5:
             try:
                 page.mouse.wheel(0, random.randint(200, 1200))
                 page.wait_for_timeout(random.randint(150, 600))
             except Exception:
                 pass
+
+    @staticmethod
+    def _human_mouse_move(page: Any):
+        """Move the cursor along a short curved, variable-speed path with brief pauses.
+
+        Real human motion accelerates, drifts between waypoints, and settles on a
+        target — unlike a bot's straight, constant-speed jump. Keeping the rhythm
+        irregular (and skipping some checks entirely) avoids a detectable fixed pattern.
+        """
+        if random.random() > 0.75:
+            # Not every check needs cursor motion; keep the cadence human-irregular.
+            return
+        try:
+            viewport = page.viewport_size or {}
+        except Exception:
+            viewport = {}
+        width = int(viewport.get("width") or 1280)
+        height = int(viewport.get("height") or 800)
+
+        def _rand_point() -> tuple[int, int]:
+            return (
+                random.randint(int(width * 0.15), int(width * 0.85)),
+                random.randint(int(height * 0.15), int(height * 0.75)),
+            )
+
+        # 2-4 waypoints, each reached in several small steps with a short dwell, so the
+        # overall trajectory has curvature and non-uniform velocity.
+        for _ in range(random.randint(2, 4)):
+            x, y = _rand_point()
+            try:
+                page.mouse.move(x, y, steps=random.randint(8, 25))
+                page.wait_for_timeout(random.randint(40, 220))
+            except Exception:
+                return
+
+        # Occasionally settle by hovering a plausible on-page element.
+        if random.random() < 0.4:
+            for selector in ("a[href]", "button", "h1", "img"):
+                try:
+                    page.locator(selector).first.hover(timeout=800)
+                    page.wait_for_timeout(random.randint(80, 300))
+                    break
+                except Exception:
+                    continue
 
     def _get_or_create_event_page(self, event_id: str, event_url: str) -> tuple[Any, bool]:
         if self.single_event_page and self.reuse_event_tabs:

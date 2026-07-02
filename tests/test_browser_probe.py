@@ -967,3 +967,44 @@ class TestStealthAndChannel:
     def test_context_options_skipped_for_cdp(self):
         probe = self._probe(session_mode="cdp_attach", stealth_enabled=True)
         assert probe._context_options() == {}
+
+
+class _CookieContext:
+    def __init__(self, cookies):
+        self._cookies = cookies
+
+    def cookies(self):
+        return self._cookies
+
+
+class TestReadAkamaiState:
+    @staticmethod
+    def _probe_with_cookies(cookies):
+        probe = BrowserProbe.__new__(BrowserProbe)
+        probe._context = _CookieContext(cookies)
+        return probe
+
+    def test_trusted_cookie(self):
+        probe = self._probe_with_cookies([{"name": "_abck", "value": "hash~0~-1~-1~-1~abc"}])
+        state = probe.read_akamai_state()
+        assert state == {"abck_present": True, "abck_trusted": True, "abck_flagged": False}
+
+    def test_flagged_cookie(self):
+        probe = self._probe_with_cookies([{"name": "_abck", "value": "hash~-1~-1~-1~abc"}])
+        state = probe.read_akamai_state()
+        assert state["abck_present"] is True
+        assert state["abck_flagged"] is True
+        assert state["abck_trusted"] is False
+
+    def test_missing_cookie(self):
+        probe = self._probe_with_cookies([{"name": "datadome", "value": "x"}])
+        assert probe.read_akamai_state() == {
+            "abck_present": False,
+            "abck_trusted": False,
+            "abck_flagged": False,
+        }
+
+    def test_no_context_is_safe(self):
+        probe = BrowserProbe.__new__(BrowserProbe)
+        probe._context = None
+        assert probe.read_akamai_state()["abck_present"] is False
