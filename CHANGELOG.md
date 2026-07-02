@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `32205fd`  2026-07-02 10:01  Add one-command sudo setup script for self-heal reboot
+- `bf58e25`  2026-07-02 10:05  Fix egress diagnostic: resolve IP over HTTPS before ip-api lookup
+
+- `a7ea8c1`  2026-07-02 10:01  Add one-command sudo setup script for self-heal reboot
 
 - `b1f4b1a`  2026-07-02 10:00  Slow cadence to 60-120s, variation probe, reboot self-heal, boot persistence
 
