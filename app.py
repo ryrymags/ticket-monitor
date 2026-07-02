@@ -53,7 +53,8 @@ CONFIG_FILE = "config.yaml"
 STATE_FILE = "state.json"
 HISTORY_FILE = "ticket_history.json"
 UPTIME_FILE = "uptime_log.json"
-HISTORY_RENDER_PAGE_SIZE = 75
+HISTORY_RENDER_PAGE_SIZE = 25
+HISTORY_RENDER_BATCH_SIZE = 8
 
 
 def uptime_event_file(event_id: str) -> str:
@@ -66,6 +67,62 @@ def monitor_running_state(launchd_state: bool | None, monitor_proc: subprocess.P
     if launchd_state is not None:
         return launchd_state
     return bool(monitor_proc and monitor_proc.poll() is None)
+
+
+def is_visible_history_entry(entry: dict) -> bool:
+    """Return whether a history row should appear in user-facing history views."""
+    if not isinstance(entry, dict):
+        return False
+    if str(entry.get("event_name", "")).strip().lower() == "test":
+        return False
+    return bool(str(entry.get("event_id", "")).strip())
+
+
+def visible_history_entries(history: list[dict]) -> list[dict]:
+    """Filter local test/example history pollution out of real ticket history."""
+    return [entry for entry in history or [] if is_visible_history_entry(entry)]
+
+
+def monitor_event_status_text(
+    ev_state: dict,
+    now: datetime,
+    *,
+    stale_threshold: int = 180,
+    manual_action_after_seconds: int = 900,
+) -> str:
+    """Human status for one event row in the Monitor tab.
+
+    The low stale threshold is an automation signal, not a user-facing emergency.
+    Only show orange/red when the stored state says checks are blocked/outage, or
+    when the last check is old enough to need manual attention.
+    """
+    in_outage = bool(ev_state.get("in_outage_state"))
+    consec_blocked = int(ev_state.get("consecutive_blocked", 0) or 0)
+    last_ts = ev_state.get("last_check")
+    action_after = max(int(manual_action_after_seconds or 900), int(stale_threshold or 180))
+
+    if last_ts:
+        try:
+            dt = datetime.fromisoformat(str(last_ts))
+            age_s = max(0, int((now - dt).total_seconds()))
+        except Exception:
+            age_s = None
+        if age_s is not None:
+            if in_outage:
+                return f"🔴  Blocked / no data — recovering (last check {age_s}s ago)"
+            if consec_blocked > 0:
+                return f"🟠  Blocked — retrying ({consec_blocked} in a row, last check {age_s}s ago)"
+            if age_s >= action_after:
+                return f"🔴  Last check: {age_s//60}m ago (needs attention)"
+            if age_s < stale_threshold:
+                return f"🟢  Last check: {age_s}s ago"
+            return f"⚪  Last check: {age_s//60}m ago"
+        return "⚪  Status unknown"
+    if in_outage:
+        return "🔴  Blocked / no data — recovering"
+    if consec_blocked > 0:
+        return f"🟠  Blocked — retrying ({consec_blocked} in a row)"
+    return "⚪  Not yet checked"
 
 
 LOG_FILE = os.path.join("logs", "monitor.log")
@@ -378,6 +435,8 @@ class TicketMonitorApp(ctk.CTk):
         self._current_tab: str = "events"
         self._history_sig: tuple | None = None  # ((mtime, size), render_limit) last rendered
         self._history_render_limit = HISTORY_RENDER_PAGE_SIZE
+        self._history_render_after_id: str | None = None
+        self._history_render_generation = 0
         self._uptime_outage_sig: tuple | None = None  # signature of last-rendered outages
 
         # Load or init config
@@ -1237,7 +1296,9 @@ class TicketMonitorApp(ctk.CTk):
         return []
 
     def _bingo_history_summary(self) -> dict:
-        return count_bingo_in_history(self._load_history(), self._current_bingo_configs())
+        return count_bingo_in_history(
+            visible_history_entries(self._load_history()), self._current_bingo_configs()
+        )
 
     def _update_history_bingo_label(self, history: list[dict]):
         summary = count_bingo_in_history(history, self._current_bingo_configs())
@@ -1274,6 +1335,7 @@ class TicketMonitorApp(ctk.CTk):
             return None
 
     def _render_history_placeholder(self, text: str):
+        self._cancel_history_render()
         for widget in self._history_list.winfo_children():
             widget.destroy()
         self._history_empty_label = ctk.CTkLabel(
@@ -1282,6 +1344,16 @@ class TicketMonitorApp(ctk.CTk):
             text_color="gray50", justify="center",
         )
         self._history_empty_label.grid(row=0, column=0, padx=20, pady=40)
+
+    def _cancel_history_render(self):
+        after_id = getattr(self, "_history_render_after_id", None)
+        if after_id:
+            try:
+                self.after_cancel(after_id)
+            except Exception:
+                pass
+        self._history_render_after_id = None
+        self._history_render_generation += 1
 
     def _refresh_history_tab(self, force: bool = False):
         """Reload ticket_history.json and re-render the history list.
@@ -1296,18 +1368,19 @@ class TicketMonitorApp(ctk.CTk):
             return
         self._history_sig = render_sig
 
+        self._cancel_history_render()
         for widget in self._history_list.winfo_children():
             widget.destroy()
         self._history_empty_label = None
 
-        history: list[dict] = self._load_history()
+        history: list[dict] = visible_history_entries(self._load_history())
         self._update_history_bingo_label(history)
         self._update_history_seen_label(history)
 
         if not history:
             self._history_empty_label = ctk.CTkLabel(
                 self._history_list,
-                text="No ticket appearances recorded yet.\nStart the monitor and come back here when alerts fire.",
+                text="No real ticket appearances recorded yet.\nStart the monitor and come back here when alerts fire.",
                 text_color="gray50", justify="center",
             )
             self._history_empty_label.grid(row=0, column=0, padx=20, pady=40)
@@ -1318,16 +1391,26 @@ class TicketMonitorApp(ctk.CTk):
         entries = list(reversed(history))
         visible_entries = entries[: self._history_render_limit]
 
-        # Guard each card so one malformed entry can't take
-        # down the whole tab (which is part of what made it crash-prone before).
-        for i, entry in enumerate(visible_entries):
-            try:
-                self._render_history_card(i, entry)
-            except Exception:
-                logging.exception("Failed to render history entry %d", i)
+        self._render_history_batch(visible_entries, 0, self._history_render_generation)
 
         if len(entries) > len(visible_entries):
             self._render_history_more_row(len(visible_entries), len(entries))
+
+    def _render_history_batch(self, entries: list[dict], start: int, generation: int):
+        if generation != self._history_render_generation:
+            return
+        end = min(start + HISTORY_RENDER_BATCH_SIZE, len(entries))
+        for i in range(start, end):
+            try:
+                self._render_history_card(i, entries[i])
+            except Exception:
+                logging.exception("Failed to render history entry %d", i)
+        if end < len(entries):
+            self._history_render_after_id = self.after(
+                1, lambda: self._render_history_batch(entries, end, generation)
+            )
+        else:
+            self._history_render_after_id = None
 
     def _render_history_more_row(self, row: int, total: int):
         frame = ctk.CTkFrame(self._history_list, fg_color="transparent")
@@ -2184,7 +2267,7 @@ class TicketMonitorApp(ctk.CTk):
             self._health_alltime_label.configure(text="All-time: —")
 
         try:
-            history = self._load_history()
+            history = visible_history_entries(self._load_history())
             summary = count_bingo_in_history(history, self._current_bingo_configs())
             self._health_bingo_label.configure(
                 text=f"🟢 BINGOs in history (current configs): {summary['total']}"
@@ -2254,6 +2337,10 @@ class TicketMonitorApp(ctk.CTk):
             stale_threshold = int(self._cfg.get("alerts", {}).get("event_check_stale_seconds", 180))
         except (TypeError, ValueError):
             stale_threshold = 180
+        try:
+            manual_action_after = int(self._cfg.get("alerts", {}).get("manual_action_after_seconds", 900))
+        except (TypeError, ValueError):
+            manual_action_after = 900
 
         for w in self._monitor_events_frame.winfo_children():
             w.destroy()
@@ -2299,38 +2386,12 @@ class TicketMonitorApp(ctk.CTk):
             eid = ev.get("event_id", "")
             name = ev.get("name", ev.get("url", "Unknown"))
             ev_state = events_state.get(eid, {})
-            last_ts = ev_state.get("last_check")
-            in_outage = bool(ev_state.get("in_outage_state"))
-            consec_blocked = int(ev_state.get("consecutive_blocked", 0) or 0)
-            if last_ts:
-                try:
-                    dt = datetime.fromisoformat(last_ts)
-                    age_s = int((now - dt).total_seconds())
-                    if in_outage:
-                        # Checks are still running, but the page keeps coming back
-                        # blocked / no usable data. Match the manual-action alert so
-                        # the GUI never shows green while a "go fix it" ping is live.
-                        status = f"🔴  Blocked / no data — recovering (last check {age_s}s ago)"
-                    elif consec_blocked > 0:
-                        # The latest check(s) came back blocked/challenged (e.g. the
-                        # "browsing activity paused" screen) but we haven't hit the
-                        # outage threshold yet. Don't show green — this is the state
-                        # the Uptime tab logs as impaired.
-                        status = f"🟠  Blocked — retrying ({consec_blocked} in a row, last check {age_s}s ago)"
-                    elif age_s < stale_threshold // 2:
-                        status = f"🟢  Last check: {age_s}s ago"
-                    elif age_s < stale_threshold:
-                        status = f"🟡  Last check: {age_s//60}m ago"
-                    else:
-                        # Matches alerts.event_check_stale_seconds — the moment the
-                        # manual-action clock starts — so 🔴 and the ping stay in sync.
-                        status = f"🔴  Last check: {age_s//60}m ago (stale)"
-                except Exception:
-                    status = "⚪  Status unknown"
-            elif in_outage:
-                status = "🔴  Blocked / no data — recovering"
-            else:
-                status = "⚪  Not yet checked"
+            status = monitor_event_status_text(
+                ev_state,
+                now,
+                stale_threshold=stale_threshold,
+                manual_action_after_seconds=manual_action_after,
+            )
 
             ctk.CTkLabel(self._monitor_events_frame, text=name[:55], anchor="w", font=ctk.CTkFont(weight="bold")).grid(row=base_row + i*2, column=0, padx=16, pady=(10 if i==0 else 2, 0), sticky="w")
             ctk.CTkLabel(self._monitor_events_frame, text=status, anchor="w", text_color="gray55", font=ctk.CTkFont(size=11)).grid(row=base_row + i*2+1, column=0, padx=16, pady=(0, 2), sticky="w")

@@ -362,6 +362,48 @@ class TestOperationalLogOnly:
 
 
 class TestHistorySeenCount:
+    def test_synthetic_ticket_alert_does_not_write_history(self, tmp_path, monkeypatch):
+        import src.notifier as notifier_mod
+        hist = tmp_path / "history.json"
+        monkeypatch.setattr(notifier_mod, "HISTORY_FILE", str(hist))
+        notifier = DiscordNotifier(webhook_url="https://test")
+
+        with patch.object(notifier, "_send", return_value=True):
+            notifier.send_ticket_available(
+                event_name="Real Event",
+                event_date="2030-01-01",
+                event_url="https://www.ticketmaster.com/event/ABC123",
+                signal_type="synthetic",
+                signal_confidence=1.0,
+                price_summary=None,
+                section_summary=None,
+                reason="manual_test",
+                listing_groups=[{"section": "LOGE20", "row": "5", "price": 150.0, "count": 2}],
+            )
+
+        assert not hist.exists()
+
+    def test_missing_event_id_ticket_alert_does_not_write_history(self, tmp_path, monkeypatch):
+        import src.notifier as notifier_mod
+        hist = tmp_path / "history.json"
+        monkeypatch.setattr(notifier_mod, "HISTORY_FILE", str(hist))
+        notifier = DiscordNotifier(webhook_url="https://test")
+
+        with patch.object(notifier, "_send", return_value=True):
+            notifier.send_ticket_available(
+                event_name="Test",
+                event_date="2030-01-01",
+                event_url="https://www.ticketmaster.com/no-event-id",
+                signal_type="dom",
+                signal_confidence=1.0,
+                price_summary=None,
+                section_summary=None,
+                reason="signature_changed",
+                listing_groups=[{"section": "LOGE20", "row": "5", "price": 150.0, "count": 2}],
+            )
+
+        assert not hist.exists()
+
     def test_repeat_listing_updates_seen_count(self, tmp_path, monkeypatch):
         import json as _json
         import src.notifier as notifier_mod

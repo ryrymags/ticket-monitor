@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `78179ef`  2026-07-02 13:31  Page history tab rendering
+- `5683102`  2026-07-02 14:11  Stabilize monitor history and stop controls
+
+- `1fe2cf2`  2026-07-02 13:31  Page history tab rendering
 
 - `14e89c5`  2026-07-02 12:47  Fix launchd uptime status in app
 
