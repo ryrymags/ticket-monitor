@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `5c7c0cf`  2026-07-02 10:47  Switch self-heal reboot from FileVault authrestart to plain reboot
+- `efc9118`  2026-07-02 11:07  Close session-health tab after each check instead of parking it
+
+- `89fcb64`  2026-07-02 10:47  Switch self-heal reboot from FileVault authrestart to plain reboot
 
 - `d82b6b8`  2026-07-02 10:19  Fix self-heal reboot: root-owned wrapper instead of unreadable redirect
 

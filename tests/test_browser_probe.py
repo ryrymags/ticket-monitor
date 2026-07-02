@@ -519,7 +519,9 @@ class TestBrowserProbeSessionHealth:
         assert result["reason"] == "challenge_detected"
         assert result["challenge"] is True
         assert result["definitive_logged_out"] is False
-        assert page.is_closed() is False
+        # The health-check tab is always closed afterward (whatever the outcome) so
+        # it never lingers as a second visible tab alongside the event tab.
+        assert page.is_closed() is True
 
     def test_bare_403_is_non_definitive_block(self):
         page = _FakePage(html="<html><body>Forbidden</body></html>", body_text="Forbidden", status=403)
@@ -571,7 +573,9 @@ class TestBrowserProbeSessionHealth:
         assert result["reason"] == "login_page_content"
         assert result["definitive_logged_out"] is True
 
-    def test_session_health_reuses_parked_tab(self):
+    def test_session_health_closes_tab_after_each_check(self):
+        """Each check opens its own tab and closes it afterward — never leaves a
+        second tab sitting alongside the event tab between checks."""
         page = _FakePage(html="<html><body>Account</body></html>", body_text="Account", status=200)
         context = _FakeContext(page)
         probe = BrowserProbe(storage_state_path="unused.json", headless=True, navigation_timeout_seconds=20)
@@ -579,12 +583,17 @@ class TestBrowserProbeSessionHealth:
         probe._context = context
 
         first = probe.check_session_health(warm_navigation=False)
+        assert page.is_closed() is True
+        assert probe._health_page is None
         second = probe.check_session_health(warm_navigation=False)
 
         assert first["healthy"] is True
         assert second["healthy"] is True
-        assert context.new_page_calls == 1
-        assert page.goto_calls[-1] == BrowserProbe.WARMUP_URL
+        # A closed tab can't be reused, so each check opens a fresh one.
+        assert context.new_page_calls == 2
+        assert page.is_closed() is True
+        # No lingering homepage navigation — the tab is gone, not parked.
+        assert BrowserProbe.WARMUP_URL not in page.goto_calls
 
 
 class TestBrowserProbeSessionModes:

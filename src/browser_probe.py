@@ -511,15 +511,17 @@ class BrowserProbe:
         except Exception:
             raise
         finally:
+            # Close rather than leave parked on the homepage: this tab is separate
+            # from the event tab, so leaving it open means TWO Chrome tabs are always
+            # visible even though only one is doing active monitoring. Closing it
+            # keeps the window down to just the event tab between health checks;
+            # _get_or_create_health_page() opens a fresh one next time it's due.
             if page is not None:
                 try:
-                    page.goto(
-                        self.WARMUP_URL,
-                        wait_until="domcontentloaded",
-                        timeout=self.navigation_timeout_seconds * 1000,
-                    )
+                    page.close()
                 except Exception:
                     pass
+            self._health_page = None
 
     def check_event(self, event_id: str, event_url: str) -> ProbeResult:
         """Check one event page for availability signals."""
