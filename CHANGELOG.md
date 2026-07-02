@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `b04bcd0`  2026-07-02 12:14  Keep macOS monitor awake under launchd
+- `82596a6`  2026-07-02 12:21  Treat loaded Ticketmaster pages as healthy uptime
+
+- `5588a69`  2026-07-02 12:14  Keep macOS monitor awake under launchd
 
 - `28a2f85`  2026-07-02 11:07  Close session-health tab after each check instead of parking it
 

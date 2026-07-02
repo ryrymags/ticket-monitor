@@ -72,10 +72,9 @@ ABCK_FLAG_THRESHOLD = 2
 # suspended (sleep) — not the monitor going stale. Re-anchor instead of crying stale.
 SLEEP_OVERSHOOT_SECONDS = 120
 
-# Chromium net-stack errors that mean the page never loaded because there's no
-# working internet connection (as opposed to Ticketmaster loading a block page).
-# When a cycle hits these and gets NO response from any event, monitoring is DOWN,
-# not merely impaired — we can't see tickets at all.
+# Chromium net-stack errors that mean Ticketmaster never loaded because there's no
+# working internet connection. When a cycle hits these and gets NO response from
+# any event, monitoring is DOWN, not merely impaired — we can't see tickets at all.
 _CONNECTIVITY_ERROR_SIGNATURES = (
     "err_internet_disconnected",
     "err_name_not_resolved",
@@ -145,9 +144,12 @@ class MonitorScheduler:
             )
             for ev in self.config.events
         }
-        # Latest per-event health ("healthy"/"impaired"), set when an event is checked
+        # Latest per-event uptime health ("healthy"/"impaired"), set when an event is checked
         # and reused on cycles that checked a *different* event (round-robin).
         self._event_state: dict[str, str] = {}
+        # Events that produced a probe result during the current cycle. A block page
+        # still means Ticketmaster loaded, so it is healthy for uptime purposes.
+        self._cycle_loaded_events: set[str] = set()
 
         self.probe = probe or BrowserProbe(
             storage_state_path=config.browser_storage_state_path,
@@ -207,8 +209,9 @@ class MonitorScheduler:
         # Set each cycle: True when no event got any response AND at least one failed
         # with a connectivity error → the internet is down (uptime = down, not impaired).
         self._cycle_connectivity_down: bool = False
-        # Per-cycle check tally — the uptime state reflects what THIS cycle's checks
-        # actually did (clean vs blocked/errored), not lagging cadence/outage flags.
+        # Per-cycle check tally. For uptime, any successful Ticketmaster load counts
+        # as a healthy monitor check; blocked/challenge tallies remain for operational
+        # backoff and session-health behavior.
         self._cycle_healthy_checks: int = 0
         self._cycle_bad_checks: int = 0
         self._event_schedule: dict[str, datetime] = {}
@@ -282,6 +285,7 @@ class MonitorScheduler:
                     self._cycle_connectivity_down = False
                     self._cycle_healthy_checks = 0
                     self._cycle_bad_checks = 0
+                    self._cycle_loaded_events = set()
                     self._last_cycle_blocked = True
                     needs_slow_retry = True
                 else:
@@ -295,7 +299,11 @@ class MonitorScheduler:
                 self.state.clear_last_error()
                 self._record_uptime_heartbeat(
                     needs_slow_retry,
-                    reason="blocked" if self._last_cycle_blocked and self._cycle_healthy_checks == 0 else None,
+                    reason=(
+                        "blocked"
+                        if self._last_cycle_blocked and self._cycle_healthy_checks == 0
+                        else None
+                    ),
                 )
 
                 if self._per_event_scheduler_enabled():
@@ -353,28 +361,28 @@ class MonitorScheduler:
     ):
         """Record one uptime segment heartbeat for the cycle just completed.
 
-        Healthy unless the cycle was blocked/stale/errored or the monitor is in a
-        persisted degraded state (logged-out, outage, auth-paused, stale). A lost
-        internet connection is recorded as ``down``. The ledger also infers ``down``
-        intervals itself from gaps between heartbeats.
+        A successful Ticketmaster load is healthy for uptime, even if the page was a
+        bot wall/challenge/no-inventory page. A lost internet connection is recorded
+        as ``down``. ``impaired`` is reserved for cycles that ran but did not load
+        Ticketmaster, plus logged-out/auth-paused/stale fallback states. The ledger
+        also infers ``down`` intervals itself from gaps between heartbeats.
         """
         try:
             now = datetime.now(timezone.utc)
             gap = self._last_loop_sleep_seconds
-            # No internet (the page won't even load) is DOWN, not impairment — we
-            # can't see tickets at all. Ticketmaster *blocking* still returns a page,
-            # so that path never sets this flag and stays impaired.
+            # No internet (Ticketmaster will not load) is DOWN, not impairment — we
+            # can't see tickets at all.
             if connectivity_lost or self._cycle_connectivity_down:
                 state, out_reason = "down", "no_internet"
             # Classify from THIS cycle's actual results — not lagging cadence/outage
-            # flags. Clean scans (even sold-out) are healthy. A block/challenge/error
-            # from this cycle is impaired. Session-only problems are used only when
-            # no event data flowed this cycle, so the timeline measures monitor
+            # flags. Any loaded Ticketmaster page is healthy for uptime, including
+            # bot-wall/challenge/sold-out pages. Session-only problems are used only
+            # when no event data flowed this cycle, so the timeline measures monitor
             # visibility while the banner reports auth state.
-            elif reason is not None or self._cycle_bad_checks > 0:
-                state, out_reason = "impaired", (reason or "blocked")
             elif self._cycle_healthy_checks > 0:
                 state, out_reason = "healthy", None
+            elif reason is not None or self._cycle_bad_checks > 0:
+                state, out_reason = "impaired", (reason or "blocked")
             else:
                 if self.state.get_session_logged_out():
                     state, out_reason = "impaired", "logged_out"
@@ -397,12 +405,11 @@ class MonitorScheduler:
     ):
         """Heartbeat each per-concert ledger for the cycle just completed.
 
-        Monitor-wide conditions apply to every concert: no internet -> down for all;
-        an active challenge cooldown (we go fully silent) -> impaired for all. Otherwise
-        each event uses its own most recent check outcome (``_event_state``) or its
-        persisted outage flag, so a concert that's paused while the other is healthy is
-        recorded as such — keeping the Uptime tab's per-concert view in step with the
-        Monitor tab's per-event status.
+        Monitor-wide no-internet applies to every concert. If an event successfully
+        loaded Ticketmaster this cycle, it is healthy for uptime even if that load was
+        a bot wall/challenge. If we went fully silent due to a cooldown/outage, the
+        affected event is impaired until it loads again. Otherwise each event uses its
+        own most recent uptime state (``_event_state``).
         """
         if not self._event_uptime:
             return
@@ -411,6 +418,8 @@ class MonitorScheduler:
         for event_id, led in self._event_uptime.items():
             if combined_state == "down":
                 ev_state, ev_reason = "down", combined_reason or "no_internet"
+            elif event_id in self._cycle_loaded_events:
+                ev_state, ev_reason = "healthy", None
             elif in_cooldown or self.state.get_in_outage_state(event_id):
                 ev_state, ev_reason = "impaired", "blocked"
             else:
@@ -470,7 +479,7 @@ class MonitorScheduler:
             needs_slow_retry = needs_slow_retry or outcome.needs_slow_retry
 
         # No response from any event + a connectivity error → the internet is down.
-        # (A block page still returns a response, so that stays impaired, not down.)
+        # A block page still returns a response, so uptime remains healthy.
         self._cycle_connectivity_down = had_connectivity_error and not had_response
 
         if self._check_event_poll_staleness(now=datetime.now(timezone.utc)):
@@ -517,6 +526,7 @@ class MonitorScheduler:
         self._cycle_connectivity_down = False
         self._cycle_healthy_checks = 0
         self._cycle_bad_checks = 0
+        self._cycle_loaded_events = set()
 
     def _check_one_event(self, event_cfg: EventConfig) -> _EventCheckOutcome:
         try:
@@ -859,16 +869,21 @@ class MonitorScheduler:
         no_signal = result.signal_type == ProbeSignalType.NONE and http_unhealthy
         blind = result.blocked or result.challenge_detected or no_signal
 
-        # Remember this concert's latest health so its per-event uptime ledger keeps
-        # recording the right state on cycles that check the *other* concert.
-        self._event_state[event_cfg.event_id] = "impaired" if blind else "healthy"
+        # Remember whether this concert loaded successfully for uptime purposes.
+        # Operational block/challenge handling below still tracks whether the monitor
+        # could see ticket inventory through that loaded page.
+        loaded_for_uptime = not no_signal or result.blocked or result.challenge_detected
+        if loaded_for_uptime:
+            self._event_state[event_cfg.event_id] = "healthy"
+            self._cycle_loaded_events.add(event_cfg.event_id)
+            self._cycle_healthy_checks += 1
+        else:
+            self._event_state[event_cfg.event_id] = "impaired"
 
-        # Per-cycle uptime tally: a blind check (blocked/challenge/no-signal) is bad,
-        # anything else is a clean scan. Drives healthy-vs-impaired for the Uptime tab.
+        # Operational tally: blind checks still drive backoff/session-health behavior,
+        # but loaded block/challenge pages no longer make uptime impaired.
         if blind:
             self._cycle_bad_checks += 1
-        else:
-            self._cycle_healthy_checks += 1
 
         # Effectiveness metrics: one outcome per check, for the live GUI health panel.
         if result.challenge_detected:
