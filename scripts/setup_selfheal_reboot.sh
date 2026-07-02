@@ -45,13 +45,27 @@ PY
 chown root:wheel /etc/ticketmonitor/authrestart.plist
 chmod 600 /etc/ticketmonitor/authrestart.plist
 
-echo "${TARGET_USER} ALL=(root) NOPASSWD: /usr/bin/fdesetup authrestart -inputplist" \
+# Wrapper script, NOT a direct `fdesetup ... < plist` sudoers rule: a shell redirect
+# is opened by the CALLING shell before sudo elevates, so a non-root user can never
+# redirect a 600 root-owned file into a command, even under sudo. The wrapper runs
+# AS ROOT (sudo elevates first, then execs this script), so it can open the plist
+# itself — no permission-denied trap either at setup-verification or at guardian
+# reboot time.
+cat > /etc/ticketmonitor/trigger_authrestart.sh <<'WRAPPER'
+#!/bin/bash
+exec /usr/bin/fdesetup authrestart -inputplist < /etc/ticketmonitor/authrestart.plist
+WRAPPER
+chown root:wheel /etc/ticketmonitor/trigger_authrestart.sh
+chmod 700 /etc/ticketmonitor/trigger_authrestart.sh
+
+echo "${TARGET_USER} ALL=(root) NOPASSWD: /etc/ticketmonitor/trigger_authrestart.sh" \
   > /etc/sudoers.d/ticketmonitor
 chmod 440 /etc/sudoers.d/ticketmonitor
 visudo -c >/dev/null
 
 echo "OK: self-heal reboot is armed."
 echo "  Credentials: /etc/ticketmonitor/authrestart.plist (root-only, 600)"
-echo "  Sudoers:     /etc/sudoers.d/ticketmonitor (authrestart only)"
-echo "Test any time with: sudo -n /usr/bin/fdesetup authrestart -inputplist < /etc/ticketmonitor/authrestart.plist"
+echo "  Wrapper:     /etc/ticketmonitor/trigger_authrestart.sh (root-only, 700)"
+echo "  Sudoers:     /etc/sudoers.d/ticketmonitor (that wrapper only)"
+echo "Test any time with: sudo -n /etc/ticketmonitor/trigger_authrestart.sh"
 echo "(That command WILL reboot the Mac.)"

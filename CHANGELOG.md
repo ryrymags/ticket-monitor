@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `a43ce72`  2026-07-02 10:15  Fix doctor-lite profile clash (stray about:blank tabs), 30min reboot threshold, per-concert uptime timeline
+- `0332e49`  2026-07-02 10:19  Fix self-heal reboot: root-owned wrapper instead of unreadable redirect
+
+- `36643e5`  2026-07-02 10:15  Fix doctor-lite profile clash (stray about:blank tabs), 30min reboot threshold, per-concert uptime timeline
 
 - `5196372`  2026-07-02 10:05  Fix egress diagnostic: resolve IP over HTTPS before ip-api lookup
 
