@@ -4,11 +4,13 @@ All notable changes to Ticket Monitor are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 <!-- CHANGELOG_START -->
-## [Unreleased] — 2026-07-02
+## [Unreleased] — 2026-07-08
 
 ### Changes
 
-- `3c1c1a0`  2026-07-02 16:21  Record blocked checks as impaired uptime
+- `8187173`  2026-07-08 12:43  Stop the guardian/monitor restart death spiral
+
+- `8d28962`  2026-07-02 16:21  Record blocked checks as impaired uptime
 
 - `e1e56da`  2026-07-02 14:11  Stabilize monitor history and stop controls
 

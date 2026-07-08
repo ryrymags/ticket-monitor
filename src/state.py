@@ -291,6 +291,13 @@ class MonitorState:
         self._health()["guardian_last_critical_alert_at"] = _dt_to_iso(dt) if dt else None
         self.save()
 
+    def get_guardian_stale_strikes(self) -> int:
+        return int(self._health().get("guardian_stale_strikes", 0) or 0)
+
+    def set_guardian_stale_strikes(self, count: int):
+        self._health()["guardian_stale_strikes"] = max(0, int(count))
+        self.save()
+
     def get_guardian_fix_attempts_last_hour(self) -> int:
         self._prune_health_windows(save=True)
         return int(self._health().get("guardian_fix_attempts_last_hour", 0))

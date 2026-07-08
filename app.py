@@ -128,6 +128,9 @@ def monitor_event_status_text(
 LOG_FILE = os.path.join("logs", "monitor.log")
 LAUNCHD_MONITOR_LABEL = "com.ticketmonitor"
 LAUNCHD_OUT_LOG = os.path.join("logs", "launchd.out.log")
+LAUNCHD_MONITOR_PLIST = os.path.expanduser(
+    f"~/Library/LaunchAgents/{LAUNCHD_MONITOR_LABEL}.plist"
+)
 
 # Colors
 COLOR_GREEN = "#2ECC71"
@@ -357,7 +360,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "alerts": {
         "ticket_cooldown_seconds": 180,
         "operational_heartbeat_hours": 6,
-        "event_check_stale_seconds": 180,
+        "event_check_stale_seconds": 360,
         "operational_state_cooldown_seconds": 1800,
         "non_bingo_enabled": False,
         "manual_action_after_seconds": 900,
@@ -391,7 +394,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "watchdog": {
         "enabled": True,
         "interval_seconds": 120,
-        "stale_after_seconds": 180,
+        "stale_after_seconds": 600,
         "max_fix_attempts_per_hour": 6,
     },
     "updates": {
@@ -1548,6 +1551,7 @@ class TicketMonitorApp(ctk.CTk):
         "error": "monitor error",
         "offline": "monitor offline",
         "no_internet": "no internet connection",
+        "starting": "browser starting up",
     }
 
     @staticmethod
@@ -2070,17 +2074,26 @@ class TicketMonitorApp(ctk.CTk):
     #    monitor.py as a subprocess and reads its pipe).
 
     def _launchd_monitor_state(self) -> bool | None:
-        """True/False = LaunchAgent installed and running/stopped; None = not installed."""
+        """True/False = LaunchAgent installed and running/stopped; None = not installed.
+
+        "Installed" means the plist exists on disk, even when the service isn't
+        currently loaded — `monitorctl stop` boots the services OUT of launchd, so
+        judging by loaded-state alone made the next Start silently fall back to a
+        bare subprocess (no caffeinate, no KeepAlive, no guardian). That fallback is
+        now reserved for setups with no LaunchAgent plist at all.
+        """
         try:
             result = subprocess.run(
                 ["launchctl", "print", f"gui/{os.getuid()}/{LAUNCHD_MONITOR_LABEL}"],
                 capture_output=True, text=True, timeout=5,
             )
         except Exception:
-            return None
-        if result.returncode != 0:
-            return None
-        return "state = running" in (result.stdout + result.stderr)
+            result = None
+        if result is not None and result.returncode == 0:
+            return "state = running" in (result.stdout + result.stderr)
+        if os.path.exists(LAUNCHD_MONITOR_PLIST):
+            return False  # installed but not loaded — Start must re-bootstrap via monitorctl
+        return None
 
     def _monitor_running_state(self) -> bool:
         return monitor_running_state(self._launchd_monitor_state(), self._monitor_proc)
@@ -2181,16 +2194,24 @@ class TicketMonitorApp(ctk.CTk):
     # ── Status bar & polling ──────────────────────────────────────────────────
 
     def _update_status_bar(self, running: bool):
+        # Surface HOW the monitor is managed: launchd mode has the guardian,
+        # caffeinate, and crash-restart behind it; standalone mode has none of that.
+        if os.path.exists(LAUNCHD_MONITOR_PLIST):
+            mode_suffix = "  (launchd-managed)"
+        else:
+            mode_suffix = "  (standalone — no guardian/auto-restart)"
         if running:
             self._status_dot.configure(text_color=COLOR_GREEN)
-            self._status_label.configure(text="Monitor running — checking for tickets…")
+            self._status_label.configure(
+                text=f"Monitor running — checking for tickets…{mode_suffix}"
+            )
             self._start_stop_btn.configure(
                 text="⏹  Stop Monitor",
                 fg_color=COLOR_RED, hover_color="#c0392b",
             )
         else:
             self._status_dot.configure(text_color=COLOR_GRAY)
-            self._status_label.configure(text="Monitor stopped")
+            self._status_label.configure(text=f"Monitor stopped{mode_suffix}")
             self._start_stop_btn.configure(
                 text="▶  Start Monitor",
                 fg_color=COLOR_GREEN, hover_color="#27ae60",

@@ -1017,3 +1017,37 @@ class TestReadAkamaiState:
         probe = BrowserProbe.__new__(BrowserProbe)
         probe._context = None
         assert probe.read_akamai_state()["abck_present"] is False
+
+
+def test_launch_kwargs_bounds_launch_time():
+    kwargs = BrowserProbe._launch_kwargs(headless=False, channel="chrome")
+    assert kwargs["timeout"] == 60_000
+
+
+def test_trim_profile_caches_removes_cache_dirs_only(tmp_path):
+    from src.browser_probe import trim_profile_caches
+
+    profile = tmp_path / "profile"
+    (profile / "Default" / "Cache").mkdir(parents=True)
+    (profile / "Default" / "Cache" / "blob").write_bytes(b"x" * 2048)
+    (profile / "Default" / "Code Cache").mkdir()
+    (profile / "Default" / "Service Worker" / "CacheStorage").mkdir(parents=True)
+    (profile / "GrShaderCache").mkdir()
+    # Things that must survive: cookies/login/fingerprint state.
+    (profile / "Default" / "Cookies").write_bytes(b"keep")
+    (profile / "Default" / "Local Storage").mkdir()
+
+    trim_profile_caches(str(profile))
+
+    assert not (profile / "Default" / "Cache").exists()
+    assert not (profile / "Default" / "Code Cache").exists()
+    assert not (profile / "Default" / "Service Worker" / "CacheStorage").exists()
+    assert not (profile / "GrShaderCache").exists()
+    assert (profile / "Default" / "Cookies").exists()
+    assert (profile / "Default" / "Local Storage").exists()
+
+
+def test_trim_profile_caches_missing_dir_is_noop(tmp_path):
+    from src.browser_probe import trim_profile_caches
+
+    assert trim_profile_caches(str(tmp_path / "nope")) == 0

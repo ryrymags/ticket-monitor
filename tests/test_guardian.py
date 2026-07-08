@@ -437,3 +437,72 @@ def test_reboot_available_when_filevault_off_and_autologin_set(monkeypatch):
     monkeypatch.setattr(guardian.subprocess, "run", _fake_run)
     available, _detail = guardian.reboot_available()
     assert available is True
+
+
+def test_is_stale_uses_cycle_start_as_progress(tmp_path):
+    """A recently STARTED cycle counts as alive even if none completed lately —
+    slow Chrome launches and challenge-cooldown sleeps must not read as hung."""
+    state = MonitorState(state_file=str(tmp_path / "state.json"))
+    now = datetime.now(timezone.utc)
+    state.set_last_cycle_completed_at(now - timedelta(seconds=900))
+    state.set_last_cycle_started_at(now - timedelta(seconds=30))
+    stale, age = guardian.is_stale(state=state, stale_after_seconds=600, now=now)
+    assert stale is False
+    assert age < 600
+
+    # And a genuinely hung monitor (both marks old) is still stale.
+    state.set_last_cycle_started_at(now - timedelta(seconds=900))
+    stale, _age = guardian.is_stale(state=state, stale_after_seconds=600, now=now)
+    assert stale is True
+
+
+def test_confirm_staleness_requires_two_strikes(tmp_path):
+    state = MonitorState(state_file=str(tmp_path / "state.json"))
+    now = datetime.now(timezone.utc)
+    kwargs = dict(
+        state=state,
+        stale=True,
+        stale_age_seconds=700.0,
+        service_running=True,
+        force_fix=False,
+        now=now,
+    )
+    assert guardian._confirm_staleness(**kwargs) is False  # strike 1: wait a pass
+    assert state.get_guardian_stale_strikes() == 1
+    assert guardian._confirm_staleness(**kwargs) is True  # strike 2: remediate
+
+    # A healthy pass resets the strike counter.
+    assert guardian._confirm_staleness(**{**kwargs, "stale": False}) is False
+    assert state.get_guardian_stale_strikes() == 0
+
+
+def test_confirm_staleness_skipped_during_challenge_cooldown(tmp_path):
+    state = MonitorState(state_file=str(tmp_path / "state.json"))
+    now = datetime.now(timezone.utc)
+    state.set_challenge_cooldown_until(now + timedelta(seconds=300))
+    demoted = guardian._confirm_staleness(
+        state=state,
+        stale=True,
+        stale_age_seconds=700.0,
+        service_running=True,
+        force_fix=False,
+        now=now,
+    )
+    assert demoted is False
+    assert state.get_guardian_stale_strikes() == 0  # cooldown quiet is not a strike
+
+
+def test_confirm_staleness_passthrough_for_dead_service(tmp_path):
+    """A dead process is remediated immediately — no strikes, no cooldown grace."""
+    state = MonitorState(state_file=str(tmp_path / "state.json"))
+    now = datetime.now(timezone.utc)
+    state.set_challenge_cooldown_until(now + timedelta(seconds=300))
+    confirmed = guardian._confirm_staleness(
+        state=state,
+        stale=True,
+        stale_age_seconds=700.0,
+        service_running=False,
+        force_fix=False,
+        now=now,
+    )
+    assert confirmed is True

@@ -9,7 +9,8 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 ## 📋 Recent Changes
 
 <!-- CHANGELOG_START -->
-- `3c1c1a0`  2026-07-02  Record blocked checks as impaired uptime
+- `8187173`  2026-07-08  Stop the guardian/monitor restart death spiral
+- `8d28962`  2026-07-02  Record blocked checks as impaired uptime
 - `e1e56da`  2026-07-02  Stabilize monitor history and stop controls
 - `1fe2cf2`  2026-07-02  Page history tab rendering
 - `14e89c5`  2026-07-02  Fix launchd uptime status in app
@@ -18,7 +19,6 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 - `28a2f85`  2026-07-02  Close session-health tab after each check instead of parking it
 - `89fcb64`  2026-07-02  Switch self-heal reboot from FileVault authrestart to plain reboot
 - `d82b6b8`  2026-07-02  Fix self-heal reboot: root-owned wrapper instead of unreadable redirect
-- `36643e5`  2026-07-02  Fix doctor-lite profile clash (stray about:blank tabs), 30min reboot threshold, per-concert uptime timeline
 
 Full history: [CHANGELOG.md](CHANGELOG.md)
 <!-- CHANGELOG_END -->

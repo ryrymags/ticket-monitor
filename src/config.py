@@ -468,7 +468,7 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
         alerts, "operational_heartbeat_hours", 6, "alerts.operational_heartbeat_hours"
     )
     alerts_event_check_stale_seconds = safe_int(
-        alerts, "event_check_stale_seconds", 180, "alerts.event_check_stale_seconds"
+        alerts, "event_check_stale_seconds", 360, "alerts.event_check_stale_seconds"
     )
     alerts_operational_state_cooldown_seconds = safe_int(
         alerts,
@@ -563,7 +563,7 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
     # Watchdog
     watchdog_enabled = safe_bool(watchdog, "enabled", True)
     watchdog_interval_seconds = safe_int(watchdog, "interval_seconds", 120, "watchdog.interval_seconds")
-    watchdog_stale_after_seconds = safe_int(watchdog, "stale_after_seconds", 180, "watchdog.stale_after_seconds")
+    watchdog_stale_after_seconds = safe_int(watchdog, "stale_after_seconds", 600, "watchdog.stale_after_seconds")
     watchdog_max_fix_attempts_per_hour = safe_int(
         watchdog,
         "max_fix_attempts_per_hour",

@@ -42,6 +42,64 @@ def _is_channel_not_found_error(exc: BaseException) -> bool:
     return "not found" in msg and ("distribution" in msg or "channel" in msg or "chrome" in msg)
 
 
+# A launch that hasn't produced a browser in this long is stuck — fail fast so the
+# scheduler's recycle/backoff path handles it, instead of sitting in Playwright's
+# 180s default long enough for the guardian to read the whole monitor as hung.
+LAUNCH_TIMEOUT_MS = 60_000
+
+# Pure-cache subtrees Chrome rebuilds on demand. A bloated profile (observed at
+# 1.6GB) pushes launch time past any sane timeout; trimming these keeps launches
+# fast without touching cookies, login state, or the browser fingerprint.
+_PROFILE_CACHE_DIR_NAMES = (
+    "Cache",
+    "Code Cache",
+    "GPUCache",
+    "GrShaderCache",
+    "ShaderCache",
+    "DawnGraphiteCache",
+    "DawnWebGPUCache",
+    "GraphiteDawnCache",
+)
+_PROFILE_CACHE_SUBPATHS = (os.path.join("Service Worker", "CacheStorage"),)
+
+
+def trim_profile_caches(user_data_dir: str) -> int:
+    """Delete pure-cache subtrees from a persistent Chrome profile.
+
+    Only call while no Chrome instance is using the profile (i.e. right before a
+    launch). Returns the approximate number of MB freed.
+    """
+    import shutil
+
+    freed_bytes = 0
+    roots = (user_data_dir, os.path.join(user_data_dir, "Default"))
+    targets: list[str] = []
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        for name in _PROFILE_CACHE_DIR_NAMES:
+            targets.append(os.path.join(root, name))
+        for sub in _PROFILE_CACHE_SUBPATHS:
+            targets.append(os.path.join(root, sub))
+    for target in targets:
+        if not os.path.isdir(target):
+            continue
+        try:
+            for dirpath, _dirnames, filenames in os.walk(target):
+                for filename in filenames:
+                    try:
+                        freed_bytes += os.path.getsize(os.path.join(dirpath, filename))
+                    except OSError:
+                        pass
+            shutil.rmtree(target, ignore_errors=True)
+        except OSError:
+            continue
+    freed_mb = int(freed_bytes / (1024 * 1024))
+    if freed_mb:
+        logger.info("Trimmed %d MB of Chrome profile caches from %s", freed_mb, user_data_dir)
+    return freed_mb
+
+
 @dataclass
 class _NetworkSnapshot:
     availability_count: int
@@ -186,6 +244,12 @@ class BrowserProbe:
                         "browser.user_data_dir is required when browser.session_mode is persistent_profile"
                     )
                 os.makedirs(self.user_data_dir, exist_ok=True)
+                # Nothing else may use this profile while the probe owns it, so this
+                # is the one safe moment to shed launch-slowing cache bloat.
+                try:
+                    trim_profile_caches(self.user_data_dir)
+                except Exception as trim_exc:  # pragma: no cover - trim is best-effort
+                    logger.debug("Profile cache trim failed: %s", trim_exc)
                 try:
                     self._context = self._playwright.chromium.launch_persistent_context(
                         self.user_data_dir,
@@ -362,6 +426,7 @@ class BrowserProbe:
     def _launch_kwargs(*, headless: bool, channel: str | None) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
             "headless": headless,
+            "timeout": LAUNCH_TIMEOUT_MS,
             # Keep the OS sandbox ON: Playwright defaults it OFF (--no-sandbox), which
             # shows an infobar AND is a known automation tell. Also drop the
             # --enable-automation switch (the "controlled by test software" banner/flag).

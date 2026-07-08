@@ -242,6 +242,9 @@ class MonitorScheduler:
         self.uptime.mark_online()
         for _led in self._event_uptime.values():
             _led.mark_online()
+        # Browser launch can take a while (cold profile, busy machine). Stamp that
+        # stretch as impaired ("starting") so it never reads as inferred downtime.
+        self._record_starting_heartbeat()
         try:
             self.probe.start()
         except BrowserProbeError as exc:
@@ -351,6 +354,22 @@ class MonitorScheduler:
         self.uptime.flush()
         for _led in self._event_uptime.values():
             _led.flush()
+
+    def _record_starting_heartbeat(self):
+        """Heartbeat 'impaired: starting' while the browser (re)launches.
+
+        Launches used to be silent stretches that the ledger back-filled as ``down``
+        even though the monitor was alive the whole time — it just couldn't see
+        tickets yet, which is impairment.
+        """
+        try:
+            now = datetime.now(timezone.utc)
+            gap = self._last_loop_sleep_seconds
+            self.uptime.heartbeat(now, "impaired", "starting", expected_gap_seconds=gap)
+            for led in self._event_uptime.values():
+                led.heartbeat(now, "impaired", "starting", expected_gap_seconds=gap)
+        except Exception as exc:  # pragma: no cover - telemetry must never crash the loop
+            logger.debug("starting heartbeat failed: %s", exc)
 
     def _record_uptime_heartbeat(
         self,
@@ -754,6 +773,12 @@ class MonitorScheduler:
 
     def _check_event_poll_staleness(self, now: datetime) -> bool:
         """Alert and self-heal when any configured event stops receiving checks."""
+        # A live challenge cooldown means checks are deliberately paused — that quiet
+        # is planned, not staleness. Flagging it would recycle the browser and walk
+        # straight back into the block flurry the cooldown exists to wait out.
+        cooldown_until = self.state.get_challenge_cooldown_until()
+        if cooldown_until is not None and now < cooldown_until:
+            return False
         threshold_seconds = int(self.config.alerts_event_check_stale_seconds)
         stale_detected = False
 
@@ -1826,6 +1851,7 @@ class MonitorScheduler:
 
         try:
             logger.warning("Recycling browser context: %s", reason)
+            self._record_starting_heartbeat()
             self.probe.close()
             self.probe.start()
             self._last_browser_recycle_at = now

@@ -116,7 +116,7 @@ class TestLoadConfig:
         assert config.browser_host_remote_debugging_port == 9222
         assert config.alerts_ticket_cooldown_seconds == 180
         assert config.self_heal_browser_restart_threshold == 3
-        assert config.alerts_event_check_stale_seconds == 180
+        assert config.alerts_event_check_stale_seconds == 360
         assert config.alerts_operational_state_cooldown_seconds == 1800
         assert config.auth_auto_login_enabled is False
         assert config.auth_keychain_service == "ticket-monitor"

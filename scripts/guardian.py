@@ -170,10 +170,20 @@ def kill_orphaned_playwright_processes(repo_dir: Path, monitor_pid: int | None) 
 
 
 def is_stale(state: MonitorState, stale_after_seconds: int, now: datetime) -> tuple[bool, float]:
-    last_completed = state.get_last_cycle_completed_at()
-    if last_completed is None:
+    """Age since the last sign of cycle *progress* (start or completion).
+
+    A cycle can legitimately run for minutes (slow Chrome launch, challenge-cooldown
+    sleep), so a fresh ``last_cycle_started_at`` counts as alive — only a monitor
+    that is neither starting nor finishing cycles is stale.
+    """
+    marks = [
+        d
+        for d in (state.get_last_cycle_completed_at(), state.get_last_cycle_started_at())
+        if d is not None
+    ]
+    if not marks:
         return True, float("inf")
-    age = (now - last_completed).total_seconds()
+    age = (now - max(marks)).total_seconds()
     return age > stale_after_seconds, age
 
 
@@ -357,6 +367,61 @@ def maybe_selfheal_reboot(
     return trigger_selfheal_reboot(state, notifier, reason, now)
 
 
+# Staleness must persist across this many consecutive guardian passes (~2 min apart)
+# before remediation. One stale pass is routinely just a slow cycle.
+STALE_STRIKES_REQUIRED = 2
+
+
+def _confirm_staleness(
+    *,
+    state: MonitorState,
+    stale: bool,
+    stale_age_seconds: float,
+    service_running: bool,
+    force_fix: bool,
+    now: datetime,
+) -> bool:
+    """Demote a raw stale reading unless it deserves remediation.
+
+    Two protections, both only for a monitor process that is actually running
+    (a dead service is handled by the service_not_running path regardless):
+
+    - An active challenge cooldown means the monitor is deliberately quiet.
+      Kickstarting it would relaunch Chrome straight into the block it is
+      waiting out, so staleness is ignored for the cooldown's duration.
+    - Otherwise staleness must persist for STALE_STRIKES_REQUIRED consecutive
+      guardian passes; a single strike is logged and given one more pass.
+    """
+    logger = logging.getLogger("guardian")
+    if force_fix or not service_running:
+        return stale
+    if not stale:
+        if state.get_guardian_stale_strikes():
+            state.set_guardian_stale_strikes(0)
+        return False
+
+    cooldown_until = state.get_challenge_cooldown_until()
+    if cooldown_until is not None and now < cooldown_until:
+        logger.info(
+            "Monitor is stale (%.0fs) but inside a challenge cooldown until %s — leaving it alone",
+            stale_age_seconds,
+            cooldown_until.isoformat(),
+        )
+        return False
+
+    strikes = state.get_guardian_stale_strikes() + 1
+    state.set_guardian_stale_strikes(strikes)
+    if strikes < STALE_STRIKES_REQUIRED:
+        logger.warning(
+            "Monitor looks stale (%.0fs) — strike %d/%d, waiting one more pass before remediating",
+            stale_age_seconds,
+            strikes,
+            STALE_STRIKES_REQUIRED,
+        )
+        return False
+    return True
+
+
 def should_alert_critical(state: MonitorState, now: datetime, cooldown_seconds: int = 1800) -> bool:
     last = state.get_guardian_last_critical_alert_at()
     if last is None:
@@ -379,6 +444,14 @@ def run_guardian(config: MonitorConfig, force_fix: bool = False) -> int:
     now = datetime.now(timezone.utc)
     service = get_service_status()
     stale, stale_age_seconds = is_stale(state, config.watchdog_stale_after_seconds, now)
+    stale = _confirm_staleness(
+        state=state,
+        stale=stale,
+        stale_age_seconds=stale_age_seconds,
+        service_running=service.running,
+        force_fix=force_fix,
+        now=now,
+    )
     browser_restarts_recent = state.get_browser_restart_count_recent(
         config.self_heal_process_restart_window_seconds,
         now=now,
@@ -472,6 +545,7 @@ def run_guardian(config: MonitorConfig, force_fix: bool = False) -> int:
     state.record_guardian_fix_attempt(now)
     state.record_process_restart_request(now)
     state.set_last_auto_fix_at(now)
+    state.set_guardian_stale_strikes(0)
     notifier.send_auto_fix_action(
         action=action,
         reason=reason,

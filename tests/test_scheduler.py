@@ -1874,3 +1874,39 @@ class TestUptimeConnectivity:
         last = scheduler.uptime.segments[-1]
         assert last["state"] == "impaired"
         assert last["reason"] == "logged_out"
+
+
+class TestStalenessCooldownInteraction:
+    def test_poll_staleness_skipped_during_challenge_cooldown(self, tmp_path):
+        """A live challenge cooldown is planned quiet — it must not read as staleness
+        (which would recycle the browser straight back into the block)."""
+        config = _make_config(alerts_event_check_stale_seconds=30)
+        scheduler = _make_scheduler(tmp_path, config=config)
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        scheduler._uptime_anchor = now - timedelta(hours=1)
+        event_id = config.events[0].event_id
+        scheduler.state._event(event_id)["last_check"] = (now - timedelta(seconds=90)).isoformat()
+        scheduler.state.set_challenge_cooldown_until(now + timedelta(seconds=120))
+
+        assert scheduler._check_event_poll_staleness(now=now) is False
+        assert event_id not in scheduler._stale_event_alerted
+        scheduler.probe.close.assert_not_called()
+
+        # Once the cooldown lapses, the same lag counts as stale again.
+        later = now + timedelta(seconds=121)
+        scheduler.state._event(event_id)["last_check"] = (later - timedelta(seconds=90)).isoformat()
+        assert scheduler._check_event_poll_staleness(now=later) is True
+
+
+class TestStartingHeartbeat:
+    def test_record_starting_heartbeat_marks_impaired(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        scheduler._record_starting_heartbeat()
+
+        last = scheduler.uptime.segments[-1]
+        assert last["state"] == "impaired"
+        assert last["reason"] == "starting"
+        for ledger in scheduler._event_uptime.values():
+            last_ev = ledger.segments[-1]
+            assert last_ev["state"] == "impaired"
+            assert last_ev["reason"] == "starting"
