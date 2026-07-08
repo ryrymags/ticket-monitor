@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `8187173`  2026-07-08 12:43  Stop the guardian/monitor restart death spiral
+- `c44003d`  2026-07-08 13:02  Fix Uptime tab crashes, arm the reboot tier, send ntfy first
+
+- `57195c9`  2026-07-08 12:43  Stop the guardian/monitor restart death spiral
 
 - `8d28962`  2026-07-02 16:21  Record blocked checks as impaired uptime
 

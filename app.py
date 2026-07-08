@@ -1696,7 +1696,9 @@ class TicketMonitorApp(ctk.CTk):
         # row contributes a stable "ONGOING" token (not its creeping end time) so a
         # still-running state doesn't re-render every poll — it only re-renders when
         # the state actually switches and the segment finalizes.
-        rows = uptime_timeline(segments, hours=24 * 7, now=now, monitor_running=running)
+        rows = uptime_timeline(
+            segments, hours=24 * 7, min_seconds=120, now=now, monitor_running=running
+        )
         sig = tuple(
             (r["start"], r["state"], "ONGOING" if r["ongoing"] else r["end"]) for r in rows
         )
@@ -1704,12 +1706,29 @@ class TicketMonitorApp(ctk.CTk):
             return
         self._uptime_outage_sig = sig
 
-        # Per-event ledgers, loaded once per rebuild — timeline rows use these to say
-        # WHICH concert an impairment hit instead of an undifferentiated "IMPAIRED".
+        # Everything below rebuilds Tk widgets; a bad row or a Tk hiccup must never
+        # take down the mainloop (this used to crash the whole GUI).
+        try:
+            self._rebuild_uptime_timeline(rows, now)
+        except Exception:
+            logging.exception("Uptime timeline rebuild failed")
+
+    # Timeline rows are capped: with churn-heavy weeks the 7-day list can run to many
+    # hundreds of rows, and creating that many CTk widgets stalls the Tk mainloop
+    # long enough to look like a crash. The newest rows are the ones that matter.
+    _UPTIME_TIMELINE_MAX_ROWS = 150
+
+    def _rebuild_uptime_timeline(self, rows: list[dict], now: datetime):
+        # Per-event ledgers, loaded and PARSED once per rebuild — timeline rows use
+        # these to say WHICH concert an impairment hit. Parsing here (not per row)
+        # matters: it used to be fromisoformat per segment per row, ~1M calls on a
+        # churny ledger, all on the Tk main thread.
         self._uptime_event_segs = [
             (
                 self._event_short_label(ev),
-                load_uptime_segments(uptime_event_file(ev.get("event_id", ""))),
+                self._parse_segments(
+                    load_uptime_segments(uptime_event_file(ev.get("event_id", "")))
+                ),
             )
             for ev in self._events
         ]
@@ -1727,11 +1746,32 @@ class TicketMonitorApp(ctk.CTk):
             ).grid(row=0, column=0, padx=20, pady=40)
             return
 
-        for i, r in enumerate(rows):
+        visible = rows[: self._UPTIME_TIMELINE_MAX_ROWS]
+        for i, r in enumerate(visible):
             try:
                 self._render_timeline_row(i, r, now)
             except Exception:
                 logging.exception("Failed to render timeline row %d", i)
+        hidden = len(rows) - len(visible)
+        if hidden > 0:
+            ctk.CTkLabel(
+                self._uptime_list,
+                text=f"… {hidden} older entries not shown",
+                text_color="gray50",
+            ).grid(row=len(visible), column=0, padx=20, pady=(6, 10))
+
+    @staticmethod
+    def _parse_segments(segments: list[dict]) -> list[tuple[datetime, datetime, str]]:
+        """Segments as (start, end, state) datetime tuples; unparseable ones dropped."""
+        parsed: list[tuple[datetime, datetime, str]] = []
+        for seg in segments:
+            try:
+                start = datetime.fromisoformat(str(seg["start"]))
+                end = datetime.fromisoformat(str(seg["end"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+            parsed.append((start, end, str(seg.get("state", ""))))
+        return parsed
 
     @staticmethod
     def _event_short_label(ev: dict) -> str:
@@ -1763,16 +1803,11 @@ class TicketMonitorApp(ctk.CTk):
         fine: list[str] = []
         for short, segs in event_segs:
             healthy_s = bad_s = 0.0
-            for seg in segs:
-                try:
-                    seg_start = datetime.fromisoformat(str(seg["start"]))
-                    seg_end = datetime.fromisoformat(str(seg["end"]))
-                except (KeyError, TypeError, ValueError):
-                    continue
+            for seg_start, seg_end, seg_state in segs:
                 overlap = (min(seg_end, win_end) - max(seg_start, win_start)).total_seconds()
                 if overlap <= 0:
                     continue
-                if seg.get("state") == "healthy":
+                if seg_state == "healthy":
                     healthy_s += overlap
                 else:
                     bad_s += overlap
@@ -1794,16 +1829,40 @@ class TicketMonitorApp(ctk.CTk):
         return {"summ": summ, "state": status.get("state", "down"), "has_data": bool(segs)}
 
     def _render_uptime_per_event(self, now: datetime, running: bool):
-        for w in self._uptime_per_event_frame.winfo_children():
-            w.destroy()
-        if not self._events:
-            ctk.CTkLabel(
-                self._uptime_per_event_frame,
-                text="Add concerts in the Events tab to see per-concert uptime.",
-                text_color="gray50", anchor="w",
-            ).grid(row=0, column=0, padx=14, pady=10, sticky="w")
-            return
-        for i, ev in enumerate(self._events):
+        # Build the label widgets once per event list and configure() them on every
+        # refresh — destroying/recreating widgets each 10s poll is what churned the
+        # Tk mainloop (same pattern as _uptime_bars above).
+        event_ids = tuple(ev.get("event_id", "") for ev in self._events)
+        if getattr(self, "_uptime_per_event_ids", None) != event_ids:
+            self._uptime_per_event_ids = event_ids
+            for w in self._uptime_per_event_frame.winfo_children():
+                w.destroy()
+            self._uptime_per_event_rows = []
+            if not self._events:
+                ctk.CTkLabel(
+                    self._uptime_per_event_frame,
+                    text="Add concerts in the Events tab to see per-concert uptime.",
+                    text_color="gray50", anchor="w",
+                ).grid(row=0, column=0, padx=14, pady=10, sticky="w")
+            else:
+                for i in range(len(self._events)):
+                    title = ctk.CTkLabel(
+                        self._uptime_per_event_frame, text="",
+                        font=ctk.CTkFont(size=12, weight="bold"), anchor="w",
+                        wraplength=560, justify="left",
+                    )
+                    title.grid(row=i * 2, column=0, padx=14, pady=(10 if i == 0 else 6, 0), sticky="w")
+                    detail = ctk.CTkLabel(
+                        self._uptime_per_event_frame, text="",
+                        font=ctk.CTkFont(size=11), text_color="gray70", anchor="w",
+                    )
+                    detail.grid(
+                        row=i * 2 + 1, column=0, padx=14,
+                        pady=(0, 10 if i == len(self._events) - 1 else 4), sticky="w",
+                    )
+                    self._uptime_per_event_rows.append((title, detail))
+
+        for ev, (title_lbl, detail_lbl) in zip(self._events, getattr(self, "_uptime_per_event_rows", [])):
             eid = ev.get("event_id", "")
             name = ev.get("name") or ev.get("url", "Unknown")
             info = self._event_uptime_summary(eid, 24, now, running)
@@ -1812,11 +1871,7 @@ class TicketMonitorApp(ctk.CTk):
                 info["state"], self._UPTIME_STYLE["down"]
             )
             short = self._event_short_label(ev)
-            ctk.CTkLabel(
-                self._uptime_per_event_frame, text=f"{emoji}  {short} — {name}",
-                font=ctk.CTkFont(size=12, weight="bold"), text_color=color, anchor="w",
-                wraplength=560, justify="left",
-            ).grid(row=i * 2, column=0, padx=14, pady=(10 if i == 0 else 6, 0), sticky="w")
+            title_lbl.configure(text=f"{emoji}  {short} — {name}", text_color=color)
             if info["has_data"]:
                 detail = (
                     f"{summ['healthy_pct']}% healthy  ·  "
@@ -1826,10 +1881,7 @@ class TicketMonitorApp(ctk.CTk):
                 )
             else:
                 detail = "No data yet."
-            ctk.CTkLabel(
-                self._uptime_per_event_frame, text=detail,
-                font=ctk.CTkFont(size=11), text_color="gray70", anchor="w",
-            ).grid(row=i * 2 + 1, column=0, padx=14, pady=(0, 10 if i == len(self._events) - 1 else 4), sticky="w")
+            detail_lbl.configure(text=detail)
 
     def _render_timeline_row(self, i: int, r: dict, now: datetime):
         state = r["state"]

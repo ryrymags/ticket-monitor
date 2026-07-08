@@ -303,3 +303,89 @@ def test_timeline_drops_short_closed_segments_but_keeps_ongoing():
     rows = timeline(segs, hours=24, min_seconds=60, now=now)
     # The 10s impaired blip is dropped; two healthy stretches remain.
     assert [r["state"] for r in rows] == ["healthy", "healthy"]
+
+
+class TestSegmentCoalescing:
+    def test_contiguous_down_chunks_merge_on_load(self, tmp_path):
+        """Restart-churn ledgers (dozens of back-to-back down micro-segments) must
+        collapse into one segment when read back."""
+        import json as _json
+
+        from src.uptime import load_uptime_segments
+
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        chunks = []
+        for i in range(10):
+            chunks.append(
+                {
+                    "state": "down",
+                    "reason": "offline",
+                    "start": (base + timedelta(minutes=3 * i)).isoformat(),
+                    "end": (base + timedelta(minutes=3 * (i + 1))).isoformat(),
+                }
+            )
+        path = tmp_path / "uptime_log.json"
+        path.write_text(_json.dumps({"segments": chunks}), encoding="utf-8")
+
+        segments = load_uptime_segments(str(path))
+        assert len(segments) == 1
+        assert segments[0]["state"] == "down"
+        assert segments[0]["start"] == base.isoformat()
+        assert segments[0]["end"] == (base + timedelta(minutes=30)).isoformat()
+
+    def test_different_states_do_not_merge(self, tmp_path):
+        import json as _json
+
+        from src.uptime import load_uptime_segments
+
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        chunks = [
+            {"state": "down", "reason": "offline", "start": base.isoformat(),
+             "end": (base + timedelta(minutes=3)).isoformat()},
+            {"state": "impaired", "reason": "blocked", "start": (base + timedelta(minutes=3)).isoformat(),
+             "end": (base + timedelta(minutes=6)).isoformat()},
+            {"state": "down", "reason": "offline", "start": (base + timedelta(minutes=6)).isoformat(),
+             "end": (base + timedelta(minutes=9)).isoformat()},
+        ]
+        path = tmp_path / "uptime_log.json"
+        path.write_text(_json.dumps({"segments": chunks}), encoding="utf-8")
+        assert len(load_uptime_segments(str(path))) == 3
+
+    def test_gap_backfill_extends_previous_down_segment(self, tmp_path):
+        """A second offline gap right after an earlier one extends the existing down
+        segment instead of appending a sibling."""
+        ledger = UptimeLedger(path=str(tmp_path / "uptime_log.json"))
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        ledger.heartbeat(base, "healthy")
+        # Two restarts in a row, each producing an offline gap + brief impaired blip
+        # at the same instant (start == down end): down then impaired then down again.
+        ledger.heartbeat(base + timedelta(minutes=5), "impaired", "starting")
+        ledger.heartbeat(base + timedelta(minutes=10), "impaired", "starting")
+
+        states = [s["state"] for s in ledger.segments]
+        # healthy, down(gap1), impaired(blip), down(gap2), impaired — and the two
+        # downs must NOT have merged (an impaired blip separates them).
+        assert states == ["healthy", "down", "impaired", "down", "impaired"]
+
+    def test_summaries_unchanged_by_coalescing(self, tmp_path):
+        import json as _json
+
+        from src.uptime import load_uptime_segments, summarize_uptime
+
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        chunks = []
+        for i in range(20):
+            chunks.append(
+                {
+                    "state": "down" if i % 2 == 0 else "down",
+                    "reason": "offline",
+                    "start": (base + timedelta(minutes=2 * i)).isoformat(),
+                    "end": (base + timedelta(minutes=2 * (i + 1))).isoformat(),
+                }
+            )
+        path = tmp_path / "uptime_log.json"
+        path.write_text(_json.dumps({"segments": chunks}), encoding="utf-8")
+        segments = load_uptime_segments(str(path))
+        now = base + timedelta(minutes=40)
+        summ = summarize_uptime(segments, hours=1, now=now, monitor_running=True)
+        assert summ["down_s"] == 40 * 60

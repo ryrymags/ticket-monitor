@@ -1178,8 +1178,11 @@ class MonitorScheduler:
             session_mode=self.config.browser_session_mode,
             user_data_dir=self.config.browser_user_data_dir,
             channel=self.config.browser_channel,
-            # Background re-auth should stay silent; manual login uses monitorctl reauth.
-            headless=True,
+            # Headed, matching the monitor's own browser: a headless launch on the
+            # live profile hands Ticketmaster a headless fingerprint on the exact
+            # session we're trying to keep trusted (and it looked like the monitor's
+            # Chrome "went headless" whenever re-auth ran).
+            headless=self.config.browser_headless,
             verify_event_urls=[ev.url for ev in self.config.events],
         )
         if reauth.success:

@@ -151,8 +151,10 @@ class NtfyNotifier:
                 payload["click"] = click
             if actions:
                 payload["actions"] = actions
+            # Short timeout: this send runs ahead of the Discord webhook on the
+            # hot BINGO path, so a slow/unreachable ntfy server must not stall it.
             try:
-                resp = self.session.post(self.server, json=payload, timeout=10)
+                resp = self.session.post(self.server, json=payload, timeout=5)
                 if resp.status_code >= 400:
                     logger.error("ntfy error %d for topic: %s",
                                  resp.status_code, resp.text[:200])
@@ -163,7 +165,7 @@ class NtfyNotifier:
                 # One retry on transient failure, then give up (never raise).
                 try:
                     time.sleep(1)
-                    resp = self.session.post(self.server, json=payload, timeout=10)
+                    resp = self.session.post(self.server, json=payload, timeout=5)
                     if resp.status_code >= 400:
                         all_ok = False
                 except requests.RequestException as e2:
@@ -362,6 +364,27 @@ class DiscordNotifier:
             preview_status=str(match["preview_status"]),
             config_name=config_name,
         )
+
+        # Fan out to ntfy (friends' phones) — BINGOs only, ever. Yellow non-BINGO
+        # sightings and all operational notices stay Discord-only; an ntfy push must
+        # always mean "buy now". Gated on `mention` too so friends get the same burst
+        # cadence as the Discord @-ping (loud at first, ≤1/min, then quiet after the
+        # episode). Sent BEFORE the Discord webhook: this is the channel someone acts
+        # on from a lock screen, so it must not wait behind Discord's round-trip and
+        # retries. Guarded so a push failure can never break the Discord path.
+        if self.ntfy is not None and mention and is_bingo:
+            try:
+                ntfy_title = f"🟢 {status_label}: {event_name}"
+                ntfy_body = self._ntfy_body(match.get("label", ""), groups, matched_group)
+                self.ntfy.send_ticket(
+                    title=ntfy_title,
+                    message=ntfy_body,
+                    event_url=event_url,
+                    is_bingo=bool(is_bingo),
+                )
+            except Exception as _ntfy_exc:
+                logger.debug("ntfy push skipped: %s", _ntfy_exc)
+
         sent = self._send(embeds=[embed], content=content, retries=2)
 
         event_id_match = re.search(r"/event/([A-Z0-9]+)", event_url or "", re.IGNORECASE)
@@ -380,24 +403,6 @@ class DiscordNotifier:
                 )
             except Exception as _hist_exc:
                 logger.debug("History write skipped: %s", _hist_exc)
-
-        # Fan out to ntfy (friends' phones) — BINGOs only, ever. Yellow non-BINGO
-        # sightings and all operational notices stay Discord-only; an ntfy push must
-        # always mean "buy now". Gated on `mention` too so friends get the same burst
-        # cadence as the Discord @-ping (loud at first, ≤1/min, then quiet after the
-        # episode). Guarded so a push failure can never break the Discord path.
-        if self.ntfy is not None and mention and is_bingo:
-            try:
-                ntfy_title = f"🟢 {status_label}: {event_name}"
-                ntfy_body = self._ntfy_body(match.get("label", ""), groups, matched_group)
-                self.ntfy.send_ticket(
-                    title=ntfy_title,
-                    message=ntfy_body,
-                    event_url=event_url,
-                    is_bingo=bool(is_bingo),
-                )
-            except Exception as _ntfy_exc:
-                logger.debug("ntfy push skipped: %s", _ntfy_exc)
 
         return sent
 

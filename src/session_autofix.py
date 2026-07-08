@@ -215,7 +215,7 @@ class TicketmasterSessionAutoFixer:
             with sync_playwright() as playwright:
                 try:
                     browser = playwright.chromium.launch(
-                        **self._launch_kwargs(headless=True, channel=channel),
+                        **self._launch_kwargs(headless=headless, channel=channel),
                     )
                 except Exception as launch_exc:
                     if channel and _is_channel_not_found_error(launch_exc):
@@ -225,7 +225,7 @@ class TicketmasterSessionAutoFixer:
                             channel,
                         )
                         browser = playwright.chromium.launch(
-                            **self._launch_kwargs(headless=True, channel=None),
+                            **self._launch_kwargs(headless=headless, channel=None),
                         )
                     else:
                         raise

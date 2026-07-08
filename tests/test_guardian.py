@@ -218,12 +218,25 @@ def test_run_guardian_pauses_after_max_attempts_for_error_burst(tmp_path, monkey
 # ── Last-resort reboot tier ──────────────────────────────────────────────────
 
 
+def _window_summary(total_s=3600, healthy_s=0):
+    """summarize_uptime-shaped dict for the reboot window."""
+    bad = max(0, total_s - healthy_s)
+    pct = round(100.0 * healthy_s / total_s, 1) if total_s else 0.0
+    return {
+        "healthy_s": healthy_s,
+        "impaired_s": bad,
+        "down_s": 0,
+        "total_s": total_s,
+        "healthy_pct": pct,
+    }
+
+
 def _reboot_kwargs(now, **overrides):
     """All-guards-pass baseline for evaluate_reboot; tests flip one guard at a time."""
     kwargs = dict(
         config=_make_config(watchdog_reboot_enabled=True),
         now=now,
-        impaired_start=now - timedelta(seconds=3600),
+        window_summary=_window_summary(),
         probe_scope="ip_device",
         system_uptime_seconds=7200.0,
         last_reboot_at=None,
@@ -250,17 +263,28 @@ def test_evaluate_reboot_disabled_by_default():
     assert reason == "reboot_disabled"
 
 
-def test_evaluate_reboot_requires_impairment():
+def test_evaluate_reboot_requires_unhealthy_window():
     now = datetime.now(timezone.utc)
-    should, reason = guardian.evaluate_reboot(**_reboot_kwargs(now, impaired_start=None))
-    assert should is False
-    assert reason == "not_impaired"
-
-    # Impaired, but not long enough (default threshold 2700s).
-    should, _ = guardian.evaluate_reboot(
-        **_reboot_kwargs(now, impaired_start=now - timedelta(seconds=600))
+    # Not enough recorded time in the window yet.
+    should, reason = guardian.evaluate_reboot(
+        **_reboot_kwargs(now, window_summary=_window_summary(total_s=600))
     )
     assert should is False
+    assert reason == "window_only_600s_recorded"
+
+    # Plenty recorded, but meaningfully healthy → no reboot.
+    should, reason = guardian.evaluate_reboot(
+        **_reboot_kwargs(now, window_summary=_window_summary(total_s=3600, healthy_s=1200))
+    )
+    assert should is False
+    assert reason == "healthy_33pct_in_window"
+
+    # Healthy blips under the 10% fraction do NOT reset eligibility — this is the
+    # thrash case the old contiguous-stretch rule could never fire on.
+    should, _ = guardian.evaluate_reboot(
+        **_reboot_kwargs(now, window_summary=_window_summary(total_s=3600, healthy_s=300))
+    )
+    assert should is True
 
 
 def test_evaluate_reboot_skips_targeted_remedy_scopes():
@@ -345,8 +369,12 @@ def test_maybe_selfheal_reboot_notifies_when_reboot_unavailable(tmp_path, monkey
     notifier = _FakeNotifier()
     now = datetime.now(timezone.utc)
 
+    monkeypatch.setattr(guardian, "load_uptime_segments", lambda _path: [])
     monkeypatch.setattr(
-        guardian, "impaired_since", lambda _now, segments=None: now - timedelta(hours=2)
+        guardian, "summarize_uptime", lambda *_a, **_k: _window_summary(total_s=3600)
+    )
+    monkeypatch.setattr(
+        guardian, "_run_variation_probe_for_reboot", lambda _cfg, _state: None
     )
     monkeypatch.setattr(guardian, "get_system_uptime_seconds", lambda _now=None: 7200.0)
     monkeypatch.setattr(
@@ -368,8 +396,12 @@ def test_maybe_selfheal_reboot_records_before_rebooting(tmp_path, monkeypatch):
     notifier = _FakeNotifier()
     now = datetime.now(timezone.utc)
 
+    monkeypatch.setattr(guardian, "load_uptime_segments", lambda _path: [])
     monkeypatch.setattr(
-        guardian, "impaired_since", lambda _now, segments=None: now - timedelta(hours=2)
+        guardian, "summarize_uptime", lambda *_a, **_k: _window_summary(total_s=3600)
+    )
+    monkeypatch.setattr(
+        guardian, "_run_variation_probe_for_reboot", lambda _cfg, _state: None
     )
     monkeypatch.setattr(guardian, "get_system_uptime_seconds", lambda _now=None: 7200.0)
     monkeypatch.setattr(guardian, "reboot_available", lambda: (True, "ok"))
@@ -506,3 +538,78 @@ def test_confirm_staleness_passthrough_for_dead_service(tmp_path):
         now=now,
     )
     assert confirmed is True
+
+
+def test_probe_report_scope_freshness():
+    now = datetime.now(timezone.utc)
+    fresh = {"scope": "profile", "at": (now - timedelta(minutes=30)).isoformat()}
+    stale = {"scope": "profile", "at": (now - timedelta(hours=3)).isoformat()}
+    assert guardian.probe_report_scope(fresh, now) == "profile"
+    assert guardian.probe_report_scope(stale, now) is None
+    assert guardian.probe_report_scope({}, now) is None
+    assert guardian.probe_report_scope({"scope": "profile", "at": "garbage"}, now) is None
+
+
+def test_maybe_selfheal_reboot_runs_probe_and_defers_to_targeted_remedy(tmp_path, monkeypatch):
+    """Reboot warranted but undiagnosed → guardian runs the variation matrix; a
+    profile-scoped verdict cancels the reboot (targeted remedy exists)."""
+    cfg = _make_config(watchdog_reboot_enabled=True)
+    state = MonitorState(state_file=str(tmp_path / "state.json"))
+    state.record_guardian_fix_attempt(datetime.now(timezone.utc))
+    notifier = _FakeNotifier()
+    now = datetime.now(timezone.utc)
+
+    monkeypatch.setattr(guardian, "load_uptime_segments", lambda _path: [])
+    monkeypatch.setattr(
+        guardian, "summarize_uptime", lambda *_a, **_k: _window_summary(total_s=3600)
+    )
+    monkeypatch.setattr(guardian, "get_system_uptime_seconds", lambda _now=None: 7200.0)
+    monkeypatch.setattr(guardian, "reboot_available", lambda: (True, "ok"))
+
+    probe_calls = []
+
+    def _fake_probe(_cfg, _state):
+        report = {"scope": "profile", "at": now.isoformat()}
+        probe_calls.append(report)
+        return report
+
+    monkeypatch.setattr(guardian, "_run_variation_probe_for_reboot", _fake_probe)
+
+    rebooted = guardian.maybe_selfheal_reboot(cfg, state, notifier, now)
+    assert rebooted is False
+    assert len(probe_calls) == 1  # diagnosis ran exactly once
+    assert state.get_last_selfheal_reboot_at() is None  # no reboot slot burned
+
+
+def test_maybe_selfheal_reboot_proceeds_on_ip_device_verdict(tmp_path, monkeypatch):
+    cfg = _make_config(watchdog_reboot_enabled=True)
+    state = MonitorState(state_file=str(tmp_path / "state.json"))
+    state.record_guardian_fix_attempt(datetime.now(timezone.utc))
+    notifier = _FakeNotifier()
+    now = datetime.now(timezone.utc)
+
+    monkeypatch.setattr(guardian, "load_uptime_segments", lambda _path: [])
+    monkeypatch.setattr(
+        guardian, "summarize_uptime", lambda *_a, **_k: _window_summary(total_s=3600)
+    )
+    monkeypatch.setattr(guardian, "get_system_uptime_seconds", lambda _now=None: 7200.0)
+    monkeypatch.setattr(guardian, "reboot_available", lambda: (True, "ok"))
+    monkeypatch.setattr(
+        guardian,
+        "_run_variation_probe_for_reboot",
+        lambda _cfg, _state: {"scope": "ip_device", "at": now.isoformat()},
+    )
+
+    def _fake_run(cmd, **kwargs):
+        class _Proc:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _Proc()
+
+    monkeypatch.setattr(guardian.subprocess, "run", _fake_run)
+
+    rebooted = guardian.maybe_selfheal_reboot(cfg, state, notifier, now)
+    assert rebooted is True
+    assert state.get_last_selfheal_reboot_at() is not None

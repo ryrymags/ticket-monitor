@@ -23,7 +23,7 @@ if str(ROOT_DIR) not in sys.path:
 from src.config import MonitorConfig, load_config
 from src.notifier import DiscordNotifier
 from src.state import MonitorState
-from src.uptime import current_status, load_uptime_segments
+from src.uptime import current_status, load_uptime_segments, summarize_uptime
 
 MONITOR_LABEL = "com.ticketmonitor"
 BROWSER_HOST_LABEL = f"{MONITOR_LABEL}.browser-host"
@@ -242,11 +242,22 @@ def impaired_since(now: datetime, segments: list[dict] | None = None) -> datetim
     return since
 
 
+# Reboot eligibility window: the monitor must be essentially healthy-free over this
+# span. A thrashing monitor interleaves short healthy blips with blocks — the old
+# "contiguous non-healthy stretch" rule reset on every blip, so the reboot could
+# never fire during exactly the churn it exists for.
+REBOOT_WINDOW_HOURS = 1
+REBOOT_MAX_HEALTHY_FRACTION = 0.10
+# A stored variation-probe verdict older than this no longer describes the current
+# block; run a fresh matrix before acting on it.
+PROBE_REPORT_FRESH_SECONDS = 7200
+
+
 def evaluate_reboot(
     *,
     config: MonitorConfig,
     now: datetime,
-    impaired_start: datetime | None,
+    window_summary: dict,
     probe_scope: str | None,
     system_uptime_seconds: float,
     last_reboot_at: datetime | None,
@@ -255,17 +266,21 @@ def evaluate_reboot(
 ) -> tuple[bool, str]:
     """Decide whether a last-resort self-heal reboot is warranted (pure function).
 
-    Returns (should_reboot, reason). Every guard is designed so a reboot can never
-    loop: minimum impairment duration, minimum system uptime since the LAST boot,
-    minimum spacing between self-heal reboots, and a hard daily cap.
+    ``window_summary`` is :func:`src.uptime.summarize_uptime` over the last
+    ``REBOOT_WINDOW_HOURS``. Returns (should_reboot, reason). Every guard is designed
+    so a reboot can never loop: minimum recorded unhealthy time, minimum system
+    uptime since the LAST boot, minimum spacing between self-heal reboots, and a
+    hard daily cap.
     """
     if not config.watchdog_reboot_enabled:
         return False, "reboot_disabled"
-    if impaired_start is None:
-        return False, "not_impaired"
-    impaired_seconds = (now - impaired_start).total_seconds()
-    if impaired_seconds < config.watchdog_reboot_after_impaired_seconds:
-        return False, f"impaired_only_{int(impaired_seconds)}s"
+    total_s = float(window_summary.get("total_s", 0) or 0)
+    healthy_s = float(window_summary.get("healthy_s", 0) or 0)
+    if total_s < config.watchdog_reboot_after_impaired_seconds:
+        return False, f"window_only_{int(total_s)}s_recorded"
+    if healthy_s > total_s * REBOOT_MAX_HEALTHY_FRACTION:
+        healthy_pct = int(round(100.0 * healthy_s / total_s))
+        return False, f"healthy_{healthy_pct}pct_in_window"
     # A reboot only plausibly helps when the block isn't cookie- or account-scoped.
     # Those scopes have targeted remedies; rebooting would burn a slot for nothing.
     if probe_scope in {"profile", "account", "none"}:
@@ -280,7 +295,8 @@ def evaluate_reboot(
             return False, f"last_selfheal_reboot_{int(spacing)}s_ago"
     if reboots_last_day >= config.watchdog_reboot_max_per_day:
         return False, "daily_reboot_cap_reached"
-    return True, f"impaired_{int(impaired_seconds)}s_scope_{probe_scope or 'unknown'}"
+    unhealthy_s = int(total_s - healthy_s)
+    return True, f"unhealthy_{unhealthy_s}s_of_{int(total_s)}s_scope_{probe_scope or 'unknown'}"
 
 
 def reboot_available() -> tuple[bool, str]:
@@ -332,6 +348,43 @@ def trigger_selfheal_reboot(state: MonitorState, notifier: DiscordNotifier, reas
     return True
 
 
+def probe_report_scope(report: dict, now: datetime) -> str | None:
+    """The stored variation-probe verdict, or None when missing/expired.
+
+    A days-old verdict describes a different block than the one happening now;
+    treating it as unknown makes the guardian run a fresh matrix before acting."""
+    scope = report.get("scope")
+    if not scope:
+        return None
+    at = report.get("at")
+    try:
+        taken_at = datetime.fromisoformat(str(at))
+    except (TypeError, ValueError):
+        return None
+    if taken_at.tzinfo is None:
+        taken_at = taken_at.replace(tzinfo=timezone.utc)
+    if (now - taken_at).total_seconds() > PROBE_REPORT_FRESH_SECONDS:
+        return None
+    return scope
+
+
+def _run_variation_probe_for_reboot(config: MonitorConfig, state: MonitorState) -> dict | None:
+    """Best-effort block-scope diagnosis before a reboot; never raises.
+
+    The matrix launches its own short-lived browsers against a temp COPY of the
+    profile, so the live monitor's Chrome is untouched."""
+    logger = logging.getLogger("guardian")
+    try:
+        from src.variation_probe import run_variation_matrix
+
+        report = run_variation_matrix(config).to_dict()
+    except Exception as exc:
+        logger.warning("Pre-reboot variation probe failed: %s", exc)
+        return None
+    state.set_variation_probe_report(report)
+    return report
+
+
 def maybe_selfheal_reboot(
     config: MonitorConfig, state: MonitorState, notifier: DiscordNotifier, now: datetime
 ) -> bool:
@@ -339,17 +392,30 @@ def maybe_selfheal_reboot(
     logger = logging.getLogger("guardian")
     if not config.watchdog_reboot_enabled:
         return False
-    probe_report = state.get_variation_probe_report() or {}
-    should, reason = evaluate_reboot(
+    window_summary = summarize_uptime(
+        load_uptime_segments(str(UPTIME_LOG_FILE)), hours=REBOOT_WINDOW_HOURS, now=now
+    )
+    decision_kwargs = dict(
         config=config,
         now=now,
-        impaired_start=impaired_since(now),
-        probe_scope=probe_report.get("scope"),
+        window_summary=window_summary,
         system_uptime_seconds=get_system_uptime_seconds(now),
         last_reboot_at=state.get_last_selfheal_reboot_at(),
         reboots_last_day=state.get_selfheal_reboots_recent(86400, now=now),
         fix_attempts_last_hour=state.get_guardian_fix_attempts_last_hour(),
     )
+    scope = probe_report_scope(state.get_variation_probe_report() or {}, now)
+    should, reason = evaluate_reboot(probe_scope=scope, **decision_kwargs)
+    if should and scope is None:
+        # Reboot warranted but undiagnosed — find out what scope the block actually
+        # has first, so a cookie- or account-scoped block gets its targeted remedy
+        # instead of burning a reboot slot. (The monitor-side trigger for this probe
+        # is rarely reached, so the guardian owns the pre-reboot diagnosis.)
+        logger.warning("Reboot warranted (%s) but block scope unknown — running variation probe", reason)
+        report = _run_variation_probe_for_reboot(config, state)
+        if report is not None:
+            scope = report.get("scope")
+            should, reason = evaluate_reboot(probe_scope=scope, **decision_kwargs)
     if not should:
         logger.debug("Reboot tier: not warranted (%s)", reason)
         return False

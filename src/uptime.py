@@ -46,6 +46,11 @@ DEFAULT_FLUSH_INTERVAL_SECONDS = 30
 # Segments older than this are pruned on save.
 RETENTION_DAYS = 30
 
+# Adjacent same-state segments whose boundary is within this slack are merged into
+# one. Restart churn used to append dozens of back-to-back 2-5 min "down" chunks;
+# coalescing keeps the ledger small (the GUI renders every segment it loads).
+COALESCE_SLACK_SECONDS = 5
+
 # Read-side fallback: when a caller can't tell us whether the monitor process is
 # actually running, treat the tail after the last heartbeat as "down" once it
 # exceeds this slack (a live monitor heartbeats every few seconds).
@@ -95,7 +100,7 @@ class UptimeLedger:
                     data = json.load(f)
                 segments = data.get("segments") if isinstance(data, dict) else None
                 if isinstance(segments, list):
-                    return [s for s in segments if isinstance(s, dict)]
+                    return _coalesce_segments([s for s in segments if isinstance(s, dict)])
         except Exception as exc:  # pragma: no cover - corrupt file is non-fatal
             logger.warning("Could not load uptime ledger %s: %s", self.path, exc)
         return []
@@ -167,17 +172,15 @@ class UptimeLedger:
                 )
             if gap > threshold:
                 # Silence longer than the monitor planned for → it was down.
-                self._segments.append(
-                    self._new_segment("down", last_end, now, "offline")
-                )
-                self._segments.append(self._new_segment(state, now, now, reason))
+                self._append_segment("down", last_end, now, "offline")
+                self._append_segment(state, now, now, reason)
                 changed = True
             elif last.get("state") == state:
                 last["end"] = _dt_to_iso(now)
                 last["reason"] = reason
             else:
                 start = last_end if last_end <= now else now
-                self._segments.append(self._new_segment(state, start, now, reason))
+                self._append_segment(state, start, now, reason)
                 changed = True
 
         due = (
@@ -203,8 +206,22 @@ class UptimeLedger:
         last = self._segments[-1]
         last_end = _iso_to_dt(last.get("end")) or now
         if (now - last_end).total_seconds() > self.min_down_gap_seconds:
-            self._segments.append(self._new_segment("down", last_end, now, "offline"))
+            self._append_segment("down", last_end, now, "offline")
             self.flush(now)
+
+    def _append_segment(
+        self, state: str, start: datetime, end: datetime, reason: str | None
+    ) -> None:
+        """Append a segment, extending the previous one instead when it has the same
+        state/reason and the boundary lines up (within the coalesce slack)."""
+        last = self._segments[-1] if self._segments else None
+        if last is not None and last.get("state") == state and last.get("reason") == reason:
+            last_end = _iso_to_dt(last.get("end"))
+            if last_end is not None and abs((start - last_end).total_seconds()) <= COALESCE_SLACK_SECONDS:
+                if end > last_end:
+                    last["end"] = _dt_to_iso(end)
+                return
+        self._segments.append(self._new_segment(state, start, end, reason))
 
     @staticmethod
     def _new_segment(
@@ -222,18 +239,50 @@ class UptimeLedger:
         return self._segments
 
 
+def _coalesce_segments(segments: list[dict]) -> list[dict]:
+    """One-pass merge of adjacent same-state/same-reason contiguous segments.
+
+    Run on load so ledgers written before coalescing existed (restart-churn files
+    with hundreds of micro-segments) shrink the first time they're read back."""
+    merged: list[dict] = []
+    for seg in segments:
+        prev = merged[-1] if merged else None
+        if (
+            prev is not None
+            and prev.get("state") == seg.get("state")
+            and prev.get("reason") == seg.get("reason")
+        ):
+            prev_end = _iso_to_dt(prev.get("end"))
+            start = _iso_to_dt(seg.get("start"))
+            end = _iso_to_dt(seg.get("end"))
+            if (
+                prev_end is not None
+                and start is not None
+                and end is not None
+                and abs((start - prev_end).total_seconds()) <= COALESCE_SLACK_SECONDS
+            ):
+                if end > prev_end:
+                    prev["end"] = seg.get("end")
+                continue
+        merged.append(seg)
+    return merged
+
+
 # ---- pure read-side helpers (safe for the GUI; no locking) ----
 
 
 def load_uptime_segments(path: str = "uptime_log.json") -> list[dict]:
-    """Load segments from disk for read-only display. Returns [] on any problem."""
+    """Load segments from disk for read-only display. Returns [] on any problem.
+
+    Coalesced on the way in so pre-coalescing ledgers (restart churn wrote hundreds
+    of micro-segments) stay cheap for callers that render every segment."""
     try:
         if os.path.exists(path):
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             segments = data.get("segments") if isinstance(data, dict) else None
             if isinstance(segments, list):
-                return [s for s in segments if isinstance(s, dict)]
+                return _coalesce_segments([s for s in segments if isinstance(s, dict)])
     except Exception:
         pass
     return []
