@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `(pending)`  2026-07-09 14:54  Delete dead Discovery-API-era notifier and state code
+- `(pending)`  2026-07-09 14:55  Remove hardcoded event-weight defaults and fix stale docs
+
+- `78ec872`  2026-07-09 14:54  Delete dead Discovery-API-era notifier and state code
 
 - `08f70ff`  2026-07-09 14:51  Raise ConfigError from load_config instead of sys.exit
 

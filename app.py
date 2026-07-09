@@ -344,10 +344,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "per_event_poll_max_seconds": 120,
         "per_event_min_gap_between_checks_seconds": 60,
         "per_event_max_gap_between_checks_seconds": 120,
-        "event_weights": {
-            "EXAMPLEEVENT0001": 2,
-            "EXAMPLEEVENT0002": 1,
-        },
+        "event_weights": {},
         "headless": False,
         "reuse_event_tabs": True,
         "single_event_page": True,
@@ -2090,8 +2087,8 @@ class TicketMonitorApp(ctk.CTk):
                 "📳 You get a Discord @mention only when something needs your help:\n"
                 "   • Login expired and auto re-login failed → go to the Login tab and log in again\n"
                 "   • Monitor stuck for 10+ minutes despite self-healing → restart the app\n\n"
-                "💚 A heartbeat message is sent to Discord every few hours to confirm the monitor is alive.\n"
-                "   If heartbeats stop, open the app and check the Live Logs.\n\n"
+                "💚 Silence means healthy: no periodic heartbeat spam is sent to Discord — you are\n"
+                "   pinged only when something actually needs you.\n\n"
                 "🌐 Run on your normal home internet. VPNs (incl. Proton) usually get blocked MORE by\n"
                 "   Ticketmaster, and some blocks are normal for the first few minutes after starting.\n\n"
                 "🪟 A Chrome window will open while monitoring — that's intentional (a real, visible\n"

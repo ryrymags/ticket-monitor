@@ -9,7 +9,8 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 ## 📋 Recent Changes
 
 <!-- CHANGELOG_START -->
-- `(pending)`  2026-07-09  Delete dead Discovery-API-era notifier and state code
+- `(pending)`  2026-07-09  Remove hardcoded event-weight defaults and fix stale docs
+- `78ec872`  2026-07-09  Delete dead Discovery-API-era notifier and state code
 - `08f70ff`  2026-07-09  Raise ConfigError from load_config instead of sys.exit
 - `fd3dd8e`  2026-07-09  Pool Monitor-tab events panel widgets instead of rebuilding per poll
 - `1883857`  2026-07-09  Batch per-check state mutations into one merge-save
@@ -18,7 +19,6 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 - `19e3c44`  2026-07-09  Finish Phase 1: 429 retry, Tk thread safety, doctor profile guard
 - `6a16879`  2026-07-09  Honor operational_to_discord in guardian and reloader notifiers
 - `20e32a0`  2026-07-09  Re-stamp monitor_started on every monitor start
-- `8c4a017`  2026-07-09  Make single-instance locks cross-platform via the state lock shim
 
 Full history: [CHANGELOG.md](CHANGELOG.md)
 <!-- CHANGELOG_END -->
@@ -265,7 +265,7 @@ python monitor.py --doctor
 ## 📝 Notes
 
 - This tool only **notifies** you — it does not buy tickets automatically
-- The monitor checks one due event at a time; each active event is rescheduled randomly every 45–105 seconds, with at least 20 seconds between event checks by default
+- The monitor checks one due event at a time; each active event is rescheduled randomly every 60–120 seconds, and a randomized 60–120s global gap separates ANY two checks (slow is deliberate — see the anti-block notes above)
 - The browser keeps one active Ticketmaster event tab and navigates it between events instead of keeping every event page hot
 - Ticketmaster's Face Value Exchange tickets sell out fast — act quickly when you get a BINGO!
 - Your Ticketmaster session may expire after a few weeks — re-login from the Login tab if you stop getting proper checks

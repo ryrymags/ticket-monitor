@@ -185,11 +185,9 @@ class MonitorConfig:
     macos_prevent_idle_sleep: bool = True
 
 
-DEFAULT_EVENT_WEIGHTS = {
-    # Current target-history bias: Wednesday gets a soft priority over Tuesday.
-    "EXAMPLEEVENT0001": 2.0,
-    "EXAMPLEEVENT0002": 1.0,
-}
+# No default weights: event priority bias comes only from browser.event_weights
+# in config.yaml. Absent config means uniform weights for every event.
+DEFAULT_EVENT_WEIGHTS: dict[str, float] = {}
 
 
 def load_config(path: str = "config.yaml") -> MonitorConfig:

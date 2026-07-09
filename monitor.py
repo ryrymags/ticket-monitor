@@ -80,7 +80,7 @@ def run_test(config_path: str):
     print("Running setup checks...\n")
     config = load_config(config_path)
 
-    print("[1/3] Config loaded")
+    print("[1/4] Config loaded")
     print(f"      Events: {len(config.events)}")
     if config.browser_per_event_scheduler_enabled:
         print(
@@ -91,7 +91,7 @@ def run_test(config_path: str):
         print(f"      Poll interval: {config.browser_poll_min_seconds}s - {config.browser_poll_max_seconds}s")
     print()
 
-    print("[2/3] Testing Discord webhook")
+    print("[2/4] Testing Discord webhook")
     notifier = build_notifier(config)
     if not notifier.send_test():
         print("      FAILED: Could not send Discord test notification.")
@@ -99,8 +99,11 @@ def run_test(config_path: str):
     print("      Discord webhook working")
     print()
 
-    if config.ntfy_enabled:
-        print("[2b] Testing ntfy push")
+    if not config.ntfy_enabled:
+        print("[3/4] ntfy push disabled — skipping")
+        print()
+    else:
+        print("[3/4] Testing ntfy push")
         if notifier.ntfy is not None and notifier.ntfy.send_test():
             topic_count = len(config.ntfy_topics)
             print(f"      ntfy push sent to {topic_count} topic(s) — check subscribers' phones")
@@ -109,7 +112,7 @@ def run_test(config_path: str):
             sys.exit(1)
         print()
 
-    print("[3/3] Checking browser session prerequisites")
+    print("[4/4] Checking browser session prerequisites")
     if config.browser_session_mode == "cdp_attach":
         print(f"      CDP endpoint: {config.browser_cdp_endpoint_url}")
         print(

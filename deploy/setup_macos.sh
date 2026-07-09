@@ -315,7 +315,8 @@ cat > "$RELOADER_PLIST" <<EOF
 EOF
 
 # GUI dashboard at login: opens the app window after every boot/authrestart. No
-# KeepAlive — closing the window is allowed; the headless stack keeps monitoring.
+# NOTE: monitoring runs only while the GUI is open — the guardian stops the whole
+# stack when the app closes (GUI-coincidence), so the GUI agent is the keystone.
 cat > "$GUI_PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
