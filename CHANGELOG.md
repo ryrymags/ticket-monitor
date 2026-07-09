@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `(pending)`  2026-07-09 14:48  Batch per-check state mutations into one merge-save
+- `(pending)`  2026-07-09 14:49  Pool Monitor-tab events panel widgets instead of rebuilding per poll
+
+- `1883857`  2026-07-09 14:48  Batch per-check state mutations into one merge-save
 
 - `f9bbbc3`  2026-07-09 14:12  Tighten challenge detection and add availability diagnostics
 

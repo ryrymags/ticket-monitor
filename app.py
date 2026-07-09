@@ -2493,31 +2493,28 @@ class TicketMonitorApp(ctk.CTk):
         except (TypeError, ValueError):
             manual_action_after = 900
 
-        for w in self._monitor_events_frame.winfo_children():
-            w.destroy()
+        # Widgets are POOLED: built once (rebuilt only when the event list
+        # changes), then configure()d in place on every 10s poll. Destroying and
+        # recreating CTk widgets each poll is the churn pattern that used to
+        # freeze/crash macOS Tk in the History and Uptime tabs.
+        self._ensure_monitor_panel_widgets()
 
-        # Top-level health banner mirrors the persisted degraded state (incl. auth-pause
-        # and staleness, which the per-event rows below can't see on their own).
-        base_row = 0
+        # Top-level health banner mirrors the persisted degraded state (incl.
+        # auth-pause and staleness, which the per-event rows can't see).
         banner = self._degraded_banner_text(health)
         if banner is not None:
             text, color = banner
             banner_bg = "#3a1416" if color == COLOR_RED else "#3a2c12"
-            bf = ctk.CTkFrame(self._monitor_events_frame, fg_color=banner_bg, corner_radius=8)
-            bf.grid(row=0, column=0, padx=10, pady=(10, 6), sticky="ew")
-            bf.grid_columnconfigure(0, weight=1)
-            ctk.CTkLabel(
-                bf, text=text, text_color=color, anchor="w", justify="left",
-                font=ctk.CTkFont(size=12, weight="bold"),
-            ).grid(row=0, column=0, padx=12, pady=10, sticky="w")
-            base_row = 1
+            self._monitor_banner_frame.configure(fg_color=banner_bg)
+            self._monitor_banner_label.configure(text=text, text_color=color)
+            self._monitor_banner_frame.grid(row=0, column=0, padx=10, pady=(10, 6), sticky="ew")
+        else:
+            self._monitor_banner_frame.grid_remove()
 
         if not self._events:
-            # Detect first-run: no events AND no webhook configured yet.
             webhook = self._cfg.get("discord", {}).get("webhook_url", "")
             if not webhook:
-                ctk.CTkLabel(
-                    self._monitor_events_frame,
+                self._monitor_placeholder_label.configure(
                     text=(
                         "Welcome to Ticket Monitor!\n\n"
                         "To get started:\n"
@@ -2526,26 +2523,70 @@ class TicketMonitorApp(ctk.CTk):
                         "  3.  Login — log in to Ticketmaster\n"
                         "  4.  Come back here and hit Start Monitor"
                     ),
-                    text_color=COLOR_BLUE, anchor="w", justify="left",
-                    font=ctk.CTkFont(size=12),
-                ).grid(row=base_row, column=0, padx=16, pady=16, sticky="w")
+                    text_color=COLOR_BLUE,
+                )
             else:
-                ctk.CTkLabel(self._monitor_events_frame, text="No events added yet. Go to the Events tab to add a Ticketmaster URL.", text_color="gray50").grid(row=base_row, column=0, padx=16, pady=16)
+                self._monitor_placeholder_label.configure(
+                    text="No events added yet. Go to the Events tab to add a Ticketmaster URL.",
+                    text_color="gray50",
+                )
+            self._monitor_placeholder_label.grid(row=1, column=0, padx=16, pady=16, sticky="w")
             return
+        self._monitor_placeholder_label.grid_remove()
 
-        for i, ev in enumerate(self._events):
+        for ev, (name_lbl, status_lbl) in zip(self._events, self._monitor_event_rows):
             eid = ev.get("event_id", "")
             name = ev.get("name", ev.get("url", "Unknown"))
-            ev_state = events_state.get(eid, {})
             status = monitor_event_status_text(
-                ev_state,
+                events_state.get(eid, {}),
                 now,
                 stale_threshold=stale_threshold,
                 manual_action_after_seconds=manual_action_after,
             )
+            name_lbl.configure(text=name[:55])
+            status_lbl.configure(text=status)
 
-            ctk.CTkLabel(self._monitor_events_frame, text=name[:55], anchor="w", font=ctk.CTkFont(weight="bold")).grid(row=base_row + i*2, column=0, padx=16, pady=(10 if i==0 else 2, 0), sticky="w")
-            ctk.CTkLabel(self._monitor_events_frame, text=status, anchor="w", text_color="gray55", font=ctk.CTkFont(size=11)).grid(row=base_row + i*2+1, column=0, padx=16, pady=(0, 2), sticky="w")
+    def _ensure_monitor_panel_widgets(self):
+        """Create the pooled banner/placeholder/per-event widgets once, and
+        rebuild the per-event rows only when the configured events change."""
+        if not hasattr(self, "_monitor_banner_frame"):
+            self._monitor_banner_frame = ctk.CTkFrame(
+                self._monitor_events_frame, fg_color="#3a2c12", corner_radius=8
+            )
+            self._monitor_banner_frame.grid_columnconfigure(0, weight=1)
+            self._monitor_banner_label = ctk.CTkLabel(
+                self._monitor_banner_frame, text="", anchor="w", justify="left",
+                font=ctk.CTkFont(size=12, weight="bold"),
+            )
+            self._monitor_banner_label.grid(row=0, column=0, padx=12, pady=10, sticky="w")
+            self._monitor_placeholder_label = ctk.CTkLabel(
+                self._monitor_events_frame, text="", anchor="w", justify="left",
+                font=ctk.CTkFont(size=12),
+            )
+            self._monitor_event_rows: list[tuple[ctk.CTkLabel, ctk.CTkLabel]] = []
+            self._monitor_panel_event_ids: tuple | None = None
+
+        event_ids = tuple(ev.get("event_id", "") for ev in self._events)
+        if event_ids == self._monitor_panel_event_ids:
+            return
+        self._monitor_panel_event_ids = event_ids
+        for name_lbl, status_lbl in self._monitor_event_rows:
+            name_lbl.destroy()
+            status_lbl.destroy()
+        self._monitor_event_rows = []
+        # Row 0 is the banner slot, row 1 the placeholder; event rows follow.
+        for i in range(len(self._events)):
+            name_lbl = ctk.CTkLabel(
+                self._monitor_events_frame, text="", anchor="w",
+                font=ctk.CTkFont(weight="bold"),
+            )
+            name_lbl.grid(row=2 + i * 2, column=0, padx=16, pady=(10 if i == 0 else 2, 0), sticky="w")
+            status_lbl = ctk.CTkLabel(
+                self._monitor_events_frame, text="", anchor="w",
+                text_color="gray55", font=ctk.CTkFont(size=11),
+            )
+            status_lbl.grid(row=2 + i * 2 + 1, column=0, padx=16, pady=(0, 2), sticky="w")
+            self._monitor_event_rows.append((name_lbl, status_lbl))
 
     # ── Config I/O ────────────────────────────────────────────────────────────
 
