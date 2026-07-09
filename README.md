@@ -9,7 +9,8 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 ## 📋 Recent Changes
 
 <!-- CHANGELOG_START -->
-- `(pending)`  2026-07-08  Fix stale commit hashes in the auto-generated changelog
+- `(pending)`  2026-07-08  Fix ruff E731 lint failure in guardian tests
+- `e24ac03`  2026-07-08  Fix stale commit hashes in the auto-generated changelog
 - `717b5fb`  2026-07-08  Tie monitoring to the GUI and finish the Uptime tab fix
 - `b8d21e8`  2026-07-08  Fix Uptime tab crashes, arm the reboot tier, send ntfy first
 - `57195c9`  2026-07-08  Stop the guardian/monitor restart death spiral
@@ -18,7 +19,6 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 - `1fe2cf2`  2026-07-02  Page history tab rendering
 - `14e89c5`  2026-07-02  Fix launchd uptime status in app
 - `121de4b`  2026-07-02  Treat loaded Ticketmaster pages as healthy uptime
-- `5588a69`  2026-07-02  Keep macOS monitor awake under launchd
 
 Full history: [CHANGELOG.md](CHANGELOG.md)
 <!-- CHANGELOG_END -->

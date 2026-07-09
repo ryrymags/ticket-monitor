@@ -358,11 +358,14 @@ def test_reboot_history_survives_in_state(tmp_path):
 
 def test_impaired_since_walks_contiguous_non_healthy_segments():
     now = datetime.now(timezone.utc)
-    seg = lambda state, start_min, end_min: {
-        "state": state,
-        "start": (now - timedelta(minutes=start_min)).isoformat(),
-        "end": (now - timedelta(minutes=end_min)).isoformat(),
-    }
+
+    def seg(state, start_min, end_min):
+        return {
+            "state": state,
+            "start": (now - timedelta(minutes=start_min)).isoformat(),
+            "end": (now - timedelta(minutes=end_min)).isoformat(),
+        }
+
     segments = [
         seg("healthy", 180, 90),
         seg("impaired", 90, 40),
