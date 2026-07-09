@@ -205,6 +205,12 @@ class MonitorScheduler:
         # uptime ledger tell an intended backoff (impairment) apart from an unplanned
         # silence (downtime). None on the first cycle of a process.
         self._last_loop_sleep_seconds: float | None = None
+        # When the current cycle's work began (stamped at each loop wake). The
+        # ledger's down-gap budget must cover the planned sleep PLUS this cycle's
+        # measured work: a slow cycle (page timeouts, session health navigation,
+        # alert sends with retries) otherwise gets back-filled as spurious "down"
+        # even though the monitor was busy doing its job the whole time.
+        self._cycle_started_at: datetime | None = None
         # Set each cycle: True when no event got any response AND at least one failed
         # with a connectivity error → the internet is down (uptime = down, not impaired).
         self._cycle_connectivity_down: bool = False
@@ -271,6 +277,7 @@ class MonitorScheduler:
                     self._uptime_anchor = loop_now
                     self._stale_event_alerted.clear()
                     self.state.clear_attention()
+            self._cycle_started_at = loop_now
             sleep_time = self._normal_loop_sleep()
             self.state.set_last_cycle_started_at()
             try:
@@ -364,12 +371,29 @@ class MonitorScheduler:
         """
         try:
             now = datetime.now(timezone.utc)
-            gap = self._last_loop_sleep_seconds
+            gap = self._heartbeat_expected_gap(now)
             self.uptime.heartbeat(now, "impaired", "starting", expected_gap_seconds=gap)
             for led in self._event_uptime.values():
                 led.heartbeat(now, "impaired", "starting", expected_gap_seconds=gap)
         except Exception as exc:  # pragma: no cover - telemetry must never crash the loop
             logger.debug("starting heartbeat failed: %s", exc)
+
+    def _heartbeat_expected_gap(self, now: datetime) -> float | None:
+        """Silence budget for the next ledger heartbeat: planned sleep + measured work.
+
+        The interval between two heartbeats is the loop's deliberate sleep plus
+        however long the current cycle's work has taken so far. Passing only the
+        sleep made the ledger back-fill any cycle slower than the 90s base margin
+        as ``down`` — including cycles that were slow precisely because they were
+        sending BINGO alerts. A genuine suspend still trips the budget: it stretches
+        the gap by minutes beyond anything the loop planned or worked through.
+        """
+        if self._last_loop_sleep_seconds is None:
+            return None
+        work_seconds = 0.0
+        if self._cycle_started_at is not None:
+            work_seconds = max(0.0, (now - self._cycle_started_at).total_seconds())
+        return float(self._last_loop_sleep_seconds) + work_seconds
 
     def _record_uptime_heartbeat(
         self,
@@ -386,7 +410,7 @@ class MonitorScheduler:
         """
         try:
             now = datetime.now(timezone.utc)
-            gap = self._last_loop_sleep_seconds
+            gap = self._heartbeat_expected_gap(now)
             # No internet (Ticketmaster will not load) is DOWN, not impairment — we
             # can't see tickets at all.
             if connectivity_lost or self._cycle_connectivity_down:

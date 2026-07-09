@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import random
 from datetime import datetime, timedelta, timezone
+
+import pytest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -415,6 +417,55 @@ class TestMentionBurst:
         assert scheduler.notifier.send_ticket_available.call_args.kwargs.get("mention") is True
         assert scheduler.state.get_mention_burst_sent_count(event.event_id) == 1
         assert scheduler.state.get_mention_burst_started_at(event.event_id) == now
+
+
+class TestUptimeHeartbeatGap:
+    """The ledger's down-gap budget must include the cycle's measured work time,
+    not just the planned sleep — otherwise slow-but-healthy cycles (alert sends,
+    page timeouts) get back-filled as spurious downtime."""
+
+    def test_expected_gap_includes_cycle_work(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        now = datetime.now(timezone.utc)
+        scheduler._last_loop_sleep_seconds = 60.0
+        scheduler._cycle_started_at = now - timedelta(seconds=100)
+
+        assert scheduler._heartbeat_expected_gap(now) == pytest.approx(160.0, abs=0.5)
+
+    def test_first_cycle_gap_stays_none(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        scheduler._cycle_started_at = datetime.now(timezone.utc)
+
+        assert scheduler._heartbeat_expected_gap(datetime.now(timezone.utc)) is None
+
+    def test_slow_cycle_work_is_not_recorded_as_down(self, tmp_path):
+        # Regression for 2026-07-09: cycles that spent ~100s checking + sending
+        # a ticket alert were back-filled as "down offline" because only the 60s
+        # planned sleep was budgeted and the 90s base margin absorbed the rest.
+        scheduler = _make_scheduler(tmp_path)
+        now = datetime.now(timezone.utc)
+        scheduler.uptime.heartbeat(now - timedelta(seconds=160), "healthy", None)
+        scheduler._last_loop_sleep_seconds = 60.0
+        scheduler._cycle_started_at = now - timedelta(seconds=100)
+        scheduler._cycle_healthy_checks = 1
+
+        scheduler._record_uptime_heartbeat(False)
+
+        assert "down" not in [seg["state"] for seg in scheduler.uptime.segments]
+
+    def test_true_silence_still_backfills_down(self, tmp_path):
+        # A genuine suspend stretches the gap far beyond sleep + work and must
+        # still be recorded as downtime.
+        scheduler = _make_scheduler(tmp_path)
+        now = datetime.now(timezone.utc)
+        scheduler.uptime.heartbeat(now - timedelta(seconds=400), "healthy", None)
+        scheduler._last_loop_sleep_seconds = 60.0
+        scheduler._cycle_started_at = now - timedelta(seconds=10)
+        scheduler._cycle_healthy_checks = 1
+
+        scheduler._record_uptime_heartbeat(False)
+
+        assert "down" in [seg["state"] for seg in scheduler.uptime.segments]
 
 
 class TestOutageTracking:

@@ -4,11 +4,13 @@ All notable changes to Ticket Monitor are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 <!-- CHANGELOG_START -->
-## [Unreleased] — 2026-07-08
+## [Unreleased] — 2026-07-09
 
 ### Changes
 
-- `(pending)`  2026-07-08 23:45  Bump CI actions to Node 24 majors
+- `(pending)`  2026-07-09 13:47  Budget cycle work time in uptime down-gap inference
+
+- `cf2a97a`  2026-07-08 23:45  Bump CI actions to Node 24 majors
 
 - `6b31e1d`  2026-07-08 23:42  Fix ruff E731 lint failure in guardian tests
 

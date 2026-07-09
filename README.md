@@ -9,7 +9,8 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 ## 📋 Recent Changes
 
 <!-- CHANGELOG_START -->
-- `(pending)`  2026-07-08  Bump CI actions to Node 24 majors
+- `(pending)`  2026-07-09  Budget cycle work time in uptime down-gap inference
+- `cf2a97a`  2026-07-08  Bump CI actions to Node 24 majors
 - `6b31e1d`  2026-07-08  Fix ruff E731 lint failure in guardian tests
 - `e24ac03`  2026-07-08  Fix stale commit hashes in the auto-generated changelog
 - `717b5fb`  2026-07-08  Tie monitoring to the GUI and finish the Uptime tab fix
@@ -18,7 +19,6 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 - `8d28962`  2026-07-02  Record blocked checks as impaired uptime
 - `e1e56da`  2026-07-02  Stabilize monitor history and stop controls
 - `1fe2cf2`  2026-07-02  Page history tab rendering
-- `14e89c5`  2026-07-02  Fix launchd uptime status in app
 
 Full history: [CHANGELOG.md](CHANGELOG.md)
 <!-- CHANGELOG_END -->
