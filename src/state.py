@@ -217,9 +217,11 @@ class MonitorState:
         return _iso_to_dt(self._state.get("monitor_started"))
 
     def set_monitor_start_time(self, dt: datetime):
-        if "monitor_started" not in self._state:
-            self._state["monitor_started"] = _dt_to_iso(dt)
-            self.save()
+        # Re-stamped on every monitor start: the old write-once behavior froze
+        # this at first-install time, skewing heartbeat uptime and the
+        # health-json staleness math for never-checked events.
+        self._state["monitor_started"] = _dt_to_iso(dt)
+        self.save()
 
     # ---- Health state ----
 

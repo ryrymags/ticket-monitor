@@ -369,3 +369,15 @@ class TestCheckOutcomeMetrics:
         reloaded = MonitorState(state_file=path)
         stats = summarize_check_stats(reloaded._health(), hours=24, now=now)
         assert stats["total"] == 2
+
+
+def test_monitor_start_time_restamps_on_every_start(tmp_path):
+    state = MonitorState(state_file=str(tmp_path / "state.json"))
+    first = datetime(2026, 5, 25, tzinfo=timezone.utc)
+    second = datetime(2026, 7, 9, tzinfo=timezone.utc)
+
+    state.set_monitor_start_time(first)
+    assert state.get_monitor_start_time() == first
+    # A restart must record the NEW start, not keep first-install time forever.
+    state.set_monitor_start_time(second)
+    assert state.get_monitor_start_time() == second
