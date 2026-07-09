@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from importlib import metadata
 
 from src.browser_probe import BrowserProbe, BrowserProbeError
-from src.config import load_config
+from src.config import ConfigError, load_config
 from src.notifier import DiscordNotifier, NtfyNotifier
 from src.scheduler import BROWSER_RESTART_REQUEST_FILE, MonitorScheduler
 from src.session_autofix import AutoFixCredentialError, TicketmasterSessionAutoFixer
@@ -633,6 +633,14 @@ def main():
     if args.verbose:
         os.environ["LOG_LEVEL_OVERRIDE"] = "DEBUG"
 
+    try:
+        _dispatch(args)
+    except ConfigError as exc:
+        print(exc)
+        sys.exit(1)
+
+
+def _dispatch(args):
     if args.bootstrap_session:
         run_bootstrap_session(args.config)
     elif args.test:

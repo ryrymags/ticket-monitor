@@ -20,7 +20,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from src.config import MonitorConfig, load_config
+from src.config import ConfigError, MonitorConfig, load_config
 from src.notifier import DiscordNotifier
 from src.state import MonitorState
 from src.uptime import current_status, load_uptime_segments, summarize_uptime
@@ -736,7 +736,11 @@ def main():
     parser.add_argument("--force-fix", action="store_true", help="Run remediation flow even if monitor appears healthy")
     args = parser.parse_args()
 
-    config = load_config(args.config)
+    try:
+        config = load_config(args.config)
+    except ConfigError as exc:
+        print(exc)
+        raise SystemExit(1) from exc
     exit_code = run_guardian(config=config, force_fix=args.force_fix)
     raise SystemExit(exit_code)
 

@@ -17,7 +17,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from src.config import MonitorConfig, load_config
+from src.config import ConfigError, MonitorConfig, load_config
 from src.notifier import DiscordNotifier
 from src.state import MonitorState
 
@@ -180,7 +180,11 @@ def main():
     parser.add_argument("--config", default="config.yaml", help="Path to monitor config")
     args = parser.parse_args()
 
-    config = load_config(args.config)
+    try:
+        config = load_config(args.config)
+    except ConfigError as exc:
+        print(exc)
+        raise SystemExit(1) from exc
     exit_code = run_reloader(config=config, config_path=args.config)
     raise SystemExit(exit_code)
 

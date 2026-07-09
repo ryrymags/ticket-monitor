@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import yaml
 
-from src.config import load_config
+from src.config import ConfigError, load_config
 
 
 def _write_config(tmp_path, overrides=None):
@@ -50,7 +50,7 @@ class TestLoadConfig:
         assert config.discord_webhook_url == "https://env-webhook"
 
     def test_missing_file_exits(self, tmp_path):
-        with pytest.raises(SystemExit):
+        with pytest.raises(ConfigError):
             load_config(str(tmp_path / "nonexistent.yaml"))
 
     def test_missing_events_exits(self, tmp_path):
@@ -61,17 +61,17 @@ class TestLoadConfig:
         path = str(tmp_path / "config.yaml")
         with open(path, "w", encoding="utf-8") as f:
             yaml.dump(config_data, f)
-        with pytest.raises(SystemExit):
+        with pytest.raises(ConfigError):
             load_config(path)
 
     def test_invalid_timezone_exits(self, tmp_path):
         path = _write_config(tmp_path, {"polling.timezone": "US/Hogwarts"})
-        with pytest.raises(SystemExit):
+        with pytest.raises(ConfigError):
             load_config(path)
 
     def test_invalid_interval_exits(self, tmp_path):
         path = _write_config(tmp_path, {"browser.poll_interval_seconds": "fast"})
-        with pytest.raises(SystemExit):
+        with pytest.raises(ConfigError):
             load_config(path)
 
     def test_defaults_applied(self, tmp_path):
@@ -177,12 +177,12 @@ class TestLoadConfig:
 
     def test_invalid_auth_max_attempts_exits(self, tmp_path):
         path = _write_config(tmp_path, {"auth.max_auto_login_attempts_per_hour": 0})
-        with pytest.raises(SystemExit):
+        with pytest.raises(ConfigError):
             load_config(path)
 
     def test_invalid_auth_cooldown_exits(self, tmp_path):
         path = _write_config(tmp_path, {"auth.auto_login_cooldown_seconds": -1})
-        with pytest.raises(SystemExit):
+        with pytest.raises(ConfigError):
             load_config(path)
 
     def test_invalid_auth_recheck_range_exits(self, tmp_path):
@@ -193,12 +193,12 @@ class TestLoadConfig:
                 "auth.session_recheck_max_seconds": 60,
             },
         )
-        with pytest.raises(SystemExit):
+        with pytest.raises(ConfigError):
             load_config(path)
 
     def test_invalid_auth_logout_confirmations_exits(self, tmp_path):
         path = _write_config(tmp_path, {"auth.session_logout_confirmations_required": 0})
-        with pytest.raises(SystemExit):
+        with pytest.raises(ConfigError):
             load_config(path)
 
     def test_auto_login_requires_keychain_fields(self, tmp_path):
@@ -209,12 +209,12 @@ class TestLoadConfig:
                 "auth.keychain_service": "",
             },
         )
-        with pytest.raises(SystemExit):
+        with pytest.raises(ConfigError):
             load_config(path)
 
     def test_invalid_browser_session_mode_exits(self, tmp_path):
         path = _write_config(tmp_path, {"browser.session_mode": "invalid"})
-        with pytest.raises(SystemExit):
+        with pytest.raises(ConfigError):
             load_config(path)
 
     def test_cdp_attach_mode_loads_with_defaults(self, tmp_path):
@@ -231,7 +231,7 @@ class TestLoadConfig:
                 "browser.poll_max_seconds": 30,
             },
         )
-        with pytest.raises(SystemExit):
+        with pytest.raises(ConfigError):
             load_config(path)
 
     def test_invalid_per_event_poll_min_max_exits(self, tmp_path):
@@ -242,17 +242,17 @@ class TestLoadConfig:
                 "browser.per_event_poll_max_seconds": 45,
             },
         )
-        with pytest.raises(SystemExit):
+        with pytest.raises(ConfigError):
             load_config(path)
 
     def test_invalid_per_event_gap_exits(self, tmp_path):
         path = _write_config(tmp_path, {"browser.per_event_min_gap_between_checks_seconds": -1})
-        with pytest.raises(SystemExit):
+        with pytest.raises(ConfigError):
             load_config(path)
 
     def test_invalid_event_weight_exits(self, tmp_path):
         path = _write_config(tmp_path, {"browser.event_weights": {"event-1": 0}})
-        with pytest.raises(SystemExit):
+        with pytest.raises(ConfigError):
             load_config(path)
 
     def test_invalid_event_dwell_range_exits(self, tmp_path):
@@ -263,7 +263,7 @@ class TestLoadConfig:
                 "browser.event_dwell_max_seconds": 3,
             },
         )
-        with pytest.raises(SystemExit):
+        with pytest.raises(ConfigError):
             load_config(path)
 
     def test_invalid_challenge_cooldown_tiers_exits(self, tmp_path):
@@ -271,17 +271,17 @@ class TestLoadConfig:
             tmp_path,
             {"browser.challenge_cooldown_tiers_seconds": [300, 120, 900]},
         )
-        with pytest.raises(SystemExit):
+        with pytest.raises(ConfigError):
             load_config(path)
 
     def test_empty_challenge_cooldown_tiers_exits(self, tmp_path):
         path = _write_config(tmp_path, {"browser.challenge_cooldown_tiers_seconds": []})
-        with pytest.raises(SystemExit):
+        with pytest.raises(ConfigError):
             load_config(path)
 
     def test_invalid_challenge_cooldown_tier_every_exits(self, tmp_path):
         path = _write_config(tmp_path, {"browser.challenge_cooldown_tier_every": 0})
-        with pytest.raises(SystemExit):
+        with pytest.raises(ConfigError):
             load_config(path)
 
     def test_persistent_profile_requires_user_data_dir(self, tmp_path):
@@ -292,10 +292,10 @@ class TestLoadConfig:
                 "browser.user_data_dir": "",
             },
         )
-        with pytest.raises(SystemExit):
+        with pytest.raises(ConfigError):
             load_config(path)
 
     def test_invalid_event_check_stale_seconds_exits(self, tmp_path):
         path = _write_config(tmp_path, {"alerts.event_check_stale_seconds": 0})
-        with pytest.raises(SystemExit):
+        with pytest.raises(ConfigError):
             load_config(path)

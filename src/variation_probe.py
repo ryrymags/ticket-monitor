@@ -303,10 +303,14 @@ def main() -> int:
     """Standalone run: `python -m src.variation_probe [event_url]` — prints the report."""
     import sys
 
-    from .config import load_config
+    from .config import ConfigError, load_config
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-    config = load_config()
+    try:
+        config = load_config()
+    except ConfigError as exc:
+        print(exc)
+        return 1
     override = sys.argv[1] if len(sys.argv) > 1 else None
     report = run_variation_matrix(config, event_url=override)
     print(json.dumps(report.to_dict(), indent=2))

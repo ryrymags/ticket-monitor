@@ -17,6 +17,20 @@ from .preferences import TicketPreferences
 logger = logging.getLogger(__name__)
 
 
+class ConfigError(Exception):
+    """Invalid or missing configuration.
+
+    Raised instead of sys.exit so library callers (the GUI's bootstrap thread,
+    tests) can handle it; CLI entry points catch it, print, and exit 1.
+    """
+
+    def __init__(self, errors: list[str]):
+        self.errors = list(errors)
+        super().__init__(
+            "Configuration errors:\n" + "\n".join(f"  - {e}" for e in self.errors)
+        )
+
+
 @dataclass
 class EventConfig:
     event_id: str
@@ -181,8 +195,7 @@ DEFAULT_EVENT_WEIGHTS = {
 def load_config(path: str = "config.yaml") -> MonitorConfig:
     """Load and validate configuration from a YAML file."""
     if not os.path.exists(path):
-        print(f"Error: Config file not found: {path}")
-        sys.exit(1)
+        raise ConfigError([f"Config file not found: {path}"])
 
     with open(path, "r", encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
@@ -805,10 +818,7 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
     macos_prevent_idle_sleep = safe_bool(macos, "prevent_idle_sleep", True)
 
     if errors:
-        print("Configuration errors:")
-        for e in errors:
-            print(f"  - {e}")
-        sys.exit(1)
+        raise ConfigError(errors)
 
     return MonitorConfig(
         discord_webhook_url=webhook_url,
