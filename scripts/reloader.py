@@ -41,6 +41,18 @@ def _launchctl_target(label: str = MONITOR_LABEL) -> str:
     return f"gui/{os.getuid()}/{label}"
 
 
+def build_notifier(config: MonitorConfig) -> DiscordNotifier:
+    """Notifier with monitor parity: honor alerts.operational_to_discord so
+    routine code-change-restart notices stay log-only when configured. The
+    reloader's critical preflight/restart-failure pings still always post."""
+    return DiscordNotifier(
+        webhook_url=config.discord_webhook_url,
+        username=config.discord_username,
+        ping_user_id=config.discord_ping_user_id,
+        operational_to_discord=config.alerts_operational_to_discord,
+    )
+
+
 def _gather_files(root_dir: Path, globs: list[str]) -> list[Path]:
     paths: set[Path] = set()
     for pattern in globs:
@@ -89,11 +101,7 @@ def run_reloader(config: MonitorConfig, config_path: str) -> int:
         return 0
 
     state = MonitorState()
-    notifier = DiscordNotifier(
-        webhook_url=config.discord_webhook_url,
-        username=config.discord_username,
-        ping_user_id=config.discord_ping_user_id,
-    )
+    notifier = build_notifier(config)
 
     current_fp = compute_fingerprint(ROOT_DIR, config.updates_watch_globs)
     last_fp = state.get_last_code_fingerprint()

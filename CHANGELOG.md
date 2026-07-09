@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `(pending)`  2026-07-09 13:51  Re-stamp monitor_started on every monitor start
+- `(pending)`  2026-07-09 13:52  Honor operational_to_discord in guardian and reloader notifiers
+
+- `20e32a0`  2026-07-09 13:51  Re-stamp monitor_started on every monitor start
 
 - `8c4a017`  2026-07-09 13:50  Make single-instance locks cross-platform via the state lock shim
 

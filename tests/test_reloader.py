@@ -175,3 +175,21 @@ def test_run_reloader_skips_restart_on_preflight_failure(tmp_path, monkeypatch):
     exit_code = reloader.run_reloader(config=cfg, config_path="config.yaml")
     assert exit_code == 1
     assert len(notifier.critical_calls) == 1
+
+
+def test_build_notifier_honors_operational_to_discord():
+    captured = {}
+
+    class _Recorder:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    import scripts.reloader as reloader_mod
+    original = reloader_mod.DiscordNotifier
+    reloader_mod.DiscordNotifier = _Recorder
+    try:
+        reloader_mod.build_notifier(_make_config(alerts_operational_to_discord=False))
+    finally:
+        reloader_mod.DiscordNotifier = original
+
+    assert captured["operational_to_discord"] is False

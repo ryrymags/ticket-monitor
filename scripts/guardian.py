@@ -52,6 +52,18 @@ class ServiceStatus:
     pid: int | None
 
 
+def build_notifier(config: MonitorConfig) -> DiscordNotifier:
+    """Notifier with monitor parity: honor alerts.operational_to_discord so
+    guardian auto-fix notices stay log-only when the user configured
+    operational silence. Critical manual-action pings still always post."""
+    return DiscordNotifier(
+        webhook_url=config.discord_webhook_url,
+        username=config.discord_username,
+        ping_user_id=config.discord_ping_user_id,
+        operational_to_discord=config.alerts_operational_to_discord,
+    )
+
+
 def setup_logging():
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
@@ -586,11 +598,7 @@ def run_guardian(config: MonitorConfig, force_fix: bool = False) -> int:
         return 0
 
     state = MonitorState()
-    notifier = DiscordNotifier(
-        webhook_url=config.discord_webhook_url,
-        username=config.discord_username,
-        ping_user_id=config.discord_ping_user_id,
-    )
+    notifier = build_notifier(config)
     now = datetime.now(timezone.utc)
 
     # GUI coincidence comes first: monitoring only runs while the app is open.

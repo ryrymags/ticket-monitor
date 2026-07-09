@@ -729,3 +729,21 @@ def test_run_guardian_skips_remediation_when_gui_absent(tmp_path, monkeypatch):
     exit_code = guardian.run_guardian(config=cfg, force_fix=False)
     assert exit_code == 0
     assert kicks == []  # no kickstart: service down + GUI closed = stay down
+
+
+def test_build_notifier_honors_operational_to_discord():
+    captured = {}
+
+    class _Recorder:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    import scripts.guardian as guardian_mod
+    original = guardian_mod.DiscordNotifier
+    guardian_mod.DiscordNotifier = _Recorder
+    try:
+        guardian_mod.build_notifier(_make_config(alerts_operational_to_discord=False))
+    finally:
+        guardian_mod.DiscordNotifier = original
+
+    assert captured["operational_to_discord"] is False
