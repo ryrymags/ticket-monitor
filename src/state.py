@@ -194,35 +194,11 @@ class MonitorState:
                 self._txn_dirty = False
                 self._commit_save()
 
-    # ---- Legacy event status/price tracking ----
 
-    def get_last_status(self, event_id: str) -> str | None:
-        return self._event(event_id).get("last_status")
 
-    def set_last_status(self, event_id: str, status: str):
-        self._event(event_id)["last_status"] = status
-        self.save()
 
-    def has_status_changed(self, event_id: str, new_status: str) -> bool:
-        old = self.get_last_status(event_id)
-        return old is not None and old != new_status
 
-    def get_had_price_ranges(self, event_id: str) -> bool | None:
-        val = self._event(event_id).get("had_price_ranges")
-        if val is None:
-            return None
-        return bool(val)
 
-    def set_had_price_ranges(self, event_id: str, had_ranges: bool):
-        self._event(event_id)["had_price_ranges"] = had_ranges
-        self.save()
-
-    def get_last_price_key(self, event_id: str) -> str | None:
-        return self._event(event_id).get("last_price_key")
-
-    def set_last_price_key(self, event_id: str, key: str):
-        self._event(event_id)["last_price_key"] = key
-        self.save()
 
     def get_last_check(self, event_id: str) -> datetime | None:
         return _iso_to_dt(self._event(event_id).get("last_check"))
@@ -566,14 +542,9 @@ class MonitorState:
         health.pop("auth_reauth_attempt_events", None)
         return health
 
-    # ---- Heartbeat + recap ----
+    # ---- Heartbeat ----
 
-    def get_last_heartbeat_date(self) -> str | None:
-        return self._state.get("last_heartbeat_date")
 
-    def set_last_heartbeat_date(self, date_str: str):
-        self._state["last_heartbeat_date"] = date_str
-        self.save()
 
     def get_last_heartbeat_at(self) -> datetime | None:
         return _iso_to_dt(self._state.get("last_heartbeat_at"))
@@ -589,14 +560,7 @@ class MonitorState:
         self._state["last_session_health_check_at"] = _dt_to_iso(dt or datetime.now(timezone.utc))
         self.save()
 
-    def get_last_recap_date(self) -> str | None:
-        return self._state.get("last_recap_date")
 
-    def set_last_recap_date(self, date_str: str):
-        self._state["last_recap_date"] = date_str
-        self.save()
-
-    # ---- Browser/detection state ----
 
     def get_last_availability_signature(self, event_id: str) -> str | None:
         return self._event(event_id).get("last_availability_signature")

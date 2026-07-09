@@ -11,8 +11,6 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote
 
-from dateutil import tz
-
 import requests
 
 from .state import write_json_atomic
@@ -195,77 +193,8 @@ class DiscordNotifier:
         self.ntfy = ntfy
         self.session = requests.Session()
 
-    def send_status_change(self, event_name: str, event_date: str, event_url: str,
-                           old_status: str, new_status: str) -> bool:
-        """Notify when an event's status changes. Mentions user only for onsale."""
-        embed = {
-            "title": f"Status Change: {event_name}",
-            "url": event_url,
-            "color": COLOR_BLUE,
-            "description": f"Event status changed from **{old_status}** to **{new_status}**.",
-            "fields": [
-                {"name": "Date", "value": event_date, "inline": True},
-                {
-                    "name": "Action",
-                    "value": f"[Check Ticketmaster]({event_url})",
-                    "inline": False,
-                },
-            ],
-            "footer": {"text": "Face Value Exchange Monitor"},
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
 
-        # Only ping for onsale — that's when tickets are available
-        mention = self.ping_user_id if new_status == "onsale" else ""
-        return self._send(embeds=[embed], content=mention, retries=2)
 
-    def send_price_range_appeared(self, event_name: str, event_date: str, event_url: str,
-                                   price_min: float, price_max: float) -> bool:
-        """Notify when price ranges appear on a previously sold-out event (status unchanged)."""
-        embed = {
-            "title": f"Price Range Appeared: {event_name}",
-            "url": event_url,
-            "color": COLOR_BLUE,
-            "description": (
-                f"Price data appeared in the API for this event — tickets may be available.\n"
-                f"Price range: **${price_min:.0f} – ${price_max:.0f}**"
-            ),
-            "fields": [
-                {"name": "Date", "value": event_date, "inline": True},
-                {
-                    "name": "Action",
-                    "value": f"[Check Ticketmaster]({event_url})",
-                    "inline": False,
-                },
-            ],
-            "footer": {"text": "Face Value Exchange Monitor"},
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-
-        return self._send(embeds=[embed], content=self.ping_user_id, retries=2)
-
-    def send_page_resale_detected(self, event_name: str, event_date: str, event_url: str,
-                                   sections: list[str], price_info: str | None) -> bool:
-        """Notify when the page checker detects a resale/FVE listing on the event page."""
-        detail = f"Sections: {', '.join(sections)}" if sections else "Check the event page for details."
-        if price_info:
-            detail += f" | Price: **{price_info}**"
-        embed = {
-            "title": f"Resale Detected on Page: {event_name}",
-            "url": event_url,
-            "color": COLOR_BLUE,
-            "description": (
-                "The page checker found a resale or Face Value Exchange listing on "
-                f"the Ticketmaster event page.\n{detail}"
-            ),
-            "fields": [
-                {"name": "Date", "value": event_date, "inline": True},
-                {"name": "Action", "value": f"[Check Ticketmaster]({event_url})", "inline": False},
-            ],
-            "footer": {"text": "Face Value Exchange Monitor"},
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-        return self._send(embeds=[embed], content=self.ping_user_id, retries=2)
 
     def send_ticket_available(
         self,
@@ -532,54 +461,7 @@ class DiscordNotifier:
         content = self.ping_user_id if self._should_ping(manual_required) else ""
         return self._send(embeds=[embed], content=content, retries=1)
 
-    def send_sold_out_again(self, event_name: str, event_date: str, event_url: str) -> bool:
-        """Notify when an event goes back to sold out / offsale."""
-        embed = {
-            "title": f"Back to Sold Out: {event_name}",
-            "url": event_url,
-            "color": COLOR_RED,
-            "description": "Tickets are no longer available. The monitor will keep checking.",
-            "fields": [
-                {"name": "Date", "value": event_date, "inline": True},
-            ],
-            "footer": {"text": "Face Value Exchange Monitor"},
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
 
-        return self._send(embeds=[embed])
-
-    def send_heartbeat(self, uptime_hours: float,
-                       last_check: datetime | None,
-                       event_statuses: list[dict] | None = None) -> bool:
-        """Send a periodic heartbeat to confirm the monitor is alive."""
-        last_check_str = last_check.astimezone(tz.gettz("US/Eastern")).strftime("%I:%M %p ET") if last_check else "Never"
-
-        fields = []
-        for es in (event_statuses or []):
-            raw_check = es.get("last_check")
-            check_str = (
-                raw_check.astimezone(tz.gettz("US/Eastern")).strftime("%I:%M %p ET")
-                if raw_check else "Never"
-            )
-            fields.append({
-                "name": es["name"],
-                "value": f"{es['status']} | Last check: {check_str}",
-                "inline": False,
-            })
-
-        embed = {
-            "title": "Monitor Heartbeat",
-            "color": COLOR_BLUE,
-            "description": (
-                f"Uptime: **{uptime_hours:.1f} hours**\n"
-                f"Last successful check: **{last_check_str}**"
-            ),
-            "fields": fields,
-            "footer": {"text": "Face Value Exchange Monitor"},
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-
-        return self._send(embeds=[embed])
 
     def send_test(self) -> bool:
         """Send a test notification to verify the webhook works."""
@@ -600,33 +482,6 @@ class DiscordNotifier:
 
         return self._send(embeds=[embed])
 
-    def send_daily_recap(self, event_summaries: list[dict]) -> bool:
-        """Send a daily 11PM recap summarizing the day's monitoring activity."""
-        lines = []
-        for summary in event_summaries:
-            name = summary["name"]
-            statuses = summary.get("statuses_seen", ["unknown"])
-            current_status = statuses[-1] if statuses else "unknown"
-            price_ranges_seen = summary.get("price_ranges_seen", False)
-
-            if current_status == "offsale" and not price_ranges_seen:
-                lines.append(f"**{name}**: Still offsale. No ticket activity today.")
-            elif price_ranges_seen:
-                lines.append(f"**{name}**: Price data appeared! Status: **{current_status}**.")
-            else:
-                lines.append(f"**{name}**: Status: **{current_status}**. No price data today.")
-
-        description = "\n".join(lines)
-
-        embed = {
-            "title": "Daily Recap",
-            "color": COLOR_BLUE,
-            "description": description,
-            "footer": {"text": "Face Value Exchange Monitor"},
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-
-        return self._send(embeds=[embed])
 
     def send_error(
         self,

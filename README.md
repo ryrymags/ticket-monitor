@@ -9,7 +9,8 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 ## 📋 Recent Changes
 
 <!-- CHANGELOG_START -->
-- `(pending)`  2026-07-09  Raise ConfigError from load_config instead of sys.exit
+- `(pending)`  2026-07-09  Delete dead Discovery-API-era notifier and state code
+- `08f70ff`  2026-07-09  Raise ConfigError from load_config instead of sys.exit
 - `fd3dd8e`  2026-07-09  Pool Monitor-tab events panel widgets instead of rebuilding per poll
 - `1883857`  2026-07-09  Batch per-check state mutations into one merge-save
 - `f9bbbc3`  2026-07-09  Tighten challenge detection and add availability diagnostics
@@ -18,7 +19,6 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 - `6a16879`  2026-07-09  Honor operational_to_discord in guardian and reloader notifiers
 - `20e32a0`  2026-07-09  Re-stamp monitor_started on every monitor start
 - `8c4a017`  2026-07-09  Make single-instance locks cross-platform via the state lock shim
-- `a1eca15`  2026-07-09  Budget cycle work time in uptime down-gap inference
 
 Full history: [CHANGELOG.md](CHANGELOG.md)
 <!-- CHANGELOG_END -->
