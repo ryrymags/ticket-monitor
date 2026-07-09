@@ -762,6 +762,9 @@ class DiscordNotifier:
         if content:
             payload["content"] = self._truncate(content, MAX_CONTENT_LEN)
 
+        # Total sleep budget across 429 retries: a rate-limited BINGO alert is
+        # worth waiting for, but a broken webhook must never stall the scheduler.
+        rate_limit_budget = 30.0
         for attempt in range(retries + 1):
             try:
                 resp = self.session.post(self.webhook_url, json=payload, timeout=10)
@@ -769,7 +772,16 @@ class DiscordNotifier:
                     logger.debug("Discord notification sent successfully")
                     return True
                 elif resp.status_code == 429:
-                    logger.warning("Discord rate limited: %s", resp.text)
+                    if attempt < retries and rate_limit_budget > 0:
+                        delay = min(self._retry_after_seconds(resp), rate_limit_budget)
+                        rate_limit_budget -= delay
+                        logger.warning(
+                            "Discord rate limited (attempt %d/%d) — retrying in %.1fs",
+                            attempt + 1, retries + 1, delay,
+                        )
+                        time.sleep(delay)
+                        continue
+                    logger.warning("Discord rate limited: %s", resp.text[:200])
                     return False
                 else:
                     logger.error("Discord webhook error %d: %s", resp.status_code, resp.text[:200])
@@ -785,6 +797,30 @@ class DiscordNotifier:
                     return False
 
         return False
+
+    @staticmethod
+    def _retry_after_seconds(resp) -> float:
+        """Delay Discord asks us to wait after a 429 (header, then JSON body),
+        with a small default so a malformed response still gets one retry."""
+        for header in ("Retry-After", "X-RateLimit-Reset-After"):
+            try:
+                raw = resp.headers.get(header)
+            except Exception:
+                raw = None
+            if raw:
+                try:
+                    value = float(raw)
+                    if value > 0:
+                        return value
+                except (TypeError, ValueError):
+                    pass
+        try:
+            value = float(resp.json().get("retry_after", 0))
+            if value > 0:
+                return value
+        except Exception:
+            pass
+        return 1.0
 
     def _sanitize_embeds(self, embeds: list[dict]) -> list[dict]:
         sanitized = []

@@ -9,7 +9,8 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 ## 📋 Recent Changes
 
 <!-- CHANGELOG_START -->
-- `(pending)`  2026-07-09  Honor operational_to_discord in guardian and reloader notifiers
+- `(pending)`  2026-07-09  Finish Phase 1: 429 retry, Tk thread safety, doctor profile guard
+- `6a16879`  2026-07-09  Honor operational_to_discord in guardian and reloader notifiers
 - `20e32a0`  2026-07-09  Re-stamp monitor_started on every monitor start
 - `8c4a017`  2026-07-09  Make single-instance locks cross-platform via the state lock shim
 - `a1eca15`  2026-07-09  Budget cycle work time in uptime down-gap inference
@@ -18,7 +19,6 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 - `e24ac03`  2026-07-08  Fix stale commit hashes in the auto-generated changelog
 - `717b5fb`  2026-07-08  Tie monitoring to the GUI and finish the Uptime tab fix
 - `b8d21e8`  2026-07-08  Fix Uptime tab crashes, arm the reboot tier, send ntfy first
-- `57195c9`  2026-07-08  Stop the guardian/monitor restart death spiral
 
 Full history: [CHANGELOG.md](CHANGELOG.md)
 <!-- CHANGELOG_END -->

@@ -657,3 +657,54 @@ class TestNtfyNotifier:
             )
         mock_ntfy.assert_not_called()      # ntfy is BINGO-only
         mock_send.assert_called_once()     # Discord still posts
+
+
+class TestDiscordRateLimitRetry:
+    def _notifier_with_responses(self, responses):
+        from unittest.mock import MagicMock
+        notifier = DiscordNotifier("https://discord.test/webhook")
+        notifier.session = MagicMock()
+        notifier.session.post = MagicMock(side_effect=responses)
+        return notifier
+
+    @staticmethod
+    def _resp(status, retry_after=None):
+        from unittest.mock import MagicMock
+        resp = MagicMock()
+        resp.status_code = status
+        resp.text = "rate limited"
+        resp.headers = {"Retry-After": str(retry_after)} if retry_after is not None else {}
+        resp.json.return_value = {}
+        return resp
+
+    def test_429_with_retry_after_retries_and_succeeds(self, monkeypatch):
+        sleeps = []
+        monkeypatch.setattr("src.notifier.time.sleep", lambda s: sleeps.append(s))
+        notifier = self._notifier_with_responses([self._resp(429, 1.5), self._resp(204)])
+
+        assert notifier._send(embeds=[{"title": "t"}], retries=1) is True
+        assert sleeps == [1.5]
+
+    def test_429_sleep_capped_by_budget(self, monkeypatch):
+        sleeps = []
+        monkeypatch.setattr("src.notifier.time.sleep", lambda s: sleeps.append(s))
+        notifier = self._notifier_with_responses([self._resp(429, 120), self._resp(204)])
+
+        assert notifier._send(embeds=[{"title": "t"}], retries=1) is True
+        assert sleeps == [30.0]
+
+    def test_persistent_429_gives_up(self, monkeypatch):
+        sleeps = []
+        monkeypatch.setattr("src.notifier.time.sleep", lambda s: sleeps.append(s))
+        notifier = self._notifier_with_responses([self._resp(429, 1)] * 3)
+
+        assert notifier._send(embeds=[{"title": "t"}], retries=2) is False
+        assert len(sleeps) == 2
+
+    def test_429_without_retries_returns_false_immediately(self, monkeypatch):
+        sleeps = []
+        monkeypatch.setattr("src.notifier.time.sleep", lambda s: sleeps.append(s))
+        notifier = self._notifier_with_responses([self._resp(429, 1)])
+
+        assert notifier._send(embeds=[{"title": "t"}], retries=0) is False
+        assert sleeps == []

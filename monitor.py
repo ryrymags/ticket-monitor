@@ -191,6 +191,13 @@ def run_bootstrap_session(config_path: str, *, stop_event=None):
 def run_doctor(config_path: str):
     """Run a health check that validates auth/session + probing + Discord."""
     config = load_config(config_path)
+    # Same guard as --doctor-lite: NEVER launch Playwright on the live persistent
+    # profile while the monitor is running — Chrome's profile singleton forwards
+    # the launch into the monitoring window (stray tabs) and the check fails anyway.
+    if config.browser_session_mode == "persistent_profile" and monitor_lock_is_held():
+        print("The monitor is currently running and owns the Chrome profile.")
+        print("Stop it first (scripts/monitorctl.sh stop) or use --doctor-lite.")
+        sys.exit(1)
     notifier = build_notifier(config)
 
     print("Running doctor checks...\n")

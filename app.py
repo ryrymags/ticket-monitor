@@ -1043,7 +1043,8 @@ class TicketMonitorApp(ctk.CTk):
             except Exception as exc:
                 msg = f"❌  Error: {exc}"
                 color = COLOR_RED
-            self._discord_status_label.configure(text=msg, text_color=color)
+            # Tk is not thread-safe — marshal the label update to the main loop.
+            self.after(0, lambda m=msg, c=color: self._discord_status_label.configure(text=m, text_color=c))
 
         threading.Thread(target=run, daemon=True).start()
 

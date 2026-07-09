@@ -103,3 +103,17 @@ def test_try_lock_file_exclusive_helpers(tmp_path):
         unlock_file(first)
         assert try_lock_file_exclusive(second) is True
         unlock_file(second)
+
+
+def test_doctor_refuses_live_persistent_profile(monkeypatch, capsys):
+    from types import SimpleNamespace as _NS
+    cfg = _config()
+    cfg.browser_session_mode = "persistent_profile"
+    monkeypatch.setattr(monitor, "load_config", lambda _path: cfg)
+    monkeypatch.setattr(monitor, "monitor_lock_is_held", lambda: True)
+
+    with pytest.raises(SystemExit) as exc:
+        monitor.run_doctor("config.yaml")
+
+    assert exc.value.code == 1
+    assert "owns the Chrome profile" in capsys.readouterr().out
