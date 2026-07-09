@@ -24,14 +24,14 @@ logger = logging.getLogger(__name__)
 
 PROCESS_RESTART_EXIT_CODE = 75
 BROWSER_RESTART_REQUEST_FILE = "logs/restart-browser.request"
-# Mention cadence for a single BINGO availability episode:
-#   0–120s : ping on every qualifying poll (a live drop — every second counts).
-#   120–300s: ping at most once per minute (likely lingering / pricey).
-#   after 300s: stop pinging for this episode (no hours-long ping spam).
-BURST_PHASE1_SECONDS = 120
-BURST_PHASE2_SECONDS = 300
-BURST_PHASE2_INTERVAL_SECONDS = 60
-BURST_HARD_FAILSAFE_SECONDS = 900
+# Mention policy for a single BINGO availability episode: ping this many times in
+# quick succession on the first sighting (each ping = a Discord @-mention message,
+# and for BINGOs an ntfy push too), then stay COMPLETELY silent for that listing.
+# A real BINGO gets bought within minutes, so repeated bursts only train everyone
+# to ignore the alarm. A genuinely NEW listing (new signature) starts a fresh
+# 3-ping episode; the same listing lingering or flapping never re-pings.
+MENTION_PINGS_PER_EPISODE = 3
+MENTION_PING_SPACING_SECONDS = 1.0
 # How many times to retry a failed critical-attention send before giving up for the
 # episode (avoids hammering a permanently-broken webhook every cycle).
 MAX_ATTENTION_ALERT_ATTEMPTS = 6
@@ -1033,23 +1033,29 @@ class MonitorScheduler:
             # @-mention policy: a BINGO always pings. A non-BINGO detection pings only
             # when the "alert on all tickets" toggle is on. The webhook message + local
             # History entry are posted for EVERY detection regardless — only the ping is
-            # gated. The mention burst (which governs ping cadence) is therefore armed
-            # only when a mention is actually allowed.
+            # gated. A new episode gets MENTION_PINGS_PER_EPISODE rapid pings, then the
+            # listing goes silent for good (see the constants block for the rationale).
             mention_allowed = is_bingo or self.config.alerts_non_bingo_enabled
             if mention_allowed:
-                # A genuinely new listing (new signature) starts a fresh mention episode.
-                # The same listing reappearing does NOT restart the burst — that is what
+                # A genuinely new listing (new signature) starts a fresh ping episode.
+                # The same listing reappearing/lingering NEVER re-pings — that is what
                 # caused hours of re-pings on lingering/expensive listings.
                 if decision.reason == "signature_changed":
                     self.state.reset_mention_burst(event_id)
-                self._start_mention_burst_if_needed(event_id, now)
-                mention_due = self._should_send_mention_burst(event_id, now)
+                self._start_mention_episode_if_needed(event_id, now)
+                pings_remaining = self._mention_pings_remaining(event_id)
             else:
-                mention_due = False
+                pings_remaining = 0
 
             self.state.set_last_available_at(event_id, now)
             self.state.set_last_availability_signature(event_id, decision.signature)
-            if decision.should_alert:
+
+            sends = max(pings_remaining, 1 if decision.should_alert else 0)
+            for i in range(sends):
+                if i > 0:
+                    self._interruptible_sleep(MENTION_PING_SPACING_SECONDS)
+                mention_this = pings_remaining > 0
+                reason = decision.reason if (i == 0 and decision.should_alert) else "attention_burst"
                 sent = self.notifier.send_ticket_available(
                     event_name=event_cfg.name,
                     event_date=event_cfg.date,
@@ -1058,44 +1064,29 @@ class MonitorScheduler:
                     signal_confidence=result.signal_confidence,
                     price_summary=result.price_summary,
                     section_summary=result.section_summary,
-                    reason=decision.reason,
+                    reason=reason,
                     listing_summary=result.listing_summary,
                     listing_groups=listing_groups,
-                    mention=mention_due,
+                    mention=mention_this,
                     preferences=preferences,
+                    # Repeat pings are the same sighting — one History row, not three.
+                    record_history=(i == 0),
                 )
-                if sent:
-                    if mention_due:
-                        self._record_mention_burst_sent(event_id, now)
+                if not sent:
+                    # Unsent pings stay owed; the next poll retries the remainder.
+                    logger.error("[%s] ticket alert failed to send (%s)", event_cfg.name, reason)
+                    break
+                if mention_this:
+                    self._record_mention_ping_sent(event_id, now)
+                    pings_remaining -= 1
+                if i == 0 and decision.should_alert:
                     self.state.set_last_alert_at(event_id, now)
-                    logger.info(
-                        "[%s] ticket alert sent (%s, mention=%s)",
-                        event_cfg.name,
-                        decision.reason,
-                        mention_due,
-                    )
-                else:
-                    logger.error("[%s] ticket alert failed to send", event_cfg.name)
-            elif mention_due:
-                sent = self.notifier.send_ticket_available(
-                    event_name=event_cfg.name,
-                    event_date=event_cfg.date,
-                    event_url=event_cfg.url,
-                    signal_type=result.signal_type.value,
-                    signal_confidence=result.signal_confidence,
-                    price_summary=result.price_summary,
-                    section_summary=result.section_summary,
-                    reason="attention_burst",
-                    listing_summary=result.listing_summary,
-                    listing_groups=listing_groups,
-                    mention=True,
-                    preferences=preferences,
+                logger.info(
+                    "[%s] ticket alert sent (%s, mention=%s)",
+                    event_cfg.name,
+                    reason,
+                    mention_this,
                 )
-                if sent:
-                    self._record_mention_burst_sent(event_id, now)
-                    logger.info("[%s] ticket alert sent (attention_burst)", event_cfg.name)
-                else:
-                    logger.error("[%s] ticket alert failed to send (attention_burst)", event_cfg.name)
         else:
             # Listing gone. Keep the last signature so the SAME listing reappearing
             # is treated as a duplicate (no fresh ping). A genuinely new listing has
@@ -1109,50 +1100,33 @@ class MonitorScheduler:
             getattr(self.config, "preferences", None),
         )
 
-    def _start_mention_burst_if_needed(self, event_id: str, now: datetime):
-        started_at = self.state.get_mention_burst_started_at(event_id)
-        if started_at is not None:
-            elapsed = (now - started_at).total_seconds()
-            if elapsed < BURST_HARD_FAILSAFE_SECONDS:
-                return
-            logger.warning(
-                "[%s] resetting stale mention burst state after %.1fs",
-                event_id,
-                elapsed,
-            )
-            self.state.reset_mention_burst(event_id)
+    def _start_mention_episode_if_needed(self, event_id: str, now: datetime):
+        """Open a ping episode only when none exists for this listing signature.
+
+        An existing episode — in progress or completed — is NEVER re-armed here:
+        the old time-based failsafe re-fired full bursts every ~15 minutes for a
+        lingering listing. Only a new signature (reset upstream) starts one.
+        """
+        if self.state.get_mention_burst_started_at(event_id) is not None:
+            return
         self.state.set_mention_burst_started_at(event_id, now)
         self.state.set_mention_burst_last_mention_at(event_id, None)
         self.state.set_mention_burst_sent_count(event_id, 0)
         self.state.set_mention_burst_completed_for_episode(event_id, False)
 
-    def _should_send_mention_burst(self, event_id: str, now: datetime) -> bool:
+    def _mention_pings_remaining(self, event_id: str) -> int:
+        """How many of the episode's rapid pings are still owed (crash-safe: a
+        partially-delivered triple resumes on the next poll)."""
         if self.state.get_mention_burst_completed_for_episode(event_id):
-            return False
+            return 0
+        sent = self.state.get_mention_burst_sent_count(event_id)
+        return max(0, MENTION_PINGS_PER_EPISODE - sent)
 
-        started_at = self.state.get_mention_burst_started_at(event_id)
-        if started_at is None:
-            return True
-
-        elapsed = (now - started_at).total_seconds()
-        # Episode is over once we pass the phase-2 window (or the hard failsafe).
-        if elapsed >= BURST_PHASE2_SECONDS or elapsed >= BURST_HARD_FAILSAFE_SECONDS:
-            self.state.set_mention_burst_completed_for_episode(event_id, True)
-            return False
-
-        # Phase 1: nonstop — ping on every qualifying poll.
-        if elapsed < BURST_PHASE1_SECONDS:
-            return True
-
-        # Phase 2: throttle to at most once per minute.
-        last_mention_at = self.state.get_mention_burst_last_mention_at(event_id)
-        if last_mention_at is None:
-            return True
-        return (now - last_mention_at).total_seconds() >= BURST_PHASE2_INTERVAL_SECONDS
-
-    def _record_mention_burst_sent(self, event_id: str, now: datetime):
+    def _record_mention_ping_sent(self, event_id: str, now: datetime):
         self.state.set_mention_burst_last_mention_at(event_id, now)
-        self.state.increment_mention_burst_sent_count(event_id)
+        count = self.state.increment_mention_burst_sent_count(event_id)
+        if count >= MENTION_PINGS_PER_EPISODE:
+            self.state.set_mention_burst_completed_for_episode(event_id, True)
 
     def _maybe_auto_reauth(self, event_cfg: EventConfig, result, now: datetime):
         if self.config.browser_session_mode == "cdp_attach":

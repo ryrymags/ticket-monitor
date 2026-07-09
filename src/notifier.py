@@ -281,8 +281,12 @@ class DiscordNotifier:
         listing_groups: list[dict[str, Any]] | None = None,
         mention: bool = True,
         preferences=None,
+        record_history: bool = True,
     ) -> bool:
-        """Notify when browser probe detects available inventory."""
+        """Notify when browser probe detects available inventory.
+
+        record_history=False skips the ticket_history.json write — used by the
+        scheduler's rapid repeat pings so one sighting stays one History row."""
         match = self._ticket_match_status(listing_groups, preferences=preferences)
         groups = self._normalized_listing_groups(listing_groups)
         trigger_label = self._trigger_label(reason)
@@ -391,7 +395,7 @@ class DiscordNotifier:
         is_real_history_event = signal_type != "synthetic" and event_id_match is not None
 
         # Write to local history for real Ticketmaster event detections only.
-        if is_real_history_event:
+        if is_real_history_event and record_history:
             try:
                 self._write_history_entry(
                     event_name=event_name,

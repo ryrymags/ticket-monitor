@@ -9,7 +9,8 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 ## 📋 Recent Changes
 
 <!-- CHANGELOG_START -->
-- `(pending)`  2026-07-09  Finish Phase 1: 429 retry, Tk thread safety, doctor profile guard
+- `(pending)`  2026-07-09  Replace mention bursts with 3 rapid pings then silence per listing
+- `19e3c44`  2026-07-09  Finish Phase 1: 429 retry, Tk thread safety, doctor profile guard
 - `6a16879`  2026-07-09  Honor operational_to_discord in guardian and reloader notifiers
 - `20e32a0`  2026-07-09  Re-stamp monitor_started on every monitor start
 - `8c4a017`  2026-07-09  Make single-instance locks cross-platform via the state lock shim
@@ -18,7 +19,6 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 - `6b31e1d`  2026-07-08  Fix ruff E731 lint failure in guardian tests
 - `e24ac03`  2026-07-08  Fix stale commit hashes in the auto-generated changelog
 - `717b5fb`  2026-07-08  Tie monitoring to the GUI and finish the Uptime tab fix
-- `b8d21e8`  2026-07-08  Fix Uptime tab crashes, arm the reboot tier, send ntfy first
 
 Full history: [CHANGELOG.md](CHANGELOG.md)
 <!-- CHANGELOG_END -->
@@ -107,8 +107,9 @@ ntfy:
 **Test it:** double-click `test_notifications.command` (or run `python monitor.py --test-ticket-alert`).
 It sends a sample alert to Discord **and** everyone subscribed.
 
-Friends' pushes are throttled to match Discord's @-mention burst (loud at first, then quiet) —
-so a lingering listing won't spam their phones.
+When a BINGO hits, everyone gets **3 pushes in quick succession** (matching Discord's
+3 @-mention pings), then that listing goes silent — a lingering listing never spams phones.
+A genuinely new listing starts its own fresh 3-ping alert.
 
 ### How the "open the Ticketmaster app" link works (the finicky part)
 

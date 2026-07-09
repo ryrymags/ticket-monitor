@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `(pending)`  2026-07-09 13:54  Finish Phase 1: 429 retry, Tk thread safety, doctor profile guard
+- `(pending)`  2026-07-09 14:09  Replace mention bursts with 3 rapid pings then silence per listing
+
+- `19e3c44`  2026-07-09 13:54  Finish Phase 1: 429 retry, Tk thread safety, doctor profile guard
 
 - `6a16879`  2026-07-09 13:52  Honor operational_to_discord in guardian and reloader notifiers
 
