@@ -141,15 +141,14 @@ GUI_LOCK_FILE = os.path.join(
 
 
 def acquire_gui_single_instance_lock(lock_path: str = GUI_LOCK_FILE):
-    """Take the exclusive GUI flock. Returns the open handle to keep alive for the
-    process lifetime, or None when another GUI instance already holds it."""
-    import fcntl
+    """Take the exclusive GUI lock. Returns the open handle to keep alive for the
+    process lifetime, or None when another GUI instance already holds it.
+    Cross-platform via src.state's lock shim (fcntl on Unix, msvcrt on Windows)."""
+    from src.state import try_lock_file_exclusive
 
     os.makedirs(os.path.dirname(lock_path), exist_ok=True)
     handle = open(lock_path, "a+", encoding="utf-8")
-    try:
-        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
+    if not try_lock_file_exclusive(handle):
         handle.close()
         return None
     handle.seek(0)

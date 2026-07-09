@@ -508,17 +508,15 @@ MONITOR_LOCK_FILE = "logs/monitor.lock"
 
 
 def acquire_single_instance_lock():
-    """Take an exclusive flock so launchd and a GUI-spawned monitor can never run
+    """Take an exclusive lock so launchd and a GUI-spawned monitor can never run
     (and fight over the Chrome profile) at the same time. Returns the open lock
     file handle to keep alive for the process lifetime, or None if another
-    monitor already holds it."""
-    import fcntl
+    monitor already holds it. Cross-platform via src.state's lock shim."""
+    from src.state import try_lock_file_exclusive
 
     os.makedirs(os.path.dirname(MONITOR_LOCK_FILE), exist_ok=True)
     lock_handle = open(MONITOR_LOCK_FILE, "a+", encoding="utf-8")
-    try:
-        fcntl.flock(lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
+    if not try_lock_file_exclusive(lock_handle):
         lock_handle.close()
         return None
     lock_handle.seek(0)
@@ -530,15 +528,13 @@ def acquire_single_instance_lock():
 
 def monitor_lock_is_held() -> bool:
     """True when a running monitor holds the single-instance lock (without stealing it)."""
-    import fcntl
+    from src.state import try_lock_file_exclusive, unlock_file
 
     try:
         with open(MONITOR_LOCK_FILE, "a+", encoding="utf-8") as handle:
-            try:
-                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError:
+            if not try_lock_file_exclusive(handle):
                 return True
-            fcntl.flock(handle, fcntl.LOCK_UN)
+            unlock_file(handle)
     except OSError:
         return False
     return False

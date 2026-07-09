@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `(pending)`  2026-07-09 13:47  Budget cycle work time in uptime down-gap inference
+- `(pending)`  2026-07-09 13:50  Make single-instance locks cross-platform via the state lock shim
+
+- `a1eca15`  2026-07-09 13:47  Budget cycle work time in uptime down-gap inference
 
 - `cf2a97a`  2026-07-08 23:45  Bump CI actions to Node 24 majors
 

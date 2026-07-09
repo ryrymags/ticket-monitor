@@ -81,3 +81,25 @@ def test_single_instance_lock_mutual_exclusion(tmp_path, monkeypatch):
     third = monitor.acquire_single_instance_lock()
     assert third is not None
     third.close()
+
+
+def test_monitor_lock_is_held_reflects_holder(tmp_path, monkeypatch):
+    monkeypatch.setattr(monitor, "MONITOR_LOCK_FILE", str(tmp_path / "locks" / "monitor.lock"))
+    assert monitor.monitor_lock_is_held() is False
+    holder = monitor.acquire_single_instance_lock()
+    assert holder is not None
+    assert monitor.monitor_lock_is_held() is True
+    holder.close()
+    assert monitor.monitor_lock_is_held() is False
+
+
+def test_try_lock_file_exclusive_helpers(tmp_path):
+    from src.state import try_lock_file_exclusive, unlock_file
+
+    path = tmp_path / "some.lock"
+    with open(path, "a+", encoding="utf-8") as first, open(path, "a+", encoding="utf-8") as second:
+        assert try_lock_file_exclusive(first) is True
+        assert try_lock_file_exclusive(second) is False
+        unlock_file(first)
+        assert try_lock_file_exclusive(second) is True
+        unlock_file(second)

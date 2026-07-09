@@ -451,19 +451,17 @@ GUI_ENFORCEMENT_MIN_UPTIME_SECONDS = 300
 
 
 def gui_is_running(lock_path: Path = GUI_LOCK_FILE) -> bool:
-    """True when the GUI app holds its single-instance flock (i.e. it is open).
+    """True when the GUI app holds its single-instance lock (i.e. it is open).
 
-    An flock dies with its process, so this is crash-proof: a force-quit GUI
-    releases the lock even though it never ran any cleanup."""
-    import fcntl
+    An OS file lock dies with its process, so this is crash-proof: a force-quit
+    GUI releases the lock even though it never ran any cleanup."""
+    from src.state import try_lock_file_exclusive, unlock_file
 
     try:
         with open(lock_path, "a+", encoding="utf-8") as handle:
-            try:
-                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError:
+            if not try_lock_file_exclusive(handle):
                 return True
-            fcntl.flock(handle, fcntl.LOCK_UN)
+            unlock_file(handle)
     except OSError:
         return False
     return False

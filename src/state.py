@@ -43,6 +43,47 @@ else:
         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
+# Non-blocking single-instance locks, shared by the monitor/GUI entry points and
+# the guardian's GUI-liveness probe. These are the cross-platform counterpart to
+# the blocking state-file locks above: fcntl on Unix, msvcrt on Windows (locking
+# byte 0, same range convention as _lock_file — msvcrt permits locking at/past
+# EOF, so an empty lock file is fine).
+
+if sys.platform == "win32":
+
+    def try_lock_file_exclusive(handle) -> bool:
+        """Try to take an exclusive non-blocking lock; True when acquired."""
+        handle.seek(0)
+        try:
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError:
+            return False
+        return True
+
+    def unlock_file(handle) -> None:
+        handle.seek(0)
+        try:
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+
+else:
+
+    def try_lock_file_exclusive(handle) -> bool:
+        """Try to take an exclusive non-blocking lock; True when acquired."""
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return False
+        return True
+
+    def unlock_file(handle) -> None:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+
+
 logger = logging.getLogger(__name__)
 _DELETE_SENTINEL = object()
 
