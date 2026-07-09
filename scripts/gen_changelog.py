@@ -73,8 +73,23 @@ def git_log() -> list[dict]:
     return commits
 
 
-def build_changelog_body(commits: list[dict]) -> str:
-    """Build the content that goes between the CHANGELOG sentinels."""
+def _hash_label(commit: dict, hide: bool) -> str:
+    """The short hash to display, or a placeholder for a commit whose hash is
+    about to change (see build_changelog_body's ``pending_latest`` docstring)."""
+    return "(pending)" if hide else commit["short"]
+
+
+def build_changelog_body(commits: list[dict], pending_latest: bool = False) -> str:
+    """Build the content that goes between the CHANGELOG sentinels.
+
+    ``pending_latest``: the post-commit hook runs this script BEFORE amending the
+    commit to fold CHANGELOG.md/README.md in, so at generation time the newest
+    commit's hash is about to be rewritten by that amend — a commit can never
+    contain its own final hash (each edit changes the hash again). Rather than
+    record a hash that's guaranteed to be wrong, the newest entry shows
+    "(pending)" here; the NEXT commit's regeneration sees that commit's now-final,
+    stable hash (nothing amends it again) and fills it in correctly on its own.
+    """
     if not commits:
         return "No commits yet.\n"
 
@@ -94,12 +109,15 @@ def build_changelog_body(commits: list[dict]) -> str:
         lines.append("")
         section = []
 
-    for commit in commits:
+    for i, commit in enumerate(commits):
         if commit["tag"]:
             flush_section()
             current_version = commit["tag"]
             current_date = commit["date"].split(" ")[0]
-        section.append(f"- `{commit['short']}`  {commit['date']}  {commit['subject']}\n")
+        hide_hash = pending_latest and i == 0
+        section.append(
+            f"- `{_hash_label(commit, hide_hash)}`  {commit['date']}  {commit['subject']}\n"
+        )
 
     flush_section()
     return "\n".join(lines)
@@ -120,31 +138,37 @@ def update_sentinel_block(path: Path, start_marker: str, end_marker: str, new_bo
     return True
 
 
-def build_readme_snippet(commits: list[dict], max_entries: int = 10) -> str:
-    """Build a short 'Recent Changes' snippet for the README."""
+def build_readme_snippet(commits: list[dict], max_entries: int = 10, pending_latest: bool = False) -> str:
+    """Build a short 'Recent Changes' snippet for the README. See
+    build_changelog_body for why ``pending_latest`` exists."""
     if not commits:
         return "No commits yet.\n"
     lines = []
-    for c in commits[:max_entries]:
+    for i, c in enumerate(commits[:max_entries]):
         date = c["date"].split(" ")[0]
-        lines.append(f"- `{c['short']}`  {date}  {c['subject']}\n")
+        hide_hash = pending_latest and i == 0
+        lines.append(f"- `{_hash_label(c, hide_hash)}`  {date}  {c['subject']}\n")
     lines.append(f"\nFull history: [CHANGELOG.md](CHANGELOG.md)\n")
     return "".join(lines)
 
 
 def main() -> int:
+    # Passed by scripts/hooks/post-commit, which runs this BEFORE amending the
+    # commit that folds these files in — see build_changelog_body's docstring.
+    # Omit it for a standalone run (HEAD's hash is already final in that case).
+    pending_latest = "--pending-latest-hash" in sys.argv[1:]
     commits = git_log()
 
     # Update CHANGELOG.md
     if CHANGELOG_PATH.exists():
-        body = build_changelog_body(commits)
+        body = build_changelog_body(commits, pending_latest=pending_latest)
         update_sentinel_block(CHANGELOG_PATH, CHANGELOG_START, CHANGELOG_END, body)
     else:
         print(f"Warning: {CHANGELOG_PATH} not found — skipping", file=sys.stderr)
 
     # Update README.md Recent Changes section
     if README_PATH.exists():
-        snippet = build_readme_snippet(commits)
+        snippet = build_readme_snippet(commits, pending_latest=pending_latest)
         changed = update_sentinel_block(README_PATH, CHANGELOG_START, CHANGELOG_END, snippet)
         if not changed:
             # Markers not present — nothing to update

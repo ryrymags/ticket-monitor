@@ -15,8 +15,10 @@ trap 'rm -f "$LOCK"' EXIT
 SCRIPT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$SCRIPT_DIR" || exit 0
 
-# Regenerate changelog files
-python3 scripts/gen_changelog.py 2>/dev/null
+# Regenerate changelog files. --pending-latest-hash: this runs BEFORE the amend
+# below, so HEAD's hash is about to change — the flag tells gen_changelog.py to
+# show "(pending)" for it instead of a hash that's guaranteed to go stale.
+python3 scripts/gen_changelog.py --pending-latest-hash 2>/dev/null
 
 # Fold updated files into the commit silently
 git add CHANGELOG.md README.md 2>/dev/null
