@@ -9,7 +9,8 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 ## 📋 Recent Changes
 
 <!-- CHANGELOG_START -->
-- `(pending)`  2026-07-09  Replace mention bursts with 3 rapid pings then silence per listing
+- `(pending)`  2026-07-09  Tighten challenge detection and add availability diagnostics
+- `025deba`  2026-07-09  Replace mention bursts with 3 rapid pings then silence per listing
 - `19e3c44`  2026-07-09  Finish Phase 1: 429 retry, Tk thread safety, doctor profile guard
 - `6a16879`  2026-07-09  Honor operational_to_discord in guardian and reloader notifiers
 - `20e32a0`  2026-07-09  Re-stamp monitor_started on every monitor start
@@ -18,7 +19,6 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 - `cf2a97a`  2026-07-08  Bump CI actions to Node 24 majors
 - `6b31e1d`  2026-07-08  Fix ruff E731 lint failure in guardian tests
 - `e24ac03`  2026-07-08  Fix stale commit hashes in the auto-generated changelog
-- `717b5fb`  2026-07-08  Tie monitoring to the GUI and finish the Uptime tab fix
 
 Full history: [CHANGELOG.md](CHANGELOG.md)
 <!-- CHANGELOG_END -->

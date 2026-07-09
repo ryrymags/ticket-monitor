@@ -71,7 +71,10 @@ class TicketmasterSessionAutoFixer:
         "verify you are human",
         "attention required",
         "captcha",
-        "datadome",
+        # DataDome's challenge iframe host — the bare "datadome" token also
+        # appears in the vendor's ordinary JS tag on normal pages, so matching
+        # it verbatim misread healthy pages as challenges during verification.
+        "captcha-delivery.com",
         "cf-challenge",
         "press & hold",
     )

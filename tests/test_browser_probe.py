@@ -1051,3 +1051,87 @@ def test_trim_profile_caches_missing_dir_is_noop(tmp_path):
     from src.browser_probe import trim_profile_caches
 
     assert trim_profile_caches(str(tmp_path / "nope")) == 0
+
+
+class TestChallengePatternTightening:
+    """The bare 'datadome' HTML token appears in the vendor's ordinary JS tag on
+    normal pages — it must only read as a challenge on a content-less shell."""
+
+    def _probe(self):
+        return BrowserProbe(storage_state_path="secrets/none.json")
+
+    def test_normal_page_with_datadome_tag_is_not_challenge(self):
+        probe = self._probe()
+        body = ("Example Artist The Deadbeat Tour tickets. " * 10).lower()
+        html = '<html><script src="https://js.datadome.co/tags.js"></script><body>x</body></html>'
+
+        assert probe._detect_challenge_pattern(body, html.lower(), "example artist tickets") is None
+
+    def test_datadome_with_minimal_body_is_challenge(self):
+        probe = self._probe()
+        html = '<html><script src="https://js.datadome.co/tags.js"></script><body></body></html>'
+
+        assert (
+            probe._detect_challenge_pattern("", html.lower(), "")
+            == "html:datadome+minimal_body"
+        )
+
+    def test_captcha_delivery_iframe_is_always_challenge(self):
+        probe = self._probe()
+        body = ("Lots of visible page text here. " * 20).lower()
+        html = '<html><iframe src="https://geo.captcha-delivery.com/captcha/"></iframe></html>'
+
+        assert (
+            probe._detect_challenge_pattern(body, html.lower(), "")
+            == "html:captcha-delivery.com"
+        )
+
+    def test_body_pattern_reports_source(self):
+        probe = self._probe()
+        assert (
+            probe._detect_challenge_pattern("please verify you are human", "<html></html>", "")
+            == "body:verify you are human"
+        )
+
+    def test_challenge_pattern_lands_in_raw_indicators(self):
+        page = _FakePage(
+            html="<html><body>Please verify you are human</body></html>",
+            status=200,
+        )
+        probe = _probe_for_page(page)
+        result = probe.check_event("event-1", "http://event")
+
+        assert result.challenge_detected is True
+        assert result.raw_indicators["challenge_pattern"] == "body:verify you are human"
+
+    def test_clean_page_has_no_challenge_pattern(self):
+        page = _FakePage(html="<html><body>Sold out</body></html>", status=200)
+        probe = _probe_for_page(page)
+        result = probe.check_event("event-1", "http://event")
+
+        assert result.raw_indicators["challenge_pattern"] is None
+
+
+class TestAvailabilitySourceDiagnostics:
+    def test_network_availability_records_source_paths(self):
+        page = _FakePage(
+            html="<html><body>Event page</body></html>",
+            status=200,
+            network_payloads=[{"offers": [{"available": True, "quantity": 2, "price": 119.6}]}],
+        )
+        probe = _probe_for_page(page)
+        result = probe.check_event("event-1", "http://event")
+
+        sources = result.raw_indicators["availability_sources"]
+        assert sources, "availability hits must name their JSON paths"
+        assert any("available" in s or "quantity" in s for s in sources)
+
+    def test_extract_snapshot_returns_sources(self):
+        probe = BrowserProbe(storage_state_path="secrets/none.json")
+        payload = {"offers": [{"available": True, "quantity": 3, "section": "LOGE"}]}
+
+        count, signals, _prices, _sections, _groups, sources = probe._extract_network_snapshot(payload)
+
+        assert count > 0
+        assert "offers.available" in sources
+        assert "offers.quantity" in sources

@@ -8,7 +8,7 @@ import random
 import re
 import time
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from .models import ProbeResult, ProbeSignalType
@@ -107,6 +107,9 @@ class _NetworkSnapshot:
     prices: list[float]
     sections: set[str]
     listing_groups: dict[tuple[str, str, str], dict[str, Any]]
+    # JSON paths whose keys drove availability_count — diagnostic only, so a
+    # false-positive "available" can be traced to the exact payload field.
+    availability_sources: set[str] = field(default_factory=set)
 
 
 class BrowserProbe:
@@ -653,11 +656,14 @@ class BrowserProbe:
             body_text_lower = body_text.lower()
             page_title = self._safe_page_title(page).lower()
 
-            challenge_detected = self._detect_challenge(
+            challenge_pattern = self._detect_challenge_pattern(
                 body_text_lower=body_text_lower,
                 html_lower=html_lower,
                 page_title=page_title,
             )
+            challenge_detected = challenge_pattern is not None
+            if challenge_detected:
+                logger.info("[%s] challenge detected via %s", event_id, challenge_pattern)
             blocked = (response_status in {401, 403, 429}) or challenge_detected
 
             dom_signals = self._collect_dom_signals(page, body_text_lower)
@@ -691,6 +697,8 @@ class BrowserProbe:
                     "dom_signals": dom_signals,
                     "network_signals": network_signals,
                     "availability_count": network_snapshot.availability_count,
+                    "availability_sources": sorted(network_snapshot.availability_sources)[:8],
+                    "challenge_pattern": challenge_pattern,
                     "listing_groups": self._listing_groups_debug(network_snapshot.listing_groups),
                     "page_title": page_title,
                     "retry_after_seconds": retry_after_seconds,
@@ -980,8 +988,9 @@ class BrowserProbe:
                 return
 
             data = response.json()
-            count, signals, prices, sections, listing_groups = self._extract_network_snapshot(data)
+            count, signals, prices, sections, listing_groups, sources = self._extract_network_snapshot(data)
             snapshot.availability_count += count
+            snapshot.availability_sources.update(sources)
             snapshot.signals.update(signals)
             snapshot.prices.extend(prices)
             snapshot.sections.update(sections)
@@ -993,12 +1002,16 @@ class BrowserProbe:
     def _extract_network_snapshot(
         self,
         payload: Any,
-    ) -> tuple[int, set[str], list[float], set[str], dict[tuple[str, str, str], dict[str, Any]]]:
+    ) -> tuple[int, set[str], list[float], set[str], dict[tuple[str, str, str], dict[str, Any]], set[str]]:
         availability_count = 0
         signals: set[str] = set()
         prices: list[float] = []
         sections: set[str] = set()
         listing_groups: dict[tuple[str, str, str], dict[str, Any]] = {}
+        availability_sources: set[str] = set()
+
+        def record_source(child_path: tuple[str, ...]):
+            availability_sources.add(".".join(child_path))
 
         def walk(value: Any, path: tuple[str, ...] = ()):
             nonlocal availability_count
@@ -1021,16 +1034,20 @@ class BrowserProbe:
                         if lower_val in {"onsale", "instock", "available"}:
                             availability_count += 1
                             signals.add("available_status")
+                            record_source(child_path)
                     if lower_key in {"available", "isavailable"}:
                         if isinstance(v, bool) and v:
                             availability_count += 1
                             signals.add("available_flag")
+                            record_source(child_path)
                         elif isinstance(v, int) and v > 0:
                             availability_count += int(v)
                             signals.add("available_count")
+                            record_source(child_path)
                     if lower_key in {"quantity", "availabletickets", "totalavailable"} and isinstance(v, int) and v > 0:
                         availability_count += int(v)
                         signals.add("quantity")
+                        record_source(child_path)
                     if lower_key in {"section", "sectionname"} and isinstance(v, str):
                         sections.add(v.strip())
                     walk(v, child_path)
@@ -1050,7 +1067,7 @@ class BrowserProbe:
                     sections.add(text)
 
         walk(payload)
-        return availability_count, signals, prices, sections, listing_groups
+        return availability_count, signals, prices, sections, listing_groups, availability_sources
 
     def _collect_dom_signals(self, page, body_text_lower: str) -> list[str]:
         signals: set[str] = set()
@@ -1160,15 +1177,34 @@ class BrowserProbe:
         return None
 
     def _detect_challenge(self, body_text_lower: str, html_lower: str, page_title: str) -> bool:
+        return self._detect_challenge_pattern(body_text_lower, html_lower, page_title) is not None
+
+    def _detect_challenge_pattern(
+        self, body_text_lower: str, html_lower: str, page_title: str
+    ) -> str | None:
+        """Which challenge signal matched (e.g. "body:captcha"), or None.
+
+        Reported into raw_indicators and the log so a block can be diagnosed
+        from monitor.log alone — and so a false positive names its trigger.
+        """
         # Prefer visible text + title, not raw HTML token noise.
-        if self._contains_any(body_text_lower, self.CHALLENGE_PATTERNS):
-            return True
-        if self._contains_any(page_title, ("just a moment", "attention required", "captcha")):
-            return True
-        # Keep two strong HTML-only indicators.
-        if "cf-challenge" in html_lower or "datadome" in html_lower:
-            return True
-        return False
+        for pattern in self.CHALLENGE_PATTERNS:
+            if pattern in body_text_lower:
+                return f"body:{pattern}"
+        for pattern in ("just a moment", "attention required", "captcha"):
+            if pattern in page_title:
+                return f"title:{pattern}"
+        # Strong HTML-only indicators. The bare "datadome" token also appears in
+        # the vendor's ordinary JS tag on NORMAL pages, so alone it only counts
+        # when the page has no real body content (a challenge shell); the actual
+        # challenge iframe loads from captcha-delivery.com and is always a block.
+        if "cf-challenge" in html_lower:
+            return "html:cf-challenge"
+        if "captcha-delivery.com" in html_lower:
+            return "html:captcha-delivery.com"
+        if "datadome" in html_lower and len(body_text_lower.strip()) < 200:
+            return "html:datadome+minimal_body"
+        return None
 
     def _session_health_page_state(self, page) -> tuple[str, str, str, bool]:
         html = page.content()
