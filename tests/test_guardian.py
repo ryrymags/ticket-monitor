@@ -4,10 +4,25 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from scripts import guardian
 from src.config import EventConfig, MonitorConfig
 from src.preferences import TicketPreferences
 from src.state import MonitorState
+
+
+# Captured before the autouse fixture patches the module attribute, so the flock
+# test below can exercise the real implementation.
+_real_gui_is_running = guardian.gui_is_running
+
+
+@pytest.fixture(autouse=True)
+def _gui_present(monkeypatch):
+    """Default every test to 'the GUI app is open' — monitoring only runs while
+    the GUI is up, and most tests exercise behavior in that normal state. The
+    GUI-coincidence tests override this per-test."""
+    monkeypatch.setattr(guardian, "gui_is_running", lambda *a, **k: True)
 
 
 def _make_config(**overrides) -> MonitorConfig:
@@ -613,3 +628,101 @@ def test_maybe_selfheal_reboot_proceeds_on_ip_device_verdict(tmp_path, monkeypat
     rebooted = guardian.maybe_selfheal_reboot(cfg, state, notifier, now)
     assert rebooted is True
     assert state.get_last_selfheal_reboot_at() is not None
+
+
+# ── GUI coincidence: monitoring only runs while the app is open ──────────────
+
+
+def test_gui_is_running_reflects_flock(tmp_path):
+    import fcntl
+
+    lock_path = tmp_path / "gui.lock"
+    # Nobody holds it → not running.
+    assert _real_gui_is_running(lock_path) is False
+    # Hold it the way the GUI does → running. (flock via a second fd of the same
+    # file is denied even within one process, so this is a faithful simulation.)
+    holder = open(lock_path, "a+", encoding="utf-8")
+    try:
+        fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert _real_gui_is_running(lock_path) is True
+    finally:
+        holder.close()
+    assert _real_gui_is_running(lock_path) is False
+
+
+def test_enforce_gui_coincidence_two_strikes_then_stop(tmp_path, monkeypatch):
+    state = MonitorState(state_file=str(tmp_path / "state.json"))
+    notifier = _FakeNotifier()
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr(guardian, "gui_is_running", lambda *a, **k: False)
+    monkeypatch.setattr(guardian, "get_system_uptime_seconds", lambda _now=None: 7200.0)
+    stops = []
+    monkeypatch.setattr(guardian, "stop_monitoring_stack", lambda: stops.append(True))
+
+    # Strike 1: GUI absent, but nothing stopped yet.
+    assert guardian.enforce_gui_coincidence(state, notifier, now) is True
+    assert stops == []
+    assert state.get_gui_absent_strikes() == 1
+
+    # Strike 2: the stack is stopped and the user is told why.
+    assert guardian.enforce_gui_coincidence(state, notifier, now) is True
+    assert stops == [True]
+    assert len(notifier.critical_calls) == 1
+    assert "app" in notifier.critical_calls[0][0].lower()
+    assert state.get_gui_absent_strikes() == 0
+
+
+def test_enforce_gui_coincidence_resets_on_gui_return(tmp_path, monkeypatch):
+    state = MonitorState(state_file=str(tmp_path / "state.json"))
+    notifier = _FakeNotifier()
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr(guardian, "get_system_uptime_seconds", lambda _now=None: 7200.0)
+    monkeypatch.setattr(guardian, "stop_monitoring_stack", lambda: (_ for _ in ()).throw(AssertionError))
+
+    monkeypatch.setattr(guardian, "gui_is_running", lambda *a, **k: False)
+    assert guardian.enforce_gui_coincidence(state, notifier, now) is True
+    assert state.get_gui_absent_strikes() == 1
+
+    # GUI comes back → strike forgiven, monitoring untouched.
+    monkeypatch.setattr(guardian, "gui_is_running", lambda *a, **k: True)
+    assert guardian.enforce_gui_coincidence(state, notifier, now) is False
+    assert state.get_gui_absent_strikes() == 0
+
+
+def test_enforce_gui_coincidence_post_boot_grace(tmp_path, monkeypatch):
+    """Right after a (self-heal) reboot launchd is still opening the GUI — the
+    guardian must not count strikes or stop anything yet."""
+    state = MonitorState(state_file=str(tmp_path / "state.json"))
+    notifier = _FakeNotifier()
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr(guardian, "gui_is_running", lambda *a, **k: False)
+    monkeypatch.setattr(guardian, "get_system_uptime_seconds", lambda _now=None: 60.0)
+    monkeypatch.setattr(guardian, "stop_monitoring_stack", lambda: (_ for _ in ()).throw(AssertionError))
+
+    assert guardian.enforce_gui_coincidence(state, notifier, now) is True
+    assert state.get_gui_absent_strikes() == 0
+    assert notifier.critical_calls == []
+
+
+def test_run_guardian_skips_remediation_when_gui_absent(tmp_path, monkeypatch):
+    """With the GUI closed the guardian must not kickstart a dead monitor — the
+    stack is on its way to being stopped, not fixed."""
+    cfg = _make_config()
+    state = MonitorState(state_file=str(tmp_path / "state.json"))
+    notifier = _FakeNotifier()
+
+    monkeypatch.setattr(guardian, "MonitorState", lambda: state)
+    monkeypatch.setattr(guardian, "DiscordNotifier", lambda **kwargs: notifier)
+    monkeypatch.setattr(guardian, "gui_is_running", lambda *a, **k: False)
+    monkeypatch.setattr(guardian, "get_system_uptime_seconds", lambda _now=None: 7200.0)
+    monkeypatch.setattr(guardian, "stop_monitoring_stack", lambda: None)
+
+    kicks = []
+    monkeypatch.setattr(guardian, "kickstart_service", lambda *a, **k: kicks.append(True) or True)
+    monkeypatch.setattr(
+        guardian, "get_service_status", lambda: guardian.ServiceStatus(running=False, pid=None)
+    )
+
+    exit_code = guardian.run_guardian(config=cfg, force_fix=False)
+    assert exit_code == 0
+    assert kicks == []  # no kickstart: service down + GUI closed = stay down

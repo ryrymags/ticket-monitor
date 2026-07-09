@@ -131,6 +131,32 @@ LAUNCHD_OUT_LOG = os.path.join("logs", "launchd.out.log")
 LAUNCHD_MONITOR_PLIST = os.path.expanduser(
     f"~/Library/LaunchAgents/{LAUNCHD_MONITOR_LABEL}.plist"
 )
+# Held (flock) for the GUI's whole lifetime. Two jobs: only one GUI instance can
+# ever run, and the guardian probes this lock to enforce "monitoring only runs
+# while the app is open" — if the GUI dies (even a crash releases an flock), the
+# guardian stops the whole monitoring stack instead of keeping it alive headless.
+GUI_LOCK_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "logs", "gui.lock"
+)
+
+
+def acquire_gui_single_instance_lock(lock_path: str = GUI_LOCK_FILE):
+    """Take the exclusive GUI flock. Returns the open handle to keep alive for the
+    process lifetime, or None when another GUI instance already holds it."""
+    import fcntl
+
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    handle = open(lock_path, "a+", encoding="utf-8")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return None
+    handle.seek(0)
+    handle.truncate()
+    handle.write(str(os.getpid()))
+    handle.flush()
+    return handle
 
 # Colors
 COLOR_GREEN = "#2ECC71"
@@ -1653,7 +1679,7 @@ class TicketMonitorApp(ctk.CTk):
             offset += frac
 
     def _refresh_uptime_tab(self, force: bool = False):
-        segments = load_uptime_segments(UPTIME_FILE)
+        segments = self._load_segments_cached(UPTIME_FILE)
         now = datetime.now(timezone.utc)
         # Whether the monitor is alive right now. Launchd-managed installs do not
         # have a GUI-owned subprocess, so check launchd before falling back to
@@ -1716,7 +1742,27 @@ class TicketMonitorApp(ctk.CTk):
     # Timeline rows are capped: with churn-heavy weeks the 7-day list can run to many
     # hundreds of rows, and creating that many CTk widgets stalls the Tk mainloop
     # long enough to look like a crash. The newest rows are the ones that matter.
-    _UPTIME_TIMELINE_MAX_ROWS = 150
+    _UPTIME_TIMELINE_MAX_ROWS = 100
+
+    def _load_segments_cached(self, path: str) -> list[dict]:
+        """load_uptime_segments with an mtime/size cache.
+
+        The GUI polls every 10s but the ledgers only flush every ~30s, so most
+        polls can skip re-parsing ~100KB of JSON per file on the Tk main thread."""
+        cache = getattr(self, "_uptime_load_cache", None)
+        if cache is None:
+            cache = self._uptime_load_cache = {}
+        try:
+            st = os.stat(path)
+            key = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            key = None
+        hit = cache.get(path)
+        if key is not None and hit is not None and hit[0] == key:
+            return hit[1]
+        segments = load_uptime_segments(path)
+        cache[path] = (key, segments)
+        return segments
 
     def _rebuild_uptime_timeline(self, rows: list[dict], now: datetime):
         # Per-event ledgers, loaded and PARSED once per rebuild — timeline rows use
@@ -1727,24 +1773,38 @@ class TicketMonitorApp(ctk.CTk):
             (
                 self._event_short_label(ev),
                 self._parse_segments(
-                    load_uptime_segments(uptime_event_file(ev.get("event_id", "")))
+                    self._load_segments_cached(uptime_event_file(ev.get("event_id", "")))
                 ),
             )
             for ev in self._events
         ]
 
-        for w in self._uptime_list.winfo_children():
-            w.destroy()
+        # Row widgets are POOLED: created once on first use, then configure()d in
+        # place on every later rebuild. Destroying/recreating ~100 CTk cards per
+        # rebuild is what used to freeze (and effectively crash) the Tk mainloop.
+        if not hasattr(self, "_uptime_row_pool"):
+            self._uptime_row_pool: list[dict] = []
+            self._uptime_empty_label = None
+            self._uptime_overflow_label = None
+
         if not rows:
-            ctk.CTkLabel(
-                self._uptime_list,
-                text="No monitoring recorded in the last 7 days yet.\n"
-                     "Start the monitor and every stretch of healthy monitoring,\n"
-                     "impairment (such as blocking), and downtime (full sleep, lid close/logout,\n"
-                     "app stopped, or no internet) shows up here.",
-                text_color="gray50", justify="center",
-            ).grid(row=0, column=0, padx=20, pady=40)
+            for entry in self._uptime_row_pool:
+                entry["card"].grid_remove()
+            if self._uptime_overflow_label is not None:
+                self._uptime_overflow_label.grid_remove()
+            if self._uptime_empty_label is None:
+                self._uptime_empty_label = ctk.CTkLabel(
+                    self._uptime_list,
+                    text="No monitoring recorded in the last 7 days yet.\n"
+                         "Start the monitor and every stretch of healthy monitoring,\n"
+                         "impairment (such as blocking), and downtime (full sleep, lid close/logout,\n"
+                         "app stopped, or no internet) shows up here.",
+                    text_color="gray50", justify="center",
+                )
+            self._uptime_empty_label.grid(row=0, column=0, padx=20, pady=40)
             return
+        if self._uptime_empty_label is not None:
+            self._uptime_empty_label.grid_remove()
 
         visible = rows[: self._UPTIME_TIMELINE_MAX_ROWS]
         for i, r in enumerate(visible):
@@ -1752,13 +1812,21 @@ class TicketMonitorApp(ctk.CTk):
                 self._render_timeline_row(i, r, now)
             except Exception:
                 logging.exception("Failed to render timeline row %d", i)
+        for entry in self._uptime_row_pool[len(visible):]:
+            entry["card"].grid_remove()
+
         hidden = len(rows) - len(visible)
         if hidden > 0:
-            ctk.CTkLabel(
-                self._uptime_list,
-                text=f"… {hidden} older entries not shown",
-                text_color="gray50",
-            ).grid(row=len(visible), column=0, padx=20, pady=(6, 10))
+            if self._uptime_overflow_label is None:
+                self._uptime_overflow_label = ctk.CTkLabel(
+                    self._uptime_list, text="", text_color="gray50",
+                )
+            self._uptime_overflow_label.configure(text=f"… {hidden} older entries not shown")
+            self._uptime_overflow_label.grid(
+                row=self._UPTIME_TIMELINE_MAX_ROWS, column=0, padx=20, pady=(6, 10)
+            )
+        elif self._uptime_overflow_label is not None:
+            self._uptime_overflow_label.grid_remove()
 
     @staticmethod
     def _parse_segments(segments: list[dict]) -> list[tuple[datetime, datetime, str]]:
@@ -1823,7 +1891,7 @@ class TicketMonitorApp(ctk.CTk):
 
     def _event_uptime_summary(self, event_id: str, hours: int, now: datetime, running: bool) -> dict:
         """Per-concert 24h summary + current state, read from that event's ledger."""
-        segs = load_uptime_segments(uptime_event_file(event_id))
+        segs = self._load_segments_cached(uptime_event_file(event_id))
         summ = summarize_uptime(segs, hours=hours, now=now, monitor_running=running)
         status = uptime_current_status(segs, now, monitor_running=running)
         return {"summ": summ, "state": status.get("state", "down"), "has_data": bool(segs)}
@@ -1884,22 +1952,31 @@ class TicketMonitorApp(ctk.CTk):
             detail_lbl.configure(text=detail)
 
     def _render_timeline_row(self, i: int, r: dict, now: datetime):
+        """Fill pool row ``i`` with this timeline entry, creating its widgets only
+        the first time that pool slot is ever used."""
+        pool = self._uptime_row_pool
+        if i >= len(pool):
+            card = ctk.CTkFrame(self._uptime_list, fg_color=("gray17", "gray17"), corner_radius=6)
+            card.grid_columnconfigure(1, weight=1)
+            state_lbl = ctk.CTkLabel(
+                card, text="",
+                font=ctk.CTkFont(size=11, weight="bold"),
+                width=110, anchor="w",
+            )
+            state_lbl.grid(row=0, column=0, padx=(10, 6), pady=8, sticky="w")
+            detail_lbl = ctk.CTkLabel(
+                card, text="", font=ctk.CTkFont(size=11), text_color="gray70",
+                anchor="w", justify="left",
+            )
+            detail_lbl.grid(row=0, column=1, padx=(4, 10), pady=8, sticky="w")
+            pool.append({"card": card, "state": state_lbl, "detail": detail_lbl})
+
         state = r["state"]
         emoji, label, color = self._UPTIME_STYLE.get(state, self._UPTIME_STYLE["down"])
         start_disp = self._format_ts(r.get("start", ""))
         reason = r.get("reason")
         reason_txt = self._UPTIME_REASON_TEXT.get(reason, reason) if reason else ""
         breakdown = self._timeline_event_breakdown(r, now)
-
-        card = ctk.CTkFrame(self._uptime_list, fg_color=("gray17", "gray17"), corner_radius=6)
-        card.grid(row=i, column=0, padx=8, pady=4, sticky="ew")
-        card.grid_columnconfigure(1, weight=1)
-
-        ctk.CTkLabel(
-            card, text=f"{emoji} {label.upper()}",
-            font=ctk.CTkFont(size=11, weight="bold"), text_color=color,
-            width=110, anchor="w",
-        ).grid(row=0, column=0, padx=(10, 6), pady=8, sticky="w")
 
         # Ongoing segments show "Ongoing" instead of a duration that keeps ticking;
         # the real duration only lands once the state switches.
@@ -1913,10 +1990,11 @@ class TicketMonitorApp(ctk.CTk):
             detail += f"   ·   {reason_txt}"
         if breakdown:
             detail += f"\n{breakdown}"
-        ctk.CTkLabel(
-            card, text=detail, font=ctk.CTkFont(size=11), text_color="gray70",
-            anchor="w", justify="left",
-        ).grid(row=0, column=1, padx=(4, 10), pady=8, sticky="w")
+
+        entry = pool[i]
+        entry["state"].configure(text=f"{emoji} {label.upper()}", text_color=color)
+        entry["detail"].configure(text=detail)
+        entry["card"].grid(row=i, column=0, padx=8, pady=4, sticky="ew")
 
     # ── Monitor Tab ───────────────────────────────────────────────────────────
 
@@ -2572,6 +2650,27 @@ class TicketMonitorApp(ctk.CTk):
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     def _on_close(self):
+        # Monitoring must always coincide with the GUI: quitting the app stops the
+        # whole launchd stack (monitor + guardian + reloader) too. The guardian also
+        # enforces this from its side via the GUI lock, so even a crashed/force-quit
+        # GUI can't leave monitoring running headless in the background.
+        if self._launchd_monitor_state():
+            if not messagebox.askyesno(
+                "Quit",
+                "Monitoring only runs while this app is open.\n"
+                "Quitting will stop ticket monitoring too.\n\nStop monitoring and quit?",
+                parent=self,
+            ):
+                return
+            repo_root = os.path.dirname(os.path.abspath(__file__))
+            script = os.path.join(repo_root, "scripts", "monitorctl.sh")
+            try:
+                subprocess.run(
+                    ["bash", script, "stop"],
+                    capture_output=True, text=True, timeout=90, cwd=repo_root,
+                )
+            except Exception:
+                logging.exception("monitorctl stop failed during app close")
         if self._monitor_proc and self._monitor_proc.poll() is None:
             if not messagebox.askyesno("Quit", "The monitor is running. Stop it and quit?", parent=self):
                 return
@@ -2645,6 +2744,22 @@ def main():
     # Make sure we're running from the project root
     project_root = Path(__file__).parent
     os.chdir(project_root)
+
+    # Single instance: a second GUI would fight the first over config writes and
+    # monitor control. The handle must stay referenced for the process lifetime.
+    gui_lock = acquire_gui_single_instance_lock()
+    if gui_lock is None:
+        try:
+            root = tk.Tk()
+            root.withdraw()
+            messagebox.showinfo(
+                "Ticket Monitor",
+                "Ticket Monitor is already running — check your Dock/window list.",
+            )
+            root.destroy()
+        except Exception:
+            print("Ticket Monitor is already running.")
+        sys.exit(0)
 
     app = TicketMonitorApp()
     app.mainloop()

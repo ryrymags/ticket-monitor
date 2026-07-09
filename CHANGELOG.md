@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `c44003d`  2026-07-08 13:02  Fix Uptime tab crashes, arm the reboot tier, send ntfy first
+- `cfd5466`  2026-07-08 22:09  Tie monitoring to the GUI and finish the Uptime tab fix
+
+- `b8d21e8`  2026-07-08 13:02  Fix Uptime tab crashes, arm the reboot tier, send ntfy first
 
 - `57195c9`  2026-07-08 12:43  Stop the guardian/monitor restart death spiral
 

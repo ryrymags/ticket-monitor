@@ -27,8 +27,13 @@ from src.uptime import current_status, load_uptime_segments, summarize_uptime
 
 MONITOR_LABEL = "com.ticketmonitor"
 BROWSER_HOST_LABEL = f"{MONITOR_LABEL}.browser-host"
+GUARDIAN_LABEL = f"{MONITOR_LABEL}.guardian"
+RELOADER_LABEL = f"{MONITOR_LABEL}.reloader"
 LOG_FILE = ROOT_DIR / "logs" / "guardian.log"
 UPTIME_LOG_FILE = ROOT_DIR / "uptime_log.json"
+# The GUI holds an exclusive flock on this file for its whole lifetime (see
+# app.py acquire_gui_single_instance_lock). Lock held => the app is open.
+GUI_LOCK_FILE = ROOT_DIR / "logs" / "gui.lock"
 
 # Last-resort reboot: a plain `shutdown -r now` via a scoped NOPASSWD sudoers rule
 # (one-time manual setup — see scripts/setup_selfheal_reboot.sh). This ONLY reaches
@@ -437,6 +442,87 @@ def maybe_selfheal_reboot(
 # before remediation. One stale pass is routinely just a slow cycle.
 STALE_STRIKES_REQUIRED = 2
 
+# Monitoring must always coincide with the GUI: when the app isn't open, the whole
+# stack gets stopped rather than kept alive headless. The GUI must be absent for
+# this many consecutive passes first (a relaunching GUI briefly drops its lock),
+# and never within the post-boot grace (launchd may still be opening the app).
+GUI_ABSENT_STRIKES_REQUIRED = 2
+GUI_ENFORCEMENT_MIN_UPTIME_SECONDS = 300
+
+
+def gui_is_running(lock_path: Path = GUI_LOCK_FILE) -> bool:
+    """True when the GUI app holds its single-instance flock (i.e. it is open).
+
+    An flock dies with its process, so this is crash-proof: a force-quit GUI
+    releases the lock even though it never ran any cleanup."""
+    import fcntl
+
+    try:
+        with open(lock_path, "a+", encoding="utf-8") as handle:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return True
+            fcntl.flock(handle, fcntl.LOCK_UN)
+    except OSError:
+        return False
+    return False
+
+
+def stop_monitoring_stack() -> None:
+    """Boot the monitor, reloader, then the guardian itself out of launchd.
+
+    Guardian last: booting out our own service kills this process, so it must be
+    the final action of the pass."""
+    for label in (MONITOR_LABEL, RELOADER_LABEL, GUARDIAN_LABEL):
+        subprocess.run(
+            ["launchctl", "bootout", _launchctl_target(label)],
+            capture_output=True,
+            text=True,
+        )
+
+
+def enforce_gui_coincidence(
+    state: MonitorState, notifier: DiscordNotifier, now: datetime
+) -> bool:
+    """Stop the monitoring stack when the GUI is closed. Returns True when the GUI
+    is absent (whether or not the stack was stopped this pass) — the caller should
+    end its pass without remediating: fixing a monitor that is about to be stopped
+    just churns Chrome."""
+    logger = logging.getLogger("guardian")
+    if gui_is_running():
+        if state.get_gui_absent_strikes():
+            state.set_gui_absent_strikes(0)
+        return False
+    if get_system_uptime_seconds(now) < GUI_ENFORCEMENT_MIN_UPTIME_SECONDS:
+        logger.info("GUI not up yet, but the system just booted — giving launchd time to open it")
+        return True
+
+    strikes = state.get_gui_absent_strikes() + 1
+    state.set_gui_absent_strikes(strikes)
+    if strikes < GUI_ABSENT_STRIKES_REQUIRED:
+        logger.warning(
+            "GUI appears closed — strike %d/%d, stopping monitoring next pass if it stays closed",
+            strikes,
+            GUI_ABSENT_STRIKES_REQUIRED,
+        )
+        return True
+
+    state.set_gui_absent_strikes(0)
+    logger.warning("GUI is closed — stopping the monitoring stack (monitoring only runs while the app is open)")
+    try:
+        notifier.send_critical_attention(
+            "The Ticket Monitor app was closed, so ticket monitoring has been stopped "
+            "(monitoring only runs while the app is open). Open the app and press "
+            "Start Monitor to resume.",
+            context={"reason_code": "guardian_gui_closed_stop"},
+            next_steps=["Open the Ticket Monitor app", "Press “Start Monitor”"],
+        )
+    except Exception as exc:  # the stop must proceed even if Discord is down
+        logger.warning("GUI-closed notice failed to send: %s", exc)
+    stop_monitoring_stack()
+    return True
+
 
 def _confirm_staleness(
     *,
@@ -508,6 +594,13 @@ def run_guardian(config: MonitorConfig, force_fix: bool = False) -> int:
         ping_user_id=config.discord_ping_user_id,
     )
     now = datetime.now(timezone.utc)
+
+    # GUI coincidence comes first: monitoring only runs while the app is open.
+    # If the GUI is gone, nothing below matters — remediating (or rebooting!) on
+    # behalf of a stack that is about to be stopped would be pure churn.
+    if not force_fix and enforce_gui_coincidence(state, notifier, now):
+        return 0
+
     service = get_service_status()
     stale, stale_age_seconds = is_stale(state, config.watchdog_stale_after_seconds, now)
     stale = _confirm_staleness(

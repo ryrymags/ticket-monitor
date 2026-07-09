@@ -166,3 +166,19 @@ def test_monitor_event_status_manual_attention_stale_is_red():
     )
 
     assert status.startswith("🔴")
+
+
+# ── GUI single-instance lock ─────────────────────────────────────────────────
+
+
+def test_gui_single_instance_lock(tmp_path):
+    lock_path = str(tmp_path / "gui.lock")
+    first = app.acquire_gui_single_instance_lock(lock_path)
+    assert first is not None
+    # A second GUI (second fd, same file) must be refused while the first holds it.
+    second = app.acquire_gui_single_instance_lock(lock_path)
+    assert second is None
+    first.close()
+    third = app.acquire_gui_single_instance_lock(lock_path)
+    assert third is not None
+    third.close()

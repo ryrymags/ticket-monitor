@@ -298,6 +298,13 @@ class MonitorState:
         self._health()["guardian_stale_strikes"] = max(0, int(count))
         self.save()
 
+    def get_gui_absent_strikes(self) -> int:
+        return int(self._health().get("gui_absent_strikes", 0) or 0)
+
+    def set_gui_absent_strikes(self, count: int):
+        self._health()["gui_absent_strikes"] = max(0, int(count))
+        self.save()
+
     def get_guardian_fix_attempts_last_hour(self) -> int:
         self._prune_health_windows(save=True)
         return int(self._health().get("guardian_fix_attempts_last_hour", 0))
