@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `(pending)`  2026-07-09 14:12  Tighten challenge detection and add availability diagnostics
+- `(pending)`  2026-07-09 14:48  Batch per-check state mutations into one merge-save
+
+- `f9bbbc3`  2026-07-09 14:12  Tighten challenge detection and add availability diagnostics
 
 - `025deba`  2026-07-09 14:09  Replace mention bursts with 3 rapid pings then silence per listing
 

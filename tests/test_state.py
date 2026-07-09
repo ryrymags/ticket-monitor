@@ -381,3 +381,57 @@ def test_monitor_start_time_restamps_on_every_start(tmp_path):
     # A restart must record the NEW start, not keep first-install time forever.
     state.set_monitor_start_time(second)
     assert state.get_monitor_start_time() == second
+
+
+class TestTransactionBatching:
+    def _counting_state(self, tmp_path, monkeypatch):
+        state = MonitorState(state_file=str(tmp_path / "state.json"))
+        writes = []
+        original = state._write_state_file_unlocked
+
+        def counting(payload):
+            writes.append(1)
+            original(payload)
+
+        monkeypatch.setattr(state, "_write_state_file_unlocked", counting)
+        return state, writes
+
+    def test_transaction_batches_many_mutations_into_one_write(self, tmp_path, monkeypatch):
+        state, writes = self._counting_state(tmp_path, monkeypatch)
+
+        with state.transaction():
+            state.set_last_check("e1")
+            state.record_check_outcome("healthy")
+            state.set_in_outage_state("e1", False)
+            state.set_last_successful_check()
+
+        assert len(writes) == 1
+        reloaded = MonitorState(state_file=state.state_file)
+        assert reloaded.get_last_check("e1") is not None
+        assert reloaded.get_last_successful_check() is not None
+
+    def test_nested_transactions_coalesce(self, tmp_path, monkeypatch):
+        state, writes = self._counting_state(tmp_path, monkeypatch)
+
+        with state.transaction():
+            state.set_last_check("e1")
+            with state.transaction():
+                state.set_in_outage_state("e1", True)
+
+        assert len(writes) == 1
+        assert MonitorState(state_file=state.state_file).get_in_outage_state("e1") is True
+
+    def test_setters_still_save_immediately_outside_transaction(self, tmp_path, monkeypatch):
+        state, writes = self._counting_state(tmp_path, monkeypatch)
+        state.set_last_check("e1")
+        assert len(writes) == 1
+
+    def test_transaction_commits_even_when_body_raises(self, tmp_path, monkeypatch):
+        state, writes = self._counting_state(tmp_path, monkeypatch)
+        with pytest.raises(RuntimeError):
+            with state.transaction():
+                state.set_in_outage_state("e1", True)
+                raise RuntimeError("boom")
+
+        assert len(writes) == 1
+        assert MonitorState(state_file=state.state_file).get_in_outage_state("e1") is True

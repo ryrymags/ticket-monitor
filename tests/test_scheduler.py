@@ -1924,3 +1924,23 @@ class TestStartingHeartbeat:
             last_ev = ledger.segments[-1]
             assert last_ev["state"] == "impaired"
             assert last_ev["reason"] == "starting"
+
+
+class TestStateWriteBatching:
+    def test_check_one_event_commits_state_once(self, tmp_path, monkeypatch):
+        scheduler = _make_scheduler(tmp_path)
+        event = scheduler.config.events[0]
+        scheduler.probe.check_event = MagicMock(return_value=_make_result(available=True))
+        writes = []
+        original = scheduler.state._write_state_file_unlocked
+        monkeypatch.setattr(
+            scheduler.state,
+            "_write_state_file_unlocked",
+            lambda payload: (writes.append(1), original(payload)) and None,
+        )
+
+        scheduler._check_one_event(event)
+
+        # The whole check (outcome tally, mention episode, timestamps) lands in
+        # ONE merge-save instead of a dozen.
+        assert len(writes) == 1

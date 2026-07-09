@@ -600,11 +600,13 @@ class MonitorScheduler:
         )
 
         needs_slow_retry = probe_result.blocked or probe_result.challenge_detected
-        self._handle_probe_result(event_cfg, probe_result)
-
-        self.state.set_last_check(event_cfg.event_id)
-        self._last_successful_check = datetime.now(timezone.utc)
-        self.state.set_last_successful_check()
+        # One event check mutates state a dozen+ times (outcome tallies, cooldowns,
+        # mention episode, timestamps); batch them into a single merge-save.
+        with self.state.transaction():
+            self._handle_probe_result(event_cfg, probe_result)
+            self.state.set_last_check(event_cfg.event_id)
+            self._last_successful_check = datetime.now(timezone.utc)
+            self.state.set_last_successful_check()
         return _EventCheckOutcome(
             needs_slow_retry=needs_slow_retry,
             had_response=True,

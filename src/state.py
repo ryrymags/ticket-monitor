@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+from contextlib import contextmanager
 import logging
 import os
 import sys
@@ -165,7 +166,33 @@ class MonitorState:
         self._lock_file = f"{state_file}.lock"
         self._state: dict = {"events": {}}
         self._baseline_state: dict = copy.deepcopy(self._state)
+        # Transaction batching: while a transaction() is open, setters mutate
+        # in-memory only and the single merge-save happens on exit. Every setter
+        # stays safe standalone (immediate save when no transaction is active).
+        self._txn_depth: int = 0
+        self._txn_dirty: bool = False
         self.load()
+
+    @contextmanager
+    def transaction(self):
+        """Batch several mutations into one lock -> merge -> atomic write.
+
+        The scheduler touches state a dozen+ times per cycle; each save() is a
+        full lock/read/3-way-merge/fsync. Wrapping a cycle's mutations in one
+        transaction cuts that to a single write without changing the merge
+        semantics that keep monitor/guardian/reloader from clobbering each
+        other. Nested transactions coalesce into the outermost one. The commit
+        runs even when the body raises: the in-memory mutations already
+        happened, so persisting them is strictly better than dropping them.
+        """
+        self._txn_depth += 1
+        try:
+            yield self
+        finally:
+            self._txn_depth -= 1
+            if self._txn_depth == 0 and self._txn_dirty:
+                self._txn_dirty = False
+                self._commit_save()
 
     # ---- Legacy event status/price tracking ----
 
@@ -704,6 +731,12 @@ class MonitorState:
         self._baseline_state = copy.deepcopy(self._state)
 
     def save(self):
+        if self._txn_depth > 0:
+            self._txn_dirty = True
+            return
+        self._commit_save()
+
+    def _commit_save(self):
         lock_handle = None
         try:
             lock_handle = self._acquire_state_lock(shared=False)
