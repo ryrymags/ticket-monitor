@@ -10,7 +10,8 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 ## 📋 Recent Changes  
   
 <!-- CHANGELOG_START -->
-- `(pending)`  2026-07-09  Restore README.md as a file and finalize plan status
+- `(pending)`  2026-07-09  Mark audit remediation plan complete
+- `d6e7ba2`  2026-07-09  Restore README.md as a file and finalize plan status
 - `5d75f77`  2026-07-09  Record completed audit remediation plan
 - `547ecdc`  2026-07-09  Remove the legacy all-events cycle scheduler mode
 - `d199171`  2026-07-09  Remove vestigial Oracle-VM deploy workflow and Linux systemd setup
@@ -19,7 +20,6 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 - `78ec872`  2026-07-09  Delete dead Discovery-API-era notifier and state code
 - `08f70ff`  2026-07-09  Raise ConfigError from load_config instead of sys.exit
 - `fd3dd8e`  2026-07-09  Pool Monitor-tab events panel widgets instead of rebuilding per poll
-- `1883857`  2026-07-09  Batch per-check state mutations into one merge-save
 
 Full history: [CHANGELOG.md](CHANGELOG.md)
 <!-- CHANGELOG_END -->  
