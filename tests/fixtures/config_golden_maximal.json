@@ -1,0 +1,149 @@
+{
+  "alerts_event_check_stale_seconds": 400,
+  "alerts_manual_action_after_seconds": 1000,
+  "alerts_non_bingo_enabled": true,
+  "alerts_operational_heartbeat_hours": 8,
+  "alerts_operational_state_cooldown_seconds": 2000,
+  "alerts_operational_to_discord": true,
+  "alerts_ticket_cooldown_seconds": 200,
+  "auth_auto_login_cooldown_seconds": 2000,
+  "auth_auto_login_enabled": true,
+  "auth_keychain_email_account": "maximal-email",
+  "auth_keychain_password_account": "maximal-password",
+  "auth_keychain_service": "maximal-monitor",
+  "auth_max_auto_login_attempts_per_hour": 4,
+  "auth_session_health_check_interval_seconds": 4000,
+  "auth_session_health_check_url": "https://www.ticketmaster.com/member",
+  "auth_session_logout_confirmations_required": 3,
+  "auth_session_recheck_base_seconds": 150,
+  "auth_session_recheck_max_seconds": 1000,
+  "backoff_multiplier": 3.0,
+  "bingo_configs": [
+    {
+      "alert_on_any_availability": false,
+      "max_price_per_ticket": 220.0,
+      "min_tickets": 2,
+      "name": "LOGE pairs",
+      "preferred_sections": [
+        "LOGE",
+        "MEZZ"
+      ],
+      "require_preferred_only": true
+    },
+    {
+      "alert_on_any_availability": true,
+      "max_price_per_ticket": 130.0,
+      "min_tickets": 3,
+      "name": "Budget triples",
+      "preferred_sections": [],
+      "require_preferred_only": false
+    }
+  ],
+  "browser_cdp_connect_timeout_seconds": 15,
+  "browser_cdp_endpoint_url": "http://127.0.0.1:9333",
+  "browser_challenge_cooldown_base_seconds": 50,
+  "browser_challenge_cooldown_escalate_after": 5,
+  "browser_challenge_cooldown_max_seconds": 400,
+  "browser_challenge_cooldown_tier_every": 2,
+  "browser_challenge_cooldown_tiers_seconds": [
+    200,
+    800,
+    1600
+  ],
+  "browser_challenge_retry_seconds": 75,
+  "browser_challenge_threshold": 4,
+  "browser_channel": "chrome",
+  "browser_event_dwell_max_seconds": 9,
+  "browser_event_dwell_min_seconds": 4,
+  "browser_event_weights": {
+    "EXAMPLEEVENT0002": 1.5,
+    "EXAMPLEEVENT0001": 3.0
+  },
+  "browser_headless": false,
+  "browser_homepage_warmup_interval_seconds": 2400,
+  "browser_host_chrome_executable_path": "/opt/chrome/chrome",
+  "browser_host_enabled": false,
+  "browser_host_remote_debugging_port": 9333,
+  "browser_host_user_data_dir": "secrets/maximal_chrome_profile",
+  "browser_locale": "en-GB",
+  "browser_navigation_timeout_seconds": 25,
+  "browser_per_event_max_gap_between_checks_seconds": 140,
+  "browser_per_event_min_gap_between_checks_seconds": 65,
+  "browser_per_event_poll_max_seconds": 130,
+  "browser_per_event_poll_min_seconds": 70,
+  "browser_reuse_event_tabs": false,
+  "browser_session_mode": "persistent_profile",
+  "browser_single_event_page": false,
+  "browser_startup_grace_seconds": 240,
+  "browser_stealth_enabled": false,
+  "browser_storage_state_path": "secrets/maximal_storage_state.json",
+  "browser_timezone_id": "America/Chicago",
+  "browser_user_data_dir": "secrets/maximal_profile",
+  "browser_variation_probe_enabled": false,
+  "browser_variation_probe_event_url": "https://www.ticketmaster.com/event/EXAMPLEEVENT0001",
+  "browser_variation_probe_min_interval_seconds": 2000,
+  "discord_ping_user_id": "test-discord-user-id",
+  "discord_username": "Maximal Monitor",
+  "discord_webhook_url": "https://discord.com/api/webhooks/maximal/token-xyz",
+  "events": [
+    {
+      "date": "2030-01-01",
+      "event_id": "EXAMPLEEVENT0001",
+      "name": "Concert Night 1",
+      "url": "https://www.ticketmaster.com/event/EXAMPLEEVENT0001"
+    },
+    {
+      "date": "2030-01-02",
+      "event_id": "EXAMPLEEVENT0002",
+      "name": "Concert Night 2",
+      "url": "https://www.ticketmaster.com/event/EXAMPLEEVENT0002"
+    }
+  ],
+  "log_backup_count": 5,
+  "log_file": "logs/maximal.log",
+  "log_level": "DEBUG",
+  "log_max_file_size_mb": 20,
+  "macos_prevent_idle_sleep": false,
+  "max_backoff_seconds": 150,
+  "ntfy_app_deep_link": "https://ticketmaster.onelink.me/7u25/edpUS?deep_link_value={url_encoded}",
+  "ntfy_enabled": true,
+  "ntfy_priority": "urgent",
+  "ntfy_server": "https://ntfy.example.com",
+  "ntfy_topics": [
+    "bingo-tix-maximal-one",
+    "bingo-tix-maximal-two"
+  ],
+  "preferences": {
+    "alert_on_any_availability": false,
+    "max_price_per_ticket": 220.0,
+    "min_tickets": 2,
+    "name": "LOGE pairs",
+    "preferred_sections": [
+      "LOGE",
+      "MEZZ"
+    ],
+    "require_preferred_only": true
+  },
+  "self_heal_browser_restart_threshold": 4,
+  "self_heal_browser_restart_window_seconds": 700,
+  "self_heal_error_alert_cooldown_seconds": 2000,
+  "self_heal_process_restart_threshold": 7,
+  "self_heal_process_restart_window_seconds": 2000,
+  "timezone": "US/Pacific",
+  "updates_enabled": false,
+  "updates_interval_seconds": 90,
+  "updates_stability_delay_seconds": 30,
+  "updates_watch_globs": [
+    "monitor.py",
+    "src/**/*.py"
+  ],
+  "watchdog_enabled": false,
+  "watchdog_interval_seconds": 150,
+  "watchdog_max_fix_attempts_per_hour": 8,
+  "watchdog_reboot_after_impaired_seconds": 2000,
+  "watchdog_reboot_enabled": true,
+  "watchdog_reboot_max_per_day": 2,
+  "watchdog_reboot_min_spacing_seconds": 8000,
+  "watchdog_reboot_min_system_uptime_seconds": 2000,
+  "watchdog_stale_after_seconds": 700
+}

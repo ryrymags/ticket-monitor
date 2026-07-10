@@ -1,0 +1,158 @@
+# Maximal config: every section with NON-default values, exercising the parsing
+# and coercion branches load_config takes. Together with config_minimal.yaml
+# (which locks the defaults) the golden snapshots pin every MonitorConfig field.
+# Must remain valid (load_config raises no ConfigError). Legacy keys removed in
+# the Phase 4 cleanup (poll_min/max, poll_interval/jitter, event_stagger,
+# adaptive_*, per_event_scheduler_enabled) are intentionally absent.
+
+discord:
+  webhook_url: "https://discord.com/api/webhooks/maximal/token-xyz"
+  username: "Maximal Monitor"
+  ping_user_id: "test-discord-user-id"
+
+ntfy:
+  enabled: true
+  topics:
+    - "bingo-tix-maximal-one"
+    - "bingo-tix-maximal-two"
+  server: "https://ntfy.example.com"
+  priority: "urgent"
+  app_deep_link: "https://ticketmaster.onelink.me/7u25/edpUS?deep_link_value={url_encoded}"
+
+events:
+  - event_id: "EXAMPLEEVENT0001"
+    name: "Concert Night 1"
+    date: "2030-01-01"
+    url: "https://www.ticketmaster.com/event/EXAMPLEEVENT0001"
+  - event_id: "EXAMPLEEVENT0002"
+    name: "Concert Night 2"
+    date: "2030-01-02"
+    url: "https://www.ticketmaster.com/event/EXAMPLEEVENT0002"
+
+browser:
+  session_mode: "persistent_profile"
+  user_data_dir: "secrets/maximal_profile"
+  storage_state_path: "secrets/maximal_storage_state.json"
+  channel: "chrome"
+  cdp_endpoint_url: "http://127.0.0.1:9333"
+  cdp_connect_timeout_seconds: 15
+  reuse_event_tabs: false
+  per_event_poll_min_seconds: 70
+  per_event_poll_max_seconds: 130
+  per_event_min_gap_between_checks_seconds: 65
+  per_event_max_gap_between_checks_seconds: 140
+  event_weights:
+    "EXAMPLEEVENT0001": 3
+    "EXAMPLEEVENT0002": 1.5
+  headless: false
+  single_event_page: false
+  event_dwell_min_seconds: 4
+  event_dwell_max_seconds: 9
+  homepage_warmup_interval_seconds: 2400
+  variation_probe:
+    enabled: false
+    min_interval_seconds: 2000
+    event_url_override: "https://www.ticketmaster.com/event/EXAMPLEEVENT0001"
+  navigation_timeout_seconds: 25
+  challenge_threshold: 4
+  challenge_retry_seconds: 75
+  challenge_cooldown_base_seconds: 50
+  challenge_cooldown_max_seconds: 400
+  challenge_cooldown_escalate_after: 5
+  challenge_cooldown_tiers_seconds: [200, 800, 1600]
+  challenge_cooldown_tier_every: 2
+  startup_grace_seconds: 240
+  stealth_enabled: false
+  locale: "en-GB"
+  timezone_id: "America/Chicago"
+
+browser_host:
+  enabled: false
+  chrome_executable_path: "/opt/chrome/chrome"
+  user_data_dir: "secrets/maximal_chrome_profile"
+  remote_debugging_port: 9333
+
+bingo_configs:
+  - name: "LOGE pairs"
+    min_tickets: 2
+    max_price_per_ticket: 220.0
+    preferred_sections: ["LOGE", "MEZZ"]
+    require_preferred_only: true
+    alert_on_any_availability: false
+  - name: "Budget triples"
+    min_tickets: 3
+    max_price_per_ticket: 130.0
+    preferred_sections: []
+    require_preferred_only: false
+    alert_on_any_availability: true
+
+preferences:
+  name: "LOGE pairs"
+  min_tickets: 2
+  max_price_per_ticket: 220.0
+  preferred_sections: ["LOGE", "MEZZ"]
+  require_preferred_only: true
+  alert_on_any_availability: false
+
+alerts:
+  ticket_cooldown_seconds: 200
+  operational_heartbeat_hours: 8
+  event_check_stale_seconds: 400
+  operational_state_cooldown_seconds: 2000
+  non_bingo_enabled: true
+  manual_action_after_seconds: 1000
+  operational_to_discord: true
+
+polling:
+  timezone: "US/Pacific"
+  backoff_multiplier: 3.0
+  max_backoff_seconds: 150
+
+self_heal:
+  browser_restart_threshold: 4
+  browser_restart_window_seconds: 700
+  process_restart_threshold: 7
+  process_restart_window_seconds: 2000
+  error_alert_cooldown_seconds: 2000
+
+auth:
+  auto_login_enabled: true
+  keychain_service: "maximal-monitor"
+  keychain_email_account: "maximal-email"
+  keychain_password_account: "maximal-password"
+  max_auto_login_attempts_per_hour: 4
+  auto_login_cooldown_seconds: 2000
+  session_health_check_interval_seconds: 4000
+  session_health_check_url: "https://www.ticketmaster.com/member"
+  session_recheck_base_seconds: 150
+  session_recheck_max_seconds: 1000
+  session_logout_confirmations_required: 3
+
+watchdog:
+  enabled: false
+  interval_seconds: 150
+  stale_after_seconds: 700
+  max_fix_attempts_per_hour: 8
+  reboot:
+    enabled: true
+    after_impaired_seconds: 2000
+    min_system_uptime_seconds: 2000
+    min_spacing_seconds: 8000
+    max_per_day: 2
+
+updates:
+  enabled: false
+  interval_seconds: 90
+  stability_delay_seconds: 30
+  watch_globs:
+    - "monitor.py"
+    - "src/**/*.py"
+
+macos:
+  prevent_idle_sleep: false
+
+logging:
+  level: "DEBUG"
+  file: "logs/maximal.log"
+  max_file_size_mb: 20
+  backup_count: 5

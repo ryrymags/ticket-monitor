@@ -10,7 +10,8 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 ## 📋 Recent Changes  
   
 <!-- CHANGELOG_START -->
-- `(pending)`  2026-07-10  Fold consecutive same-state rows in the uptime timeline
+- `(pending)`  2026-07-10  Add golden characterization tests for load_config
+- `f345bed`  2026-07-10  Fold consecutive same-state rows in the uptime timeline
 - `aba682c`  2026-07-09  Mark audit remediation plan complete
 - `d6e7ba2`  2026-07-09  Restore README.md as a file and finalize plan status
 - `5d75f77`  2026-07-09  Record completed audit remediation plan
@@ -19,7 +20,6 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 - `145f157`  2026-07-09  Add one-time uptime ledger repair script and fix historical data
 - `7cbcb9b`  2026-07-09  Remove hardcoded event-weight defaults and fix stale docs
 - `78ec872`  2026-07-09  Delete dead Discovery-API-era notifier and state code
-- `08f70ff`  2026-07-09  Raise ConfigError from load_config instead of sys.exit
 
 Full history: [CHANGELOG.md](CHANGELOG.md)
 <!-- CHANGELOG_END -->  

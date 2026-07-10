@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `(pending)`  2026-07-10 03:57  Fold consecutive same-state rows in the uptime timeline
+- `(pending)`  2026-07-10 03:58  Add golden characterization tests for load_config
+
+- `f345bed`  2026-07-10 03:57  Fold consecutive same-state rows in the uptime timeline
 
 - `aba682c`  2026-07-09 22:40  Mark audit remediation plan complete
 

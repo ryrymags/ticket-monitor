@@ -1,0 +1,8 @@
+# Minimal config: only the required keys. Exercises every default in load_config.
+discord:
+  webhook_url: "https://discord.com/api/webhooks/minimal/test"
+events:
+  - event_id: "MIN123"
+    name: "Minimal Event"
+    date: "2026-08-01"
+    url: "https://www.ticketmaster.com/event/MIN123"
