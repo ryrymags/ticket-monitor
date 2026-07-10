@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `(pending)`  2026-07-09 22:34  Add one-time uptime ledger repair script and fix historical data
+- `(pending)`  2026-07-09 22:34  Remove vestigial Oracle-VM deploy workflow and Linux systemd setup
+
+- `145f157`  2026-07-09 22:34  Add one-time uptime ledger repair script and fix historical data
 
 - `7cbcb9b`  2026-07-09 14:55  Remove hardcoded event-weight defaults and fix stale docs
 
