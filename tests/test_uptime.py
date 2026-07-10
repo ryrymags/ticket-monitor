@@ -293,7 +293,7 @@ def test_timeline_appends_synthetic_ongoing_down_when_stale():
     assert healthy["duration_s"] == 3600
 
 
-def test_timeline_drops_short_closed_segments_but_keeps_ongoing():
+def test_timeline_drops_short_closed_segments_and_folds_neighbors():
     segs = [
         {"state": "healthy", "start": _iso(T0), "end": _iso(T0 + timedelta(hours=1)), "reason": None},
         {"state": "impaired", "start": _iso(T0 + timedelta(hours=1)), "end": _iso(T0 + timedelta(hours=1, seconds=10)), "reason": "blocked"},  # 10s blip
@@ -301,8 +301,52 @@ def test_timeline_drops_short_closed_segments_but_keeps_ongoing():
     ]
     now = T0 + timedelta(hours=2)
     rows = timeline(segs, hours=24, min_seconds=60, now=now)
-    # The 10s impaired blip is dropped; two healthy stretches remain.
-    assert [r["state"] for r in rows] == ["healthy", "healthy"]
+    # The 10s impaired blip is dropped, and the two healthy stretches it separated
+    # fold into ONE continuous healthy row spanning the whole 2h.
+    assert [r["state"] for r in rows] == ["healthy"]
+    assert rows[0]["duration_s"] == 7200
+
+
+def test_timeline_folds_same_state_different_reasons():
+    segs = [
+        {"state": "impaired", "start": _iso(T0), "end": _iso(T0 + timedelta(minutes=2)), "reason": "starting"},
+        {"state": "impaired", "start": _iso(T0 + timedelta(minutes=2)), "end": _iso(T0 + timedelta(minutes=42)), "reason": "blocked"},
+    ]
+    now = T0 + timedelta(minutes=42)
+    rows = timeline(segs, hours=24, min_seconds=60, now=now)
+    # One impaired row; reason comes from the longest constituent (the 40m block).
+    assert len(rows) == 1
+    assert rows[0]["state"] == "impaired"
+    assert rows[0]["reason"] == "blocked"
+    assert rows[0]["ongoing"] is True
+
+
+def test_timeline_folds_ongoing_tail_into_prior_same_state():
+    segs = [
+        {"state": "healthy", "start": _iso(T0), "end": _iso(T0 + timedelta(hours=1)), "reason": None},
+        {"state": "healthy", "start": _iso(T0 + timedelta(hours=1)), "end": _iso(T0 + timedelta(hours=2)), "reason": None},
+    ]
+    now = T0 + timedelta(hours=2)  # fresh → last is ongoing
+    rows = timeline(segs, hours=24, now=now)
+    assert len(rows) == 1
+    assert rows[0]["state"] == "healthy"
+    assert rows[0]["ongoing"] is True
+
+
+def test_timeline_never_has_adjacent_same_state_rows():
+    # Property: a mixed, churny sequence must never render two same-state rows in a row.
+    segs = [
+        {"state": "healthy", "start": _iso(T0), "end": _iso(T0 + timedelta(minutes=30)), "reason": None},
+        {"state": "impaired", "start": _iso(T0 + timedelta(minutes=30)), "end": _iso(T0 + timedelta(minutes=35)), "reason": "blocked"},
+        {"state": "impaired", "start": _iso(T0 + timedelta(minutes=35)), "end": _iso(T0 + timedelta(minutes=40)), "reason": "error"},
+        {"state": "healthy", "start": _iso(T0 + timedelta(minutes=40)), "end": _iso(T0 + timedelta(minutes=70)), "reason": None},
+        {"state": "down", "start": _iso(T0 + timedelta(minutes=70)), "end": _iso(T0 + timedelta(minutes=75)), "reason": "offline"},
+        {"state": "down", "start": _iso(T0 + timedelta(minutes=75)), "end": _iso(T0 + timedelta(minutes=90)), "reason": "no_internet"},
+    ]
+    now = T0 + timedelta(minutes=90)
+    rows = timeline(segs, hours=24, min_seconds=1, now=now)
+    states = [r["state"] for r in rows]
+    assert all(a != b for a, b in zip(states, states[1:])), states
 
 
 class TestSegmentCoalescing:

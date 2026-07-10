@@ -412,13 +412,41 @@ def timeline(
             last["ongoing"] = True
             last["end"] = now
 
-    rows: list[dict] = []
+    # Window clip + drop short closed segments, kept chronological for folding.
+    visible: list[dict] = []
     for e in effective:
         if e["end"] < win_start:
             continue
         duration = (e["end"] - e["start"]).total_seconds()
         if not e["ongoing"] and duration < min_seconds:
             continue
+        visible.append(e)
+
+    # Fold consecutive same-state entries into one continuous row so the timeline
+    # never shows two greens (or two impaireds/downs) back to back — after a
+    # healthy row comes only impaired or down, and vice versa. This absorbs the
+    # gaps left by dropped short segments and same-state/different-reason seams
+    # (e.g. impaired "starting" then impaired "blocked"). The kept reason is the
+    # longest single constituent's, so a 2-min "starting" folded into a 40-min
+    # "blocked" stretch still reads as "blocked".
+    merged: list[dict] = []
+    for e in visible:
+        e_dur = (e["end"] - e["start"]).total_seconds()
+        if merged and merged[-1]["state"] == e["state"]:
+            prev = merged[-1]
+            if e_dur > prev["_reason_dur"]:
+                prev["reason"] = e["reason"]
+                prev["_reason_dur"] = e_dur
+            prev["end"] = e["end"]
+            prev["ongoing"] = e["ongoing"]
+        else:
+            m = dict(e)
+            m["_reason_dur"] = e_dur
+            merged.append(m)
+
+    rows: list[dict] = []
+    for e in merged:
+        duration = (e["end"] - e["start"]).total_seconds()
         rows.append(
             {
                 "state": e["state"],

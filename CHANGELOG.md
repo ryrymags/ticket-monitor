@@ -4,11 +4,13 @@ All notable changes to Ticket Monitor are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 <!-- CHANGELOG_START -->
-## [Unreleased] — 2026-07-09
+## [Unreleased] — 2026-07-10
 
 ### Changes
 
-- `(pending)`  2026-07-09 22:40  Mark audit remediation plan complete
+- `(pending)`  2026-07-10 03:57  Fold consecutive same-state rows in the uptime timeline
+
+- `aba682c`  2026-07-09 22:40  Mark audit remediation plan complete
 
 - `d6e7ba2`  2026-07-09 22:40  Restore README.md as a file and finalize plan status
 
