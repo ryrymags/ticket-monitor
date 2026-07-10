@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `(pending)`  2026-07-09 22:38  Record completed audit remediation plan
+- `(pending)`  2026-07-09 22:40  Restore README.md as a file and finalize plan status
+
+- `5d75f77`  2026-07-09 22:38  Record completed audit remediation plan
 
 - `547ecdc`  2026-07-09 22:38  Remove the legacy all-events cycle scheduler mode
 

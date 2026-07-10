@@ -9,19 +9,19 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
   
 ## 📋 Recent Changes  
   
-<!-- CHANGELOG_START -->  
-- ==(pending)==  2026-07-09  Remove hardcoded event-weight defaults and fix stale docs  
-- ==78ec872==  2026-07-09  Delete dead Discovery-API-era notifier and state code  
-- ==08f70ff==  2026-07-09  Raise ConfigError from load_config instead of sys.exit  
-- ==fd3dd8e==  2026-07-09  Pool Monitor-tab events panel widgets instead of rebuilding per poll  
-- ==1883857==  2026-07-09  Batch per-check state mutations into one merge-save  
-- ==f9bbbc3==  2026-07-09  Tighten challenge detection and add availability diagnostics  
-- ==025deba==  2026-07-09  Replace mention bursts with 3 rapid pings then silence per listing  
-- ==19e3c44==  2026-07-09  Finish Phase 1: 429 retry, Tk thread safety, doctor profile guard  
-- ==6a16879==  2026-07-09  Honor operational_to_discord in guardian and reloader notifiers  
-- ==20e32a0==  2026-07-09  Re-stamp monitor_started on every monitor start  
-  
-Full history: [CHANGELOG.md](CHANGELOG.md)  
+<!-- CHANGELOG_START -->
+- `(pending)`  2026-07-09  Restore README.md as a file and finalize plan status
+- `5d75f77`  2026-07-09  Record completed audit remediation plan
+- `547ecdc`  2026-07-09  Remove the legacy all-events cycle scheduler mode
+- `d199171`  2026-07-09  Remove vestigial Oracle-VM deploy workflow and Linux systemd setup
+- `145f157`  2026-07-09  Add one-time uptime ledger repair script and fix historical data
+- `7cbcb9b`  2026-07-09  Remove hardcoded event-weight defaults and fix stale docs
+- `78ec872`  2026-07-09  Delete dead Discovery-API-era notifier and state code
+- `08f70ff`  2026-07-09  Raise ConfigError from load_config instead of sys.exit
+- `fd3dd8e`  2026-07-09  Pool Monitor-tab events panel widgets instead of rebuilding per poll
+- `1883857`  2026-07-09  Batch per-check state mutations into one merge-save
+
+Full history: [CHANGELOG.md](CHANGELOG.md)
 <!-- CHANGELOG_END -->  
   
 
