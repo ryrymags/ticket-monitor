@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `(pending)`  2026-07-10 04:05  Split load_config into per-section helper functions
+- `(pending)`  2026-07-10 04:07  Add BrowserProbe.from_config factory; dedup 3 identical call sites
+
+- `2369609`  2026-07-10 04:05  Split load_config into per-section helper functions
 
 - `617933f`  2026-07-10 03:58  Add golden characterization tests for load_config
 

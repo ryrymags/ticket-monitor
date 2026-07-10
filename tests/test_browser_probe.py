@@ -1135,3 +1135,63 @@ class TestAvailabilitySourceDiagnostics:
         assert count > 0
         assert "offers.available" in sources
         assert "offers.quantity" in sources
+
+
+class TestFromConfig:
+    """BrowserProbe.from_config must map every browser_* field exactly as the
+    monitor/scheduler call sites did, so the dedup is behavior-preserving."""
+
+    _FIELDS = (
+        "storage_state_path", "session_mode", "user_data_dir", "channel",
+        "cdp_endpoint_url", "cdp_connect_timeout_seconds", "reuse_event_tabs",
+        "single_event_page", "headless", "navigation_timeout_seconds",
+        "stealth_enabled", "locale", "timezone_id", "event_dwell_min_seconds",
+        "event_dwell_max_seconds", "homepage_warmup_interval_seconds",
+    )
+
+    def _config(self):
+        from tests.test_config import _write_config
+        import tempfile
+        import pathlib
+        from src.config import load_config
+        d = pathlib.Path(tempfile.mkdtemp())
+        return load_config(_write_config(d, {
+            "browser.session_mode": "persistent_profile",
+            "browser.user_data_dir": "secrets/x",
+            "browser.channel": "chrome",
+            "browser.single_event_page": False,
+            "browser.reuse_event_tabs": False,
+            "browser.headless": False,
+        }))
+
+    def test_matches_direct_construction(self):
+        config = self._config()
+        via_factory = BrowserProbe.from_config(config)
+        direct = BrowserProbe(
+            storage_state_path=config.browser_storage_state_path,
+            session_mode=config.browser_session_mode,
+            user_data_dir=config.browser_user_data_dir,
+            channel=config.browser_channel,
+            cdp_endpoint_url=config.browser_cdp_endpoint_url,
+            cdp_connect_timeout_seconds=config.browser_cdp_connect_timeout_seconds,
+            reuse_event_tabs=config.browser_reuse_event_tabs,
+            single_event_page=config.browser_single_event_page,
+            headless=config.browser_headless,
+            navigation_timeout_seconds=config.browser_navigation_timeout_seconds,
+            stealth_enabled=config.browser_stealth_enabled,
+            locale=config.browser_locale,
+            timezone_id=config.browser_timezone_id,
+            event_dwell_min_seconds=config.browser_event_dwell_min_seconds,
+            event_dwell_max_seconds=config.browser_event_dwell_max_seconds,
+            homepage_warmup_interval_seconds=config.browser_homepage_warmup_interval_seconds,
+        )
+        for f in self._FIELDS:
+            assert getattr(via_factory, f) == getattr(direct, f), f
+
+    def test_overrides_win(self):
+        config = self._config()
+        probe = BrowserProbe.from_config(config, event_dwell_min_seconds=2, headless=True)
+        assert probe.event_dwell_min_seconds == 2
+        assert probe.headless is True
+        # Non-overridden fields still come from config.
+        assert probe.session_mode == config.browser_session_mode

@@ -213,6 +213,37 @@ class BrowserProbe:
         self._cdp_connected = False
         self._started = False
 
+    @classmethod
+    def from_config(cls, config, **overrides) -> "BrowserProbe":
+        """Build a probe from a MonitorConfig's browser_* fields.
+
+        Collapses the identical ~16-kwarg construction the monitor and scheduler
+        each repeat. ``overrides`` win over the config-derived values (for callers
+        that need a tweaked probe). Note: the variation probe deliberately does
+        NOT use this — it mixes per-variation locals with intentional __init__
+        defaults and must stay bespoke.
+        """
+        kwargs: dict[str, Any] = {
+            "storage_state_path": config.browser_storage_state_path,
+            "session_mode": config.browser_session_mode,
+            "user_data_dir": config.browser_user_data_dir,
+            "channel": config.browser_channel,
+            "cdp_endpoint_url": config.browser_cdp_endpoint_url,
+            "cdp_connect_timeout_seconds": config.browser_cdp_connect_timeout_seconds,
+            "reuse_event_tabs": config.browser_reuse_event_tabs,
+            "single_event_page": config.browser_single_event_page,
+            "headless": config.browser_headless,
+            "navigation_timeout_seconds": config.browser_navigation_timeout_seconds,
+            "stealth_enabled": config.browser_stealth_enabled,
+            "locale": config.browser_locale,
+            "timezone_id": config.browser_timezone_id,
+            "event_dwell_min_seconds": config.browser_event_dwell_min_seconds,
+            "event_dwell_max_seconds": config.browser_event_dwell_max_seconds,
+            "homepage_warmup_interval_seconds": config.browser_homepage_warmup_interval_seconds,
+        }
+        kwargs.update(overrides)
+        return cls(**kwargs)
+
     def start(self):
         """Start Playwright browser and context."""
         if self._started:

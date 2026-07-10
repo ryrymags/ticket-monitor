@@ -10,7 +10,8 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 ## 📋 Recent Changes  
   
 <!-- CHANGELOG_START -->
-- `(pending)`  2026-07-10  Split load_config into per-section helper functions
+- `(pending)`  2026-07-10  Add BrowserProbe.from_config factory; dedup 3 identical call sites
+- `2369609`  2026-07-10  Split load_config into per-section helper functions
 - `617933f`  2026-07-10  Add golden characterization tests for load_config
 - `f345bed`  2026-07-10  Fold consecutive same-state rows in the uptime timeline
 - `aba682c`  2026-07-09  Mark audit remediation plan complete
@@ -19,7 +20,6 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 - `547ecdc`  2026-07-09  Remove the legacy all-events cycle scheduler mode
 - `d199171`  2026-07-09  Remove vestigial Oracle-VM deploy workflow and Linux systemd setup
 - `145f157`  2026-07-09  Add one-time uptime ledger repair script and fix historical data
-- `7cbcb9b`  2026-07-09  Remove hardcoded event-weight defaults and fix stale docs
 
 Full history: [CHANGELOG.md](CHANGELOG.md)
 <!-- CHANGELOG_END -->  
