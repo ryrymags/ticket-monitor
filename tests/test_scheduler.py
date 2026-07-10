@@ -45,11 +45,7 @@ def _make_config(**overrides) -> MonitorConfig:
         browser_cdp_endpoint_url="http://127.0.0.1:9222",
         browser_cdp_connect_timeout_seconds=10,
         browser_reuse_event_tabs=True,
-        browser_poll_min_seconds=45,
-        browser_poll_max_seconds=60,
         browser_headless=True,
-        browser_poll_interval_seconds=12,
-        browser_poll_jitter_seconds=2,
         browser_navigation_timeout_seconds=20,
         browser_challenge_threshold=5,
         browser_challenge_retry_seconds=60,
@@ -59,11 +55,6 @@ def _make_config(**overrides) -> MonitorConfig:
         browser_challenge_cooldown_tiers_seconds=[300, 900, 1800],
         browser_challenge_cooldown_tier_every=3,
         browser_startup_grace_seconds=0,
-        event_stagger_seconds=6,
-        browser_adaptive_backoff_enabled=True,
-        browser_adaptive_backoff_multiplier=2.0,
-        browser_adaptive_recover_factor=0.5,
-        browser_adaptive_max_seconds=300,
         browser_stealth_enabled=False,
         browser_locale="en-US",
         browser_timezone_id="America/New_York",
@@ -726,26 +717,13 @@ class TestAutoReauth:
 
 
 class TestCycleBehavior:
-    def test_run_cycle_returns_slow_retry_on_blocked_event(self, tmp_path):
-        scheduler = _make_scheduler(tmp_path)
-        blocked = _make_result(
-            available=False,
-            blocked=True,
-            signal_type=ProbeSignalType.NONE,
-            dom_signals=[],
-        )
-        scheduler.probe.check_event.return_value = blocked
-
-        needs_slow_retry = scheduler._run_cycle()
-
-        assert needs_slow_retry is True
 
     def test_run_skips_active_probes_during_challenge_cooldown(self, tmp_path):
         scheduler = _make_scheduler(tmp_path)
         scheduler.state.set_challenge_cooldown_until(datetime.now(timezone.utc) + timedelta(minutes=10))
         scheduler._maybe_send_heartbeat = MagicMock()
         scheduler._consume_browser_restart_request_if_any = MagicMock()
-        scheduler._run_cycle = MagicMock(return_value=False)
+        scheduler._run_due_event_cycle = MagicMock(return_value=False)
         scheduler._maybe_check_session_health = MagicMock()
         scheduler._evaluate_manual_action_escalation = MagicMock()
         scheduler._apply_challenge_cooldown = MagicMock(return_value=0.01)
@@ -758,34 +736,11 @@ class TestCycleBehavior:
 
         scheduler.run()
 
-        scheduler._run_cycle.assert_not_called()
+        scheduler._run_due_event_cycle.assert_not_called()
         scheduler._maybe_check_session_health.assert_not_called()
         scheduler._consume_browser_restart_request_if_any.assert_called_once()
         scheduler._record_uptime_heartbeat.assert_called_once_with(True, reason="blocked")
 
-    def test_run_cycle_continues_to_next_event_after_probe_error(self, tmp_path):
-        config = _make_config(
-            events=[
-                EventConfig(event_id="event-1", name="Night 1", date="2030-01-01", url="http://event-1"),
-                EventConfig(event_id="event-2", name="Night 2", date="2030-01-02", url="http://event-2"),
-            ],
-        )
-        scheduler = _make_scheduler(tmp_path, config=config)
-        healthy = _make_result(available=False, signal_type=ProbeSignalType.DOM, dom_signals=["sold_out_text"])
-
-        def _check_event(event_id: str, _url: str):
-            if event_id == "event-1":
-                raise BrowserProbeError("simulated per-event failure")
-            return healthy
-
-        scheduler.probe.check_event.side_effect = _check_event
-
-        needs_slow_retry = scheduler._run_cycle()
-
-        assert needs_slow_retry is True
-        assert scheduler.probe.check_event.call_count == 2
-        assert scheduler.state.get_last_check("event-1") is None
-        assert scheduler.state.get_last_check("event-2") is not None
 
     def test_poll_staleness_alerts_and_recovers(self, tmp_path):
         config = _make_config(
@@ -842,7 +797,6 @@ class TestPerEventScheduler:
         )
         defaults = dict(
             events=events,
-            browser_per_event_scheduler_enabled=True,
             browser_per_event_poll_min_seconds=45,
             browser_per_event_poll_max_seconds=105,
             browser_per_event_min_gap_between_checks_seconds=20,
@@ -931,22 +885,6 @@ class TestPerEventScheduler:
 
         assert (scheduler._event_schedule["event-1"] - datetime.now(timezone.utc)).total_seconds() >= 59
 
-    def test_legacy_cycle_mode_still_checks_all_events(self, tmp_path):
-        scheduler = _make_scheduler(
-            tmp_path,
-            self._two_event_config(browser_per_event_scheduler_enabled=False),
-        )
-        clean = _make_result(
-            available=False,
-            blocked=False,
-            signal_type=ProbeSignalType.NONE,
-            dom_signals=[],
-        )
-        scheduler.probe.check_event.return_value = clean
-
-        scheduler._run_cycle()
-
-        assert scheduler.probe.check_event.call_count == 2
 
 
 class TestSelfHealing:
@@ -1126,37 +1064,6 @@ class TestNonBingoGlobalGate:
         assert scheduler.notifier.send_ticket_available.call_count == 3
         assert scheduler.notifier.send_ticket_available.call_args.kwargs.get("mention") is True
 
-
-class TestAdaptiveCadence:
-    def _sched(self, tmp_path, **over):
-        cfg = _make_config(
-            browser_poll_min_seconds=10, browser_poll_max_seconds=10, **over
-        )
-        return _make_scheduler(tmp_path, cfg)
-
-    def test_backoff_grows_on_block_and_decays_when_healthy(self, tmp_path):
-        s = self._sched(tmp_path)
-        assert s._next_sleep(blocked=True) == 20.0   # 10 * 2
-        assert s._next_sleep(blocked=True) == 40.0   # 10 * 4
-        assert s._next_sleep(blocked=False) == 20.0  # decay -> *2
-        assert s._next_sleep(blocked=False) == 10.0  # decay -> *1 (floor)
-        assert s._next_sleep(blocked=False) == 10.0  # stays at floor
-
-    def test_backoff_clamped_to_max(self, tmp_path):
-        s = self._sched(tmp_path, browser_adaptive_max_seconds=50)
-        sleep = 0.0
-        for _ in range(10):
-            sleep = s._next_sleep(blocked=True)
-        assert sleep == 50.0
-
-    def test_disabled_uses_fixed_retry_and_floor(self, tmp_path):
-        s = self._sched(
-            tmp_path,
-            browser_adaptive_backoff_enabled=False,
-            browser_challenge_retry_seconds=60,
-        )
-        assert s._next_sleep(blocked=True) == 60.0   # fixed challenge retry
-        assert s._next_sleep(blocked=False) == 10.0  # random floor
 
 
 class TestCheckOutcomeRecording:
@@ -1798,7 +1705,7 @@ class TestUptimeConnectivity:
                 "Browser probe failed for event-1: net::ERR_INTERNET_DISCONNECTED"
             )
         )
-        scheduler._run_cycle()
+        scheduler._run_due_event_cycle()
         assert scheduler._cycle_connectivity_down is True
 
         scheduler._record_uptime_heartbeat(True)
@@ -1813,7 +1720,7 @@ class TestUptimeConnectivity:
         )
         blocked.raw_indicators["response_status"] = 403
         scheduler.probe.check_event = MagicMock(return_value=blocked)
-        needs_slow_retry = scheduler._run_cycle()
+        needs_slow_retry = scheduler._run_due_event_cycle()
         assert scheduler._cycle_connectivity_down is False
         assert scheduler._cycle_bad_checks == 1
         assert scheduler._cycle_healthy_checks == 0
@@ -1830,7 +1737,7 @@ class TestUptimeConnectivity:
         )
         no_signal.raw_indicators["response_status"] = 500
         scheduler.probe.check_event = MagicMock(return_value=no_signal)
-        needs_slow_retry = scheduler._run_cycle()
+        needs_slow_retry = scheduler._run_due_event_cycle()
         assert scheduler._cycle_connectivity_down is False
         assert scheduler._cycle_bad_checks == 1
         assert scheduler._cycle_healthy_checks == 0
@@ -1847,7 +1754,7 @@ class TestUptimeConnectivity:
             available=False, blocked=False, signal_type=ProbeSignalType.NONE, dom_signals=[]
         )
         scheduler.probe.check_event = MagicMock(return_value=clean)
-        needs_slow_retry = scheduler._run_cycle()
+        needs_slow_retry = scheduler._run_due_event_cycle()
         scheduler._record_uptime_heartbeat(needs_slow_retry)
         assert scheduler.uptime.segments[-1]["state"] == "healthy"
 
@@ -1859,7 +1766,7 @@ class TestUptimeConnectivity:
             available=False, blocked=False, signal_type=ProbeSignalType.NONE, dom_signals=[]
         )
         scheduler.probe.check_event = MagicMock(return_value=clean)
-        scheduler._run_cycle()  # tallies one healthy check this cycle
+        scheduler._run_due_event_cycle()  # tallies one healthy check this cycle
         # Simulate a lagging cadence signal that used to force impaired.
         scheduler._record_uptime_heartbeat(needs_slow_retry=True)
         assert scheduler.uptime.segments[-1]["state"] == "healthy"
@@ -1871,7 +1778,7 @@ class TestUptimeConnectivity:
         )
         scheduler.probe.check_event = MagicMock(return_value=clean)
         scheduler.state.set_session_logged_out(True)
-        scheduler._run_cycle()
+        scheduler._run_due_event_cycle()
         scheduler._record_uptime_heartbeat(needs_slow_retry=False)
         last = scheduler.uptime.segments[-1]
         assert last["state"] == "healthy"

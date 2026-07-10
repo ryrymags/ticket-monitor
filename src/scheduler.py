@@ -188,9 +188,6 @@ class MonitorScheduler:
         self._last_session_health_alert_at: datetime | None = None
         self._session_health_fail_streak: int = 0
         self._last_cycle_blocked: bool = False
-        # Adaptive cadence: multiplier (>= 1.0) applied to the random poll floor.
-        # Grows when a cycle is blocked/challenged, decays back toward 1.0 when healthy.
-        self._cadence_backoff: float = 1.0
         # Challenge circuit-breaker: consecutive captcha/challenge (or 429) checks drive
         # an exponential cooldown so we stop hammering a fingerprint that's being blocked.
         self._consecutive_challenges: int = 0
@@ -278,7 +275,7 @@ class MonitorScheduler:
                     self._stale_event_alerted.clear()
                     self.state.clear_attention()
             self._cycle_started_at = loop_now
-            sleep_time = self._normal_loop_sleep()
+            sleep_time = 1.0  # always reassigned below; safe floor for early breaks
             self.state.set_last_cycle_started_at()
             try:
                 self._maybe_send_heartbeat()
@@ -298,10 +295,7 @@ class MonitorScheduler:
                     self._last_cycle_blocked = True
                     needs_slow_retry = True
                 else:
-                    if self._per_event_scheduler_enabled():
-                        needs_slow_retry = self._run_due_event_cycle()
-                    else:
-                        needs_slow_retry = self._run_cycle()
+                    needs_slow_retry = self._run_due_event_cycle()
                     self._maybe_check_session_health()
                 self._consecutive_runtime_errors = 0
                 self.state.set_last_cycle_completed_at()
@@ -315,10 +309,7 @@ class MonitorScheduler:
                     ),
                 )
 
-                if self._per_event_scheduler_enabled():
-                    sleep_time = self._per_event_next_sleep(datetime.now(timezone.utc))
-                else:
-                    sleep_time = self._next_sleep(blocked=needs_slow_retry)
+                sleep_time = self._per_event_next_sleep(datetime.now(timezone.utc))
 
             except BrowserProbeError as exc:
                 logger.error("Browser probe runtime error: %s", exc)
@@ -478,10 +469,7 @@ class MonitorScheduler:
         self.probe.start()
         self.state.set_last_cycle_started_at()
         self._maybe_send_heartbeat()
-        if self._per_event_scheduler_enabled():
-            self._run_due_event_cycle()
-        else:
-            self._run_cycle()
+        self._run_due_event_cycle()
         self._maybe_check_session_health()
         self._evaluate_manual_action_escalation(datetime.now(timezone.utc))
         self.state.set_last_cycle_completed_at()
@@ -490,47 +478,6 @@ class MonitorScheduler:
 
     # ---- Core logic ----
 
-    def _run_cycle(self) -> bool:
-        """Check all events once. Returns True when slow challenge retry mode is needed."""
-        needs_slow_retry = False
-        # Track connectivity: any response at all proves the internet works; a
-        # connectivity error with zero responses means we're offline (→ down).
-        # Reset up front so an early throw can't leak a stale value into the next
-        # error-path heartbeat.
-        self._reset_cycle_tallies()
-        had_response = False
-        had_connectivity_error = False
-
-        for index, event_cfg in enumerate(self.config.events):
-            if not self._running:
-                break
-
-            if index > 0:
-                # Jitter the inter-event gap a little so request timing looks less robotic.
-                stagger = max(0.0, float(self.config.event_stagger_seconds) + self._rand.uniform(-2.0, 2.0))
-                self._interruptible_sleep(stagger)
-
-            outcome = self._check_one_event(event_cfg)
-            had_response = had_response or outcome.had_response
-            had_connectivity_error = had_connectivity_error or outcome.had_connectivity_error
-            needs_slow_retry = needs_slow_retry or outcome.needs_slow_retry
-
-        # No response from any event + a connectivity error → the internet is down.
-        # A block page still returns a response, but uptime is impaired because
-        # the monitor cannot see inventory through it.
-        self._cycle_connectivity_down = had_connectivity_error and not had_response
-
-        if self._check_event_poll_staleness(now=datetime.now(timezone.utc)):
-            needs_slow_retry = True
-
-        # Keep polling slower while any event remains in outage mode.
-        for event_cfg in self.config.events:
-            if self.state.get_in_outage_state(event_cfg.event_id):
-                needs_slow_retry = True
-                break
-
-        self._last_cycle_blocked = self._cycle_bad_checks > 0
-        return needs_slow_retry
 
     def _run_due_event_cycle(self) -> bool:
         """Check exactly one due event and reschedule that event."""
@@ -613,8 +560,6 @@ class MonitorScheduler:
             result=probe_result,
         )
 
-    def _per_event_scheduler_enabled(self) -> bool:
-        return bool(self.config.browser_per_event_scheduler_enabled)
 
     def _ensure_event_schedule(self, now: datetime):
         configured_ids = {event.event_id for event in self.config.events}
@@ -823,11 +768,7 @@ class MonitorScheduler:
                 age_seconds = int(min((now - last_check).total_seconds(), uptime_seconds))
 
             planned_due = self._event_schedule.get(event_id)
-            if (
-                self._per_event_scheduler_enabled()
-                and planned_due is not None
-                and now < planned_due + timedelta(seconds=threshold_seconds)
-            ):
+            if planned_due is not None and now < planned_due + timedelta(seconds=threshold_seconds):
                 continue
 
             if age_seconds > threshold_seconds:
@@ -1555,51 +1496,7 @@ class MonitorScheduler:
 
     # ---- Sleep/backoff helpers ----
 
-    def _next_sleep(self, *, blocked: bool) -> float:
-        """Adaptive cadence: a randomized floor, scaled by a back-off multiplier that
-        grows when the monitor is blocked/challenged and decays back toward the floor
-        when checks are healthy. Bounded by ``adaptive_max_seconds``.
 
-        When adaptive back-off is disabled, this reproduces the original behavior:
-        a fixed ``challenge_retry_seconds`` on a blocked cycle, else the random floor.
-        """
-        floor = self._normal_loop_sleep()
-        if not self.config.browser_adaptive_backoff_enabled:
-            self._cadence_backoff = 1.0
-            if blocked:
-                return float(self.config.browser_challenge_retry_seconds)
-            return floor
-
-        cap = float(self.config.browser_adaptive_max_seconds)
-        if blocked:
-            self._cadence_backoff = self._cadence_backoff * float(
-                self.config.browser_adaptive_backoff_multiplier
-            )
-        else:
-            self._cadence_backoff = max(
-                1.0, self._cadence_backoff * float(self.config.browser_adaptive_recover_factor)
-            )
-        # Clamp the multiplier so floor*multiplier never exceeds the cap.
-        max_multiplier = max(1.0, cap / max(1.0, floor))
-        self._cadence_backoff = min(self._cadence_backoff, max_multiplier)
-        return min(floor * self._cadence_backoff, cap)
-
-    def _normal_loop_sleep(self) -> float:
-        if self.config.browser_poll_min_seconds > 0 and self.config.browser_poll_max_seconds > 0:
-            low = float(min(self.config.browser_poll_min_seconds, self.config.browser_poll_max_seconds))
-            high = float(max(self.config.browser_poll_min_seconds, self.config.browser_poll_max_seconds))
-            return max(1.0, float(self._rand.uniform(low, high)))
-
-        base = float(self.config.browser_poll_interval_seconds)
-        jitter = float(
-            self._rand.uniform(
-                -self.config.browser_poll_jitter_seconds,
-                self.config.browser_poll_jitter_seconds,
-            )
-        )
-        stagger_penalty = max(0, len(self.config.events) - 1) * self.config.event_stagger_seconds
-        sleep_time = base + jitter - stagger_penalty
-        return max(1.0, sleep_time)
 
     def _runtime_error_backoff(self) -> float:
         base = 10.0

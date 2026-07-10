@@ -70,15 +70,13 @@ class TestLoadConfig:
             load_config(path)
 
     def test_invalid_interval_exits(self, tmp_path):
-        path = _write_config(tmp_path, {"browser.poll_interval_seconds": "fast"})
+        path = _write_config(tmp_path, {"browser.per_event_poll_min_seconds": "fast"})
         with pytest.raises(ConfigError):
             load_config(path)
 
     def test_defaults_applied(self, tmp_path):
         path = _write_config(tmp_path)
         config = load_config(path)
-        assert config.browser_poll_interval_seconds == 12
-        assert config.browser_poll_jitter_seconds == 2
         assert config.browser_challenge_threshold == 5
         assert config.browser_session_mode == "storage_state"
         assert config.browser_user_data_dir == "secrets/tm_profile"
@@ -86,9 +84,6 @@ class TestLoadConfig:
         assert config.browser_cdp_endpoint_url == "http://127.0.0.1:9222"
         assert config.browser_cdp_connect_timeout_seconds == 10
         assert config.browser_reuse_event_tabs is True
-        assert config.browser_poll_min_seconds == 60
-        assert config.browser_poll_max_seconds == 120
-        assert config.browser_per_event_scheduler_enabled is True
         assert config.browser_per_event_poll_min_seconds == 60
         assert config.browser_per_event_poll_max_seconds == 120
         assert config.browser_per_event_min_gap_between_checks_seconds == 60
@@ -100,10 +95,6 @@ class TestLoadConfig:
         assert config.browser_event_dwell_max_seconds == 8
         assert config.browser_homepage_warmup_interval_seconds == 1800
         # Adaptive cadence + stealth defaults.
-        assert config.browser_adaptive_backoff_enabled is True
-        assert config.browser_adaptive_backoff_multiplier == 2.0
-        assert config.browser_adaptive_recover_factor == 0.5
-        assert config.browser_adaptive_max_seconds == 300
         assert config.browser_stealth_enabled is True
         assert config.browser_locale == "en-US"
         assert config.browser_timezone_id == "America/New_York"
@@ -223,16 +214,6 @@ class TestLoadConfig:
         assert config.browser_session_mode == "cdp_attach"
         assert config.browser_host_enabled is True
 
-    def test_invalid_poll_min_max_exits(self, tmp_path):
-        path = _write_config(
-            tmp_path,
-            {
-                "browser.poll_min_seconds": 90,
-                "browser.poll_max_seconds": 30,
-            },
-        )
-        with pytest.raises(ConfigError):
-            load_config(path)
 
     def test_invalid_per_event_poll_min_max_exits(self, tmp_path):
         path = _write_config(

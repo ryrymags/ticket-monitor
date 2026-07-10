@@ -82,13 +82,10 @@ def run_test(config_path: str):
 
     print("[1/4] Config loaded")
     print(f"      Events: {len(config.events)}")
-    if config.browser_per_event_scheduler_enabled:
-        print(
-            "      Per-event interval: "
-            f"{config.browser_per_event_poll_min_seconds}s - {config.browser_per_event_poll_max_seconds}s"
-        )
-    else:
-        print(f"      Poll interval: {config.browser_poll_min_seconds}s - {config.browser_poll_max_seconds}s")
+    print(
+        "      Per-event interval: "
+        f"{config.browser_per_event_poll_min_seconds}s - {config.browser_per_event_poll_max_seconds}s"
+    )
     print()
 
     print("[2/4] Testing Discord webhook")
@@ -594,21 +591,13 @@ def run_monitor(config_path: str, once: bool = False):
             sys.exit(1)
         logger.info("Done.")
     else:
-        if config.browser_per_event_scheduler_enabled:
-            logger.info(
-                "Starting monitor — %d event(s), per-event poll=%ss-%ss, min_gap=%ss",
-                len(config.events),
-                config.browser_per_event_poll_min_seconds,
-                config.browser_per_event_poll_max_seconds,
-                config.browser_per_event_min_gap_between_checks_seconds,
-            )
-        else:
-            logger.info(
-                "Starting monitor — %d event(s), legacy cycle poll=%ss-%ss",
-                len(config.events),
-                config.browser_poll_min_seconds,
-                config.browser_poll_max_seconds,
-            )
+        logger.info(
+            "Starting monitor — %d event(s), per-event poll=%ss-%ss, min_gap=%ss",
+            len(config.events),
+            config.browser_per_event_poll_min_seconds,
+            config.browser_per_event_poll_max_seconds,
+            config.browser_per_event_min_gap_between_checks_seconds,
+        )
         scheduler.run()
         logger.info("Monitor stopped.")
 

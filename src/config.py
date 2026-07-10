@@ -63,11 +63,7 @@ class MonitorConfig:
     browser_cdp_endpoint_url: str
     browser_cdp_connect_timeout_seconds: int
     browser_reuse_event_tabs: bool
-    browser_poll_min_seconds: int
-    browser_poll_max_seconds: int
     browser_headless: bool
-    browser_poll_interval_seconds: int
-    browser_poll_jitter_seconds: int
     browser_navigation_timeout_seconds: int
     browser_challenge_threshold: int
     browser_challenge_retry_seconds: int
@@ -83,12 +79,6 @@ class MonitorConfig:
     # window blind checks don't trip outage/degraded and the challenge cooldown stays at
     # its base, so the monitor can break in instead of flagging a false "blocked".
     browser_startup_grace_seconds: int
-    event_stagger_seconds: int
-    # Adaptive cadence + stealth (experimental — all flag-gated for easy revert)
-    browser_adaptive_backoff_enabled: bool
-    browser_adaptive_backoff_multiplier: float
-    browser_adaptive_recover_factor: float
-    browser_adaptive_max_seconds: int
     browser_stealth_enabled: bool
     browser_locale: str
     browser_timezone_id: str
@@ -160,7 +150,6 @@ class MonitorConfig:
     # Template that opens the native app — for Ticketmaster, an AppsFlyer OneLink.
     # Supports {url_encoded}, {url}, {event_id}. Empty = no "Open in App" button.
     ntfy_app_deep_link: str = ""
-    browser_per_event_scheduler_enabled: bool = True
     browser_per_event_poll_min_seconds: int = 60
     browser_per_event_poll_max_seconds: int = 120
     browser_per_event_min_gap_between_checks_seconds: int = 60
@@ -315,9 +304,6 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
         "browser.cdp_connect_timeout_seconds",
     )
     browser_reuse_event_tabs = safe_bool(browser, "reuse_event_tabs", True)
-    browser_poll_min_seconds = safe_int(browser, "poll_min_seconds", 60, "browser.poll_min_seconds")
-    browser_poll_max_seconds = safe_int(browser, "poll_max_seconds", 120, "browser.poll_max_seconds")
-    browser_per_event_scheduler_enabled = safe_bool(browser, "per_event_scheduler_enabled", True)
     browser_per_event_poll_min_seconds = safe_int(
         browser,
         "per_event_poll_min_seconds",
@@ -395,12 +381,6 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
             errors.append("browser.event_weights must be a mapping of event_id to positive weight")
 
     browser_headless = safe_bool(browser, "headless", True)
-    browser_poll_interval_seconds = safe_int(
-        browser, "poll_interval_seconds", 12, "browser.poll_interval_seconds"
-    )
-    browser_poll_jitter_seconds = safe_int(
-        browser, "poll_jitter_seconds", 2, "browser.poll_jitter_seconds"
-    )
     browser_navigation_timeout_seconds = safe_int(
         browser, "navigation_timeout_seconds", 20, "browser.navigation_timeout_seconds"
     )
@@ -436,18 +416,6 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
     )
     browser_startup_grace_seconds = safe_int(
         browser, "startup_grace_seconds", 180, "browser.startup_grace_seconds"
-    )
-    event_stagger_seconds = safe_int(browser, "event_stagger_seconds", 6, "browser.event_stagger_seconds")
-    # Adaptive cadence + stealth (experimental — every knob has a safe off value)
-    browser_adaptive_backoff_enabled = safe_bool(browser, "adaptive_backoff_enabled", True)
-    browser_adaptive_backoff_multiplier = safe_float(
-        browser, "adaptive_backoff_multiplier", 2.0, "browser.adaptive_backoff_multiplier"
-    )
-    browser_adaptive_recover_factor = safe_float(
-        browser, "adaptive_recover_factor", 0.5, "browser.adaptive_recover_factor"
-    )
-    browser_adaptive_max_seconds = safe_int(
-        browser, "adaptive_max_seconds", 300, "browser.adaptive_max_seconds"
     )
     browser_stealth_enabled = safe_bool(browser, "stealth_enabled", True)
     browser_locale = str(browser.get("locale", "en-US")).strip() or "en-US"
@@ -682,12 +650,6 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
             errors.append("browser_host.remote_debugging_port must be >= 1")
     if browser_cdp_connect_timeout_seconds < 1:
         errors.append("browser.cdp_connect_timeout_seconds must be >= 1")
-    if browser_poll_min_seconds < 1:
-        errors.append("browser.poll_min_seconds must be >= 1")
-    if browser_poll_max_seconds < 1:
-        errors.append("browser.poll_max_seconds must be >= 1")
-    if browser_poll_min_seconds > browser_poll_max_seconds:
-        errors.append("browser.poll_min_seconds must be <= browser.poll_max_seconds")
     if browser_per_event_poll_min_seconds < 1:
         errors.append("browser.per_event_poll_min_seconds must be >= 1")
     if browser_per_event_poll_max_seconds < 1:
@@ -699,7 +661,6 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
     # Anti-block guard: floors under 45s burned DataDome/IP reputation once already
     # (June 2026 pause spike). Loud warning so an aggressive cadence can't sneak back.
     for floor_name, floor_value in (
-        ("browser.poll_min_seconds", browser_poll_min_seconds),
         ("browser.per_event_poll_min_seconds", browser_per_event_poll_min_seconds),
         ("browser.per_event_min_gap_between_checks_seconds", browser_per_event_min_gap_between_checks_seconds),
     ):
@@ -723,18 +684,6 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
         errors.append("browser.event_dwell_min_seconds must be <= browser.event_dwell_max_seconds")
     if browser_homepage_warmup_interval_seconds < 0:
         errors.append("browser.homepage_warmup_interval_seconds must be >= 0")
-    if browser_poll_interval_seconds < 1:
-        errors.append("browser.poll_interval_seconds must be >= 1")
-    if browser_poll_jitter_seconds < 0:
-        errors.append("browser.poll_jitter_seconds must be >= 0")
-    if browser_adaptive_backoff_multiplier < 1.0:
-        errors.append("browser.adaptive_backoff_multiplier must be >= 1.0")
-    if not (0.0 < browser_adaptive_recover_factor <= 1.0):
-        errors.append("browser.adaptive_recover_factor must be in (0, 1]")
-    if browser_adaptive_max_seconds < 1:
-        errors.append("browser.adaptive_max_seconds must be >= 1")
-    if browser_poll_jitter_seconds > browser_poll_interval_seconds:
-        errors.append("browser.poll_jitter_seconds must be <= browser.poll_interval_seconds")
     if browser_navigation_timeout_seconds < 1:
         errors.append("browser.navigation_timeout_seconds must be >= 1")
     if browser_challenge_threshold < 1:
@@ -754,8 +703,6 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
         if prev_tier and value <= prev_tier:
             errors.append("browser.challenge_cooldown_tiers_seconds must be ascending")
         prev_tier = value
-    if event_stagger_seconds < 0:
-        errors.append("browser.event_stagger_seconds must be >= 0")
     if alerts_ticket_cooldown_seconds < 1:
         errors.append("alerts.ticket_cooldown_seconds must be >= 1")
     if alerts_operational_heartbeat_hours < 1:
@@ -835,11 +782,7 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
         browser_cdp_endpoint_url=browser_cdp_endpoint_url,
         browser_cdp_connect_timeout_seconds=browser_cdp_connect_timeout_seconds,
         browser_reuse_event_tabs=browser_reuse_event_tabs,
-        browser_poll_min_seconds=browser_poll_min_seconds,
-        browser_poll_max_seconds=browser_poll_max_seconds,
         browser_headless=browser_headless,
-        browser_poll_interval_seconds=browser_poll_interval_seconds,
-        browser_poll_jitter_seconds=browser_poll_jitter_seconds,
         browser_navigation_timeout_seconds=browser_navigation_timeout_seconds,
         browser_challenge_threshold=browser_challenge_threshold,
         browser_challenge_retry_seconds=browser_challenge_retry_seconds,
@@ -849,11 +792,6 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
         browser_challenge_cooldown_tiers_seconds=browser_challenge_cooldown_tiers_seconds,
         browser_challenge_cooldown_tier_every=browser_challenge_cooldown_tier_every,
         browser_startup_grace_seconds=browser_startup_grace_seconds,
-        event_stagger_seconds=event_stagger_seconds,
-        browser_adaptive_backoff_enabled=browser_adaptive_backoff_enabled,
-        browser_adaptive_backoff_multiplier=browser_adaptive_backoff_multiplier,
-        browser_adaptive_recover_factor=browser_adaptive_recover_factor,
-        browser_adaptive_max_seconds=browser_adaptive_max_seconds,
         browser_stealth_enabled=browser_stealth_enabled,
         browser_locale=browser_locale,
         browser_timezone_id=browser_timezone_id,
@@ -902,7 +840,6 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
         log_file=str(logging_cfg.get("file", "logs/monitor.log")),
         log_max_file_size_mb=log_max_file_size_mb,
         log_backup_count=log_backup_count,
-        browser_per_event_scheduler_enabled=browser_per_event_scheduler_enabled,
         browser_per_event_poll_min_seconds=browser_per_event_poll_min_seconds,
         browser_per_event_poll_max_seconds=browser_per_event_poll_max_seconds,
         browser_per_event_min_gap_between_checks_seconds=browser_per_event_min_gap_between_checks_seconds,

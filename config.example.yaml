@@ -100,7 +100,6 @@ browser:
   storage_state_path: "secrets/tm_storage_state.json"
   channel: "chrome"                     # "" = bundled Chromium (works on all PCs)
                                         # "chrome" = use system Google Chrome (better bot-evasion; falls back to Chromium if not installed)
-  per_event_scheduler_enabled: true     # true = check one due event per wake; false = legacy all-event cycles
   per_event_poll_min_seconds: 60        # Each event gets its own randomized next-due time
   per_event_poll_max_seconds: 120       # 60-120s per event — floors under 45s trip bot detection
   per_event_min_gap_between_checks_seconds: 60   # Global floor between ANY two checks (all events share it)
@@ -108,8 +107,6 @@ browser:
   event_weights:                        # Soft priority; higher weight gets earlier randomized due times
     "EXAMPLEEVENT0001": 2               # primary example weight
     "EXAMPLEEVENT0002": 1               # secondary example weight
-  poll_min_seconds: 60                  # Legacy cycle-mode fallback when per_event_scheduler_enabled=false
-  poll_max_seconds: 120
   headless: true
   reuse_event_tabs: true
   single_event_page: true               # Reuse one active event tab and navigate it between events
@@ -120,9 +117,6 @@ browser:
     enabled: true                       # Checks the event from 4 session variations
     min_interval_seconds: 1800          # (signed-in/out × profile/private) to learn the
     event_url_override: ""              # block's scope and pick the right remedy
-  poll_interval_seconds: 12
-  poll_jitter_seconds: 2
-  event_stagger_seconds: 6
   navigation_timeout_seconds: 20
   challenge_threshold: 5
   challenge_retry_seconds: 60
@@ -133,12 +127,6 @@ browser:
   challenge_cooldown_tier_every: 3
   cdp_endpoint_url: "http://127.0.0.1:9222"
   cdp_connect_timeout_seconds: 10
-  # Adaptive cadence: poll near the floor when healthy, multiply the interval on
-  # each blocked/challenged cycle (up to adaptive_max_seconds), decay back when healthy.
-  adaptive_backoff_enabled: true        # false = old behavior (fixed challenge_retry_seconds on block)
-  adaptive_backoff_multiplier: 2.0      # interval ×= this on a blocked cycle
-  adaptive_recover_factor: 0.5          # interval ×= this on a healthy cycle (toward the floor)
-  adaptive_max_seconds: 300             # cap on the backed-off interval
   # Stealth: look like a normal returning Chrome user (no UA spoofing — real Chrome's UA is genuine).
   stealth_enabled: true                 # false = no init script / context options
   locale: "en-US"
