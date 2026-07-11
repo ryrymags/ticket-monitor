@@ -50,7 +50,18 @@ def canonical_section_key(name: str) -> str:
     m = re.match(r"([A-Z]+)(.*)", s)
     if m:
         prefix, rest = m.groups()
-        s = _SECTION_PREFIX_ALIASES.get(prefix, prefix) + rest
+        alias = _SECTION_PREFIX_ALIASES.get(prefix)
+        if alias is None and len(prefix) >= 3:
+            # Progressive typing: "BALCO" is unambiguously partway to "BALCONY",
+            # so resolve it to the same abbreviation the full word would get.
+            hits = {
+                short
+                for long, short in _SECTION_PREFIX_ALIASES.items()
+                if long.startswith(prefix)
+            }
+            if len(hits) == 1:
+                alias = hits.pop()
+        s = (alias or prefix) + rest
     return s
 
 
@@ -72,7 +83,34 @@ def dedupe_section_names(names: list[str]) -> list[str]:
     return [groups[k] for k in sorted(groups)]
 
 
-def _keyword_hits_section(keyword_upper: str, section_upper: str) -> bool:
+def section_families(names: list[str]) -> list[str]:
+    """Derive section-type prefixes from concrete section names.
+
+    Thirty BALCONY3xx sections clearly mean "BALCONY" is a seating type, so a
+    user can add the whole family instead of picking sections one by one (the
+    matcher treats a bare prefix as a match-all for that family). A family is
+    the leading letters of names that end in digits, alias-grouped (BAL304 and
+    BALCONY 325 both count toward "BALCONY"), and must cover at least two
+    distinct sections — a single LAWN1 doesn't make LAWN a "type".
+    """
+    groups: dict[str, dict[str, Any]] = {}
+    for name in names or []:
+        m = re.match(r"([A-Za-z][A-Za-z ]*?)[\s\-]*\d", str(name).strip())
+        if not m:
+            continue
+        display = m.group(1).strip().upper()
+        if len(display) < 2:
+            continue
+        key = canonical_section_key(display)
+        group = groups.setdefault(key, {"display": display, "members": set()})
+        # Prefer the most descriptive spelling (BALCONY over BAL) for display.
+        if (len(display), display) > (len(group["display"]), group["display"]):
+            group["display"] = display
+        group["members"].add(canonical_section_key(name))
+    return sorted(g["display"] for g in groups.values() if len(g["members"]) >= 2)
+
+
+def keyword_matches_section(keyword_upper: str, section_upper: str) -> bool:
     """Substring match, tried in both raw and canonical form.
 
     Raw substring preserves the historical behavior ("LOGE" matches "LOGE 5");
@@ -171,7 +209,7 @@ class TicketPreferences:
             if count < min_tix or price > max_price:
                 continue
 
-            in_pref = bool(keywords and any(_keyword_hits_section(kw, section) for kw in keywords))
+            in_pref = bool(keywords and any(keyword_matches_section(kw, section) for kw in keywords))
             if not keywords or in_pref:
                 # No section filter → BINGO on count+price alone
                 # OR section filter AND this listing is in a preferred section

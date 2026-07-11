@@ -31,7 +31,13 @@ from tkinter import messagebox, simpledialog
 
 from monitor import run_bootstrap_session
 from src.history_stats import count_bingo_in_history, count_recent_appearances, observed_sections
-from src.preferences import TicketPreferences, canonical_section_key, dedupe_section_names
+from src.preferences import (
+    TicketPreferences,
+    canonical_section_key,
+    dedupe_section_names,
+    keyword_matches_section,
+    section_families,
+)
 from src.state import summarize_check_stats
 from src.uptime import (
     current_status as uptime_current_status,
@@ -947,6 +953,7 @@ class TicketMonitorApp(ctk.CTk):
         for eid in scope_ids + [""]:
             candidates.extend(known_map.get(eid, []))
         picker_names = dedupe_section_names(candidates)
+        picker_families = section_families(candidates)
 
         picker = ctk.CTkFrame(card, fg_color="transparent")
         picker.grid(row=9, column=0, columnspan=2, padx=18, pady=(0, 10), sticky="ew")
@@ -1034,6 +1041,7 @@ class TicketMonitorApp(ctk.CTk):
                 "chips_frame": chips_frame,
                 "results_frame": results_frame,
                 "picker_names": picker_names,
+                "picker_families": picker_families,
                 "all_events_var": all_events_var,
                 "event_vars": event_vars,
                 "event_checkboxes": event_checkboxes,
@@ -1107,25 +1115,45 @@ class TicketMonitorApp(ctk.CTk):
 
     def _add_section_token(self, index: int, name: str):
         tokens = self._section_tokens(index)
-        key = canonical_section_key(name)
-        # Alias-aware dupe check: adding "BAL325" when "BALCONY 325" is present is a no-op.
-        if key and not any(canonical_section_key(t) == key for t in tokens):
+        # Coverage-aware dupe check: skip if an existing keyword already matches
+        # this name ("LOGE" chip covers LOGE20; "BALCONY 325" covers BAL325).
+        # Adding a broader family over narrower chips is still allowed.
+        if canonical_section_key(name) and not any(
+            keyword_matches_section(t.upper(), name.upper()) for t in tokens
+        ):
             tokens.append(name)
             self._set_section_tokens(index, tokens)
 
     def _remove_section_token(self, index: int, name: str):
         self._set_section_tokens(index, [t for t in self._section_tokens(index) if t != name])
 
+    @staticmethod
+    def _search_hit(query: str, name: str) -> bool:
+        """Progressive-typing match: raw and canonical substring both count, so
+        'BALCO' finds BAL325 (via BALCONY→BAL aliasing) and '325' finds it too."""
+        q_raw = re.sub(r"[^A-Z0-9]", "", query.upper())
+        n_raw = re.sub(r"[^A-Z0-9]", "", name.upper())
+        if q_raw and q_raw in n_raw:
+            return True
+        q_key = canonical_section_key(query)
+        return bool(q_key) and q_key in canonical_section_key(name)
+
     def _matching_sections(self, index: int, query: str) -> list[str]:
         widget = self._bingo_config_widgets[index]
-        query_key = canonical_section_key(query)
-        if not query_key:
-            return []
-        added = {canonical_section_key(t) for t in self._section_tokens(index)}
+        tokens = [t.upper() for t in self._section_tokens(index)]
         return [
             name for name in widget["picker_names"]
-            if query_key in canonical_section_key(name)
-            and canonical_section_key(name) not in added
+            if self._search_hit(query, name)
+            and not any(keyword_matches_section(t, name.upper()) for t in tokens)
+        ]
+
+    def _matching_families(self, index: int, query: str) -> list[str]:
+        widget = self._bingo_config_widgets[index]
+        tokens = [t.upper() for t in self._section_tokens(index)]
+        return [
+            family for family in widget["picker_families"]
+            if self._search_hit(query, family)
+            and not any(keyword_matches_section(t, family) for t in tokens)
         ]
 
     def _add_section_from_search(self, index: int):
@@ -1134,8 +1162,8 @@ class TicketMonitorApp(ctk.CTk):
         query = widget["search_var"].get().strip()
         if not query:
             return
-        matches = self._matching_sections(index, query)
-        self._add_section_token(index, matches[0] if len(matches) == 1 else query)
+        options = self._matching_families(index, query) + self._matching_sections(index, query)
+        self._add_section_token(index, options[0] if len(options) == 1 else query)
         widget["search_var"].set("")
 
     def _render_section_chips(self, index: int):
@@ -1182,14 +1210,24 @@ class TicketMonitorApp(ctk.CTk):
                 font=ctk.CTkFont(size=11), anchor="w", justify="left",
             ).grid(row=0, column=0, columnspan=4, sticky="w")
             return
-        matches = self._matching_sections(index, query)[:8]
+        families = self._matching_families(index, query)
+        matches = self._matching_sections(index, query)
+        row = 0
+        # Whole section types first — one click covers every section in the family.
+        for j, family in enumerate(families):
+            ctk.CTkButton(
+                frame, text=f"＋ All {family} sections", height=24, width=10,
+                fg_color=COLOR_GREEN, font=ctk.CTkFont(size=11, weight="bold"),
+                command=lambda i=index, n=family: self._add_section_token(i, n),
+            ).grid(row=j // 3, column=j % 3, padx=(0, 6), pady=2, sticky="w")
+            row = j // 3 + 1
         for j, name in enumerate(matches):
             ctk.CTkButton(
                 frame, text=f"＋ {name}", height=24, width=10,
                 fg_color=COLOR_BLUE, font=ctk.CTkFont(size=11),
                 command=lambda i=index, n=name: self._add_section_token(i, n),
-            ).grid(row=j // 4, column=j % 4, padx=(0, 6), pady=2, sticky="w")
-        if not matches:
+            ).grid(row=row + j // 4, column=j % 4, padx=(0, 6), pady=2, sticky="w")
+        if not matches and not families:
             ctk.CTkButton(
                 frame, text=f'＋ Add "{query}" anyway', height=24, width=10,
                 fg_color=COLOR_GRAY, font=ctk.CTkFont(size=11),

@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `(pending)`  2026-07-11 17:49  Dedupe section naming variants + search-to-add section picker
+- `(pending)`  2026-07-11 17:59  Add section-family picker options + fix progressive search matching
+
+- `80ca6e3`  2026-07-11 17:49  Dedupe section naming variants + search-to-add section picker
 
 - `0c251b2`  2026-07-11 17:41  Learn venue section names automatically + Auto-detect Sections picker
 

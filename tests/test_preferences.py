@@ -227,3 +227,37 @@ def test_plain_substring_matching_unchanged():
     )
     assert prefs.matches([_group(count=2, price=150.0, section="LOGE 5")])["bingo"] is True
     assert prefs.matches([_group(count=2, price=150.0, section="FLOOR 1")])["bingo"] is False
+
+
+def test_section_families_derived_from_numbered_sections():
+    from src.preferences import section_families
+
+    names = [
+        "BALCONY 312", "BAL313", "BALCONY 325",   # one family via aliasing
+        "LOGE1", "LOGE2", "LOGE3",
+        "CLB204", "CLB205",
+        "PIT",      # no digits → not a family
+        "LAWN1",    # only one member → not a type
+        "A",        # too short / no digits
+    ]
+    assert section_families(names) == ["BALCONY", "CLB", "LOGE"]
+
+
+def test_family_keyword_matches_all_members_either_convention():
+    from src.preferences import keyword_matches_section
+
+    assert keyword_matches_section("BALCONY", "BAL313") is True
+    assert keyword_matches_section("BALCONY", "BALCONY 325") is True
+    assert keyword_matches_section("LOGE", "LOGE20") is True
+    assert keyword_matches_section("CLB", "LOGE20") is False
+
+
+def test_canonical_key_resolves_partial_prefixes_while_typing():
+    from src.preferences import canonical_section_key
+
+    # Every stop between BALC and BALCONY lands on the same key as BAL325.
+    for partial in ("BALC", "BALCO", "BALCON", "BALCONY"):
+        assert canonical_section_key(partial + "325") == "BAL325", partial
+    assert canonical_section_key("BALCON") == "BAL"
+    # Ambiguous or too-short prefixes stay literal.
+    assert canonical_section_key("BA") == "BA"

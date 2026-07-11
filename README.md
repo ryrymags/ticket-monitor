@@ -10,7 +10,8 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 ## 📋 Recent Changes  
   
 <!-- CHANGELOG_START -->
-- `(pending)`  2026-07-11  Dedupe section naming variants + search-to-add section picker
+- `(pending)`  2026-07-11  Add section-family picker options + fix progressive search matching
+- `80ca6e3`  2026-07-11  Dedupe section naming variants + search-to-add section picker
 - `0c251b2`  2026-07-11  Learn venue section names automatically + Auto-detect Sections picker
 - `819817f`  2026-07-11  Add per-event scoping to BINGO configs (event_ids + GUI event picker)
 - `2de1bea`  2026-07-10  Add BrowserProbe.from_config factory; dedup 3 identical call sites
@@ -19,7 +20,6 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 - `f345bed`  2026-07-10  Fold consecutive same-state rows in the uptime timeline
 - `aba682c`  2026-07-09  Mark audit remediation plan complete
 - `d6e7ba2`  2026-07-09  Restore README.md as a file and finalize plan status
-- `5d75f77`  2026-07-09  Record completed audit remediation plan
 
 Full history: [CHANGELOG.md](CHANGELOG.md)
 <!-- CHANGELOG_END -->  
@@ -172,7 +172,7 @@ Click **Add BINGO Config** to watch for another category of tickets. Every confi
 
 Every venue abbreviates sections differently (GA, GA1, FLR, FLOOR, PIT…), and Ticketmaster's sold-out page won't tell you. The monitor solves this two ways:
 
-- **Auto-detect Sections button** — press it in the Preferences tab and the monitor visits each event page once, reads the seat map the page loads, and learns every section name at your venue. Then just **type in the search box** under each config (e.g. `LOGE`) and click a match to add it — your chosen sections appear as removable chips above the search box.
+- **Auto-detect Sections button** — press it in the Preferences tab and the monitor visits each event page once, reads the seat map the page loads, and learns every section name at your venue. Then just **type in the search box** under each config (e.g. `LOGE`) and click a match to add it — your chosen sections appear as removable chips above the search box. When a venue has many numbered sections of one type (BALCONY312, BALCONY313, …), a green **"＋ All BALCONY sections"** button appears so one click covers the whole seating type.
 - **Passive learning** — while the monitor runs, it automatically remembers every section name it sees (from the seat map and from real listings), so the searchable list keeps growing on its own. If the monitor is already running, the button just refreshes the list — no extra scan needed.
 
 Naming variants are handled for you: Ticketmaster calls the same section `BAL325` in one place and `BALCONY 325` in another — the monitor treats them as one section and matches either spelling. Typed keywords still match as substrings too (e.g. `LOGE` matches `LOGE20`), so a rough guess is fine to start with.  
