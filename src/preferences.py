@@ -109,7 +109,10 @@ def dedupe_section_names(names: list[str]) -> list[str]:
     for name in names or []:
         name = str(name).strip()
         key = canonical_section_key(name)
-        if not key:
+        # Single-character "sections" are almost always row letters that leaked
+        # into old history entries ("A"), and as keywords they substring-match
+        # nearly every section — never offer them in pickers.
+        if len(key) < 2:
             continue
         for cluster in clusters:
             if any(_keys_equivalent(key, k) for k in cluster["keys"]):

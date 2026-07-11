@@ -806,7 +806,15 @@ class TicketMonitorApp(ctk.CTk):
                 )
                 ok = result.returncode == 0
                 if ok:
-                    msg = "✅  Scan complete — tick the sections you want in each config below."
+                    # --detect-sections prints a JSON summary last; surface counts.
+                    found = ""
+                    try:
+                        payload = json.loads(result.stdout[result.stdout.index("{"):])
+                        unique = {s for names in payload.values() for s in names}
+                        found = f" Found {len(unique)} section name(s) across {len(payload)} event(s)."
+                    except Exception:
+                        pass
+                    msg = f"✅  Scan complete.{found} Search or browse them in each config below."
                 else:
                     msg = f"❌  Scan failed:\n{(result.stdout + result.stderr)[-300:]}"
             except Exception as exc:
@@ -973,6 +981,7 @@ class TicketMonitorApp(ctk.CTk):
 
         results_frame = ctk.CTkFrame(picker, fg_color="transparent")
         results_frame.grid(row=2, column=0, sticky="ew", pady=(4, 0))
+        results_frame.grid_columnconfigure(0, weight=1)
 
         _divider(card, row=10)
 
@@ -1189,6 +1198,21 @@ class TicketMonitorApp(ctk.CTk):
                 command=lambda i=index, t=token: self._remove_section_token(i, t),
             ).grid(row=j // 4, column=1 + j % 4, padx=(0, 6), pady=2, sticky="w")
 
+    def _section_add_buttons(self, frame, grid_row: int, names: list[str], index: int):
+        """Grid of ＋-buttons; long lists get their own scroller so one config
+        card can't swallow the whole Preferences tab."""
+        if len(names) > 12:
+            area = ctk.CTkScrollableFrame(frame, height=170, fg_color="transparent")
+        else:
+            area = ctk.CTkFrame(frame, fg_color="transparent")
+        area.grid(row=grid_row, column=0, columnspan=4, sticky="ew", pady=(2, 0))
+        for j, name in enumerate(names):
+            ctk.CTkButton(
+                area, text=f"＋ {name}", height=24, width=10,
+                fg_color=COLOR_BLUE, font=ctk.CTkFont(size=11),
+                command=lambda i=index, n=name: self._add_section_token(i, n),
+            ).grid(row=j // 4, column=j % 4, padx=(0, 6), pady=2, sticky="w")
+
     def _set_section_browse(self, index: int, value):
         widget = self._bingo_config_widgets[index]
         # Clicking the active filter again collapses the list.
@@ -1243,13 +1267,9 @@ class TicketMonitorApp(ctk.CTk):
                 ).grid(row=1, column=0, pady=2, sticky="w")
         tokens = [t.upper() for t in self._section_tokens(index)]
         addable = [n for n in shown if not any(keyword_matches_section(t, n.upper()) for t in tokens)]
-        for j, name in enumerate(addable):
-            ctk.CTkButton(
-                frame, text=f"＋ {name}", height=24, width=10,
-                fg_color=COLOR_BLUE, font=ctk.CTkFont(size=11),
-                command=lambda i=index, n=name: self._add_section_token(i, n),
-            ).grid(row=2 + j // 4, column=j % 4, padx=(0, 6), pady=2, sticky="w")
-        if not addable:
+        if addable:
+            self._section_add_buttons(frame, 2, addable, index)
+        else:
             ctk.CTkLabel(
                 frame, text="All sections here are already covered by your keywords.",
                 text_color="gray55", font=ctk.CTkFont(size=11), anchor="w",
@@ -1285,12 +1305,8 @@ class TicketMonitorApp(ctk.CTk):
                 command=lambda i=index, n=family: self._add_section_token(i, n),
             ).grid(row=j // 3, column=j % 3, padx=(0, 6), pady=2, sticky="w")
             row = j // 3 + 1
-        for j, name in enumerate(matches):
-            ctk.CTkButton(
-                frame, text=f"＋ {name}", height=24, width=10,
-                fg_color=COLOR_BLUE, font=ctk.CTkFont(size=11),
-                command=lambda i=index, n=name: self._add_section_token(i, n),
-            ).grid(row=row + j // 4, column=j % 4, padx=(0, 6), pady=2, sticky="w")
+        if matches:
+            self._section_add_buttons(frame, row, matches, index)
         if not matches and not families:
             ctk.CTkButton(
                 frame, text=f'＋ Add "{query}" anyway', height=24, width=10,

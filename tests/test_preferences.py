@@ -306,3 +306,11 @@ def test_bingo_fires_across_learned_naming_conventions():
         min_tickets=1, max_price_per_ticket=300.0, preferred_sections=["CLUB"]
     )
     assert prefs.matches([{"section": "CLB204", "row": "1", "price": 200.0, "count": 1}])["bingo"] is True
+
+
+def test_single_letter_artifacts_excluded_from_pickers():
+    from src.preferences import dedupe_section_names
+
+    # "A" is a row letter that leaked into old history — as a keyword it would
+    # substring-match nearly everything, so pickers must never offer it.
+    assert dedupe_section_names(["A", "LOGE20", "B"]) == ["LOGE20"]
