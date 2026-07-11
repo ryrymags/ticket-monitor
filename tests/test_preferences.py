@@ -261,3 +261,48 @@ def test_canonical_key_resolves_partial_prefixes_while_typing():
     assert canonical_section_key("BALCON") == "BAL"
     # Ambiguous or too-short prefixes stay literal.
     assert canonical_section_key("BA") == "BA"
+
+
+# ── Learned abbreviations (CLB ↔ CLUB, no table entry needed) ────────────────
+
+
+def test_learned_abbreviation_pairs_fold_in_dedupe_and_families():
+    from src.preferences import dedupe_section_names, section_families
+
+    names = ["CLB204", "CLUB 204", "CLB205", "CLUB 205", "LOGE1", "LOGE2"]
+    assert dedupe_section_names(names) == ["CLUB 204", "CLUB 205", "LOGE1", "LOGE2"]
+    assert section_families(names) == ["CLUB", "LOGE"]
+
+
+def test_family_not_invented_from_one_section_named_two_ways():
+    from src.preferences import section_families
+
+    # CLB204 and CLUB 204 are the same single section → no CLB/CLUB family.
+    assert section_families(["CLB204", "CLUB 204"]) == []
+
+
+def test_keyword_matches_learned_abbreviations_both_ways():
+    from src.preferences import keyword_matches_section
+
+    assert keyword_matches_section("CLUB", "CLB204") is True
+    assert keyword_matches_section("CLB", "CLUB 204") is True
+    assert keyword_matches_section("CLUB 204", "CLB204") is True
+    assert keyword_matches_section("CLB205", "CLUB 204") is False
+
+
+def test_abbrev_learning_requires_three_chars():
+    from src.preferences import _is_abbrev_pair
+
+    # Two-letter prefixes are too collision-prone to learn as abbreviations
+    # (GA/GALLERY). NB: plain substring matching is unaffected by this guard.
+    assert _is_abbrev_pair("GA", "GALLERY") is False
+    assert _is_abbrev_pair("CLB", "CLUB") is True
+    assert _is_abbrev_pair("FLR", "FLOOR") is True
+    assert _is_abbrev_pair("PIT", "PATIO") is False  # not a subsequence
+
+
+def test_bingo_fires_across_learned_naming_conventions():
+    prefs = TicketPreferences(
+        min_tickets=1, max_price_per_ticket=300.0, preferred_sections=["CLUB"]
+    )
+    assert prefs.matches([{"section": "CLB204", "row": "1", "price": 200.0, "count": 1}])["bingo"] is True

@@ -10,7 +10,8 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 ## 📋 Recent Changes  
   
 <!-- CHANGELOG_START -->
-- `(pending)`  2026-07-11  Add section-family picker options + fix progressive search matching
+- `(pending)`  2026-07-11  Learn abbreviation pairs (CLB/CLUB) + browsable section list by family
+- `08848bf`  2026-07-11  Add section-family picker options + fix progressive search matching
 - `80ca6e3`  2026-07-11  Dedupe section naming variants + search-to-add section picker
 - `0c251b2`  2026-07-11  Learn venue section names automatically + Auto-detect Sections picker
 - `819817f`  2026-07-11  Add per-event scoping to BINGO configs (event_ids + GUI event picker)
@@ -19,7 +20,6 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 - `617933f`  2026-07-10  Add golden characterization tests for load_config
 - `f345bed`  2026-07-10  Fold consecutive same-state rows in the uptime timeline
 - `aba682c`  2026-07-09  Mark audit remediation plan complete
-- `d6e7ba2`  2026-07-09  Restore README.md as a file and finalize plan status
 
 Full history: [CHANGELOG.md](CHANGELOG.md)
 <!-- CHANGELOG_END -->  

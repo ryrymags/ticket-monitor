@@ -65,22 +65,61 @@ def canonical_section_key(name: str) -> str:
     return s
 
 
+def _is_subsequence(short: str, long: str) -> bool:
+    it = iter(long)
+    return all(ch in it for ch in short)
+
+
+def _is_abbrev_pair(a: str, b: str) -> bool:
+    """True when one alpha prefix reads as an abbreviation of the other.
+
+    Learned structurally rather than from the alias table so venue-specific
+    pairs (CLB/CLUB, FLR/FLOOR) fold together too: same first letter, the
+    shorter is a subsequence of the longer, and at least 3 chars — two-letter
+    prefixes are too collision-prone (GA must not swallow GALLERY).
+    """
+    if a == b:
+        return False
+    short, long = sorted((a, b), key=len)
+    return len(short) >= 3 and short[0] == long[0] and _is_subsequence(short, long)
+
+
+def _split_canonical_key(key: str) -> tuple[str, str]:
+    m = re.match(r"([A-Z]+)(.*)", key)
+    return m.groups() if m else (key, "")
+
+
+def _keys_equivalent(k1: str, k2: str) -> bool:
+    """Same section under different naming: CLB204 ≡ CLUB204, BAL325 ≡ BALCONY325."""
+    if k1 == k2:
+        return True
+    a1, r1 = _split_canonical_key(k1)
+    a2, r2 = _split_canonical_key(k2)
+    return r1 == r2 and _is_abbrev_pair(a1, a2)
+
+
 def dedupe_section_names(names: list[str]) -> list[str]:
     """Collapse naming variants of the same section into one display name.
 
-    Groups by canonical key and keeps the most descriptive (longest) variant,
-    so ["BAL325", "BALCONY 325"] → ["BALCONY 325"]. Sorted by canonical key.
+    Clusters by canonical-key equivalence (alias table + learned abbreviation
+    pairs) and keeps the most descriptive (longest) variant, so
+    ["BAL325", "BALCONY 325"] → ["BALCONY 325"] and CLB204/CLUB 204 fold too.
     """
-    groups: dict[str, str] = {}
+    clusters: list[dict[str, Any]] = []
     for name in names or []:
         name = str(name).strip()
         key = canonical_section_key(name)
         if not key:
             continue
-        current = groups.get(key)
-        if current is None or (len(name), name) > (len(current), current):
-            groups[key] = name
-    return [groups[k] for k in sorted(groups)]
+        for cluster in clusters:
+            if any(_keys_equivalent(key, k) for k in cluster["keys"]):
+                cluster["keys"].add(key)
+                if (len(name), name) > (len(cluster["best"]), cluster["best"]):
+                    cluster["best"] = name
+                break
+        else:
+            clusters.append({"keys": {key}, "best": name})
+    return sorted((c["best"] for c in clusters), key=canonical_section_key)
 
 
 def section_families(names: list[str]) -> list[str]:
@@ -93,7 +132,7 @@ def section_families(names: list[str]) -> list[str]:
     BALCONY 325 both count toward "BALCONY"), and must cover at least two
     distinct sections — a single LAWN1 doesn't make LAWN a "type".
     """
-    groups: dict[str, dict[str, Any]] = {}
+    clusters: list[dict[str, Any]] = []
     for name in names or []:
         m = re.match(r"([A-Za-z][A-Za-z ]*?)[\s\-]*\d", str(name).strip())
         if not m:
@@ -102,12 +141,20 @@ def section_families(names: list[str]) -> list[str]:
         if len(display) < 2:
             continue
         key = canonical_section_key(display)
-        group = groups.setdefault(key, {"display": display, "members": set()})
-        # Prefer the most descriptive spelling (BALCONY over BAL) for display.
-        if (len(display), display) > (len(group["display"]), group["display"]):
-            group["display"] = display
-        group["members"].add(canonical_section_key(name))
-    return sorted(g["display"] for g in groups.values() if len(g["members"]) >= 2)
+        # Members are counted by numeric suffix so CLB204 + CLUB 204 is ONE
+        # section, not evidence of a two-member family.
+        _, suffix = _split_canonical_key(canonical_section_key(name))
+        for cluster in clusters:
+            if any(k == key or _is_abbrev_pair(k, key) for k in cluster["keys"]):
+                cluster["keys"].add(key)
+                cluster["members"].add(suffix)
+                # Prefer the most descriptive spelling (CLUB over CLB) for display.
+                if (len(display), display) > (len(cluster["display"]), cluster["display"]):
+                    cluster["display"] = display
+                break
+        else:
+            clusters.append({"keys": {key}, "display": display, "members": {suffix}})
+    return sorted(c["display"] for c in clusters if len(c["members"]) >= 2)
 
 
 def keyword_matches_section(keyword_upper: str, section_upper: str) -> bool:
@@ -120,7 +167,18 @@ def keyword_matches_section(keyword_upper: str, section_upper: str) -> bool:
     if keyword_upper in section_upper:
         return True
     key = canonical_section_key(keyword_upper)
-    return bool(key) and key in canonical_section_key(section_upper)
+    section_key = canonical_section_key(section_upper)
+    if bool(key) and key in section_key:
+        return True
+    # Learned-abbreviation pass: keyword "CLUB" (or "CLUB204") must hit listing
+    # "CLB204" and vice versa, even though no alias table entry exists.
+    kw_alpha, kw_rest = _split_canonical_key(key)
+    sec_alpha, sec_rest = _split_canonical_key(section_key)
+    return (
+        bool(kw_alpha)
+        and _is_abbrev_pair(kw_alpha, sec_alpha)
+        and (not kw_rest or kw_rest in sec_rest)
+    )
 
 
 @dataclass

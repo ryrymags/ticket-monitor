@@ -1189,6 +1189,72 @@ class TicketMonitorApp(ctk.CTk):
                 command=lambda i=index, t=token: self._remove_section_token(i, t),
             ).grid(row=j // 4, column=1 + j % 4, padx=(0, 6), pady=2, sticky="w")
 
+    def _set_section_browse(self, index: int, value):
+        widget = self._bingo_config_widgets[index]
+        # Clicking the active filter again collapses the list.
+        widget["browse"] = None if widget.get("browse") == value else value
+        self._update_section_results(index)
+
+    def _render_section_browser(self, index: int, frame):
+        """Empty search box → family filter buttons to browse everything detected."""
+        widget = self._bingo_config_widgets[index]
+        names = widget["picker_names"]
+        families = widget["picker_families"]
+        in_family = {
+            name: next((f for f in families if keyword_matches_section(f, name.upper())), None)
+            for name in names
+        }
+        other = [n for n, f in in_family.items() if f is None]
+        active = widget.get("browse")
+
+        bar = ctk.CTkFrame(frame, fg_color="transparent")
+        bar.grid(row=0, column=0, columnspan=4, sticky="w")
+        ctk.CTkLabel(
+            bar, text=f"{len(names)} sections detected — browse:",
+            text_color="gray55", font=ctk.CTkFont(size=11),
+        ).grid(row=0, column=0, padx=(0, 8), sticky="w")
+        filters = [("ALL", f"All ({len(names)})")]
+        filters += [(f, f"{f} ({sum(1 for v in in_family.values() if v == f)})") for f in families]
+        if other:
+            filters.append(("OTHER", f"Other ({len(other)})"))
+        for j, (value, label) in enumerate(filters):
+            ctk.CTkButton(
+                bar, text=label, height=24, width=10,
+                fg_color=COLOR_BLUE if active == value else COLOR_GRAY,
+                font=ctk.CTkFont(size=11),
+                command=lambda i=index, v=value: self._set_section_browse(i, v),
+            ).grid(row=0, column=1 + j, padx=(0, 6), sticky="w")
+
+        if active is None:
+            return
+        if active == "ALL":
+            shown = names
+        elif active == "OTHER":
+            shown = other
+        else:
+            shown = [n for n, f in in_family.items() if f == active]
+            # One-click whole-type option at the top of the family listing.
+            tokens = [t.upper() for t in self._section_tokens(index)]
+            if not any(keyword_matches_section(t, active) for t in tokens):
+                ctk.CTkButton(
+                    frame, text=f"＋ All {active} sections", height=24, width=10,
+                    fg_color=COLOR_GREEN, font=ctk.CTkFont(size=11, weight="bold"),
+                    command=lambda i=index, n=active: self._add_section_token(i, n),
+                ).grid(row=1, column=0, pady=2, sticky="w")
+        tokens = [t.upper() for t in self._section_tokens(index)]
+        addable = [n for n in shown if not any(keyword_matches_section(t, n.upper()) for t in tokens)]
+        for j, name in enumerate(addable):
+            ctk.CTkButton(
+                frame, text=f"＋ {name}", height=24, width=10,
+                fg_color=COLOR_BLUE, font=ctk.CTkFont(size=11),
+                command=lambda i=index, n=name: self._add_section_token(i, n),
+            ).grid(row=2 + j // 4, column=j % 4, padx=(0, 6), pady=2, sticky="w")
+        if not addable:
+            ctk.CTkLabel(
+                frame, text="All sections here are already covered by your keywords.",
+                text_color="gray55", font=ctk.CTkFont(size=11), anchor="w",
+            ).grid(row=2, column=0, columnspan=4, sticky="w")
+
     def _update_section_results(self, index: int):
         if index >= len(self._bingo_config_widgets):
             return  # trace fired while the card is still being built
@@ -1199,16 +1265,14 @@ class TicketMonitorApp(ctk.CTk):
         query = widget["search_var"].get().strip()
         if not query:
             if widget["picker_names"]:
-                hint = f"{len(widget['picker_names'])} section(s) detected at your event(s) — type above to search."
+                self._render_section_browser(index, frame)
             else:
-                hint = (
-                    "No sections detected yet — press 🔍 Auto-detect Sections above, or let the monitor\n"
-                    "run (it learns section names automatically). You can still type a name and press Enter."
-                )
-            ctk.CTkLabel(
-                frame, text=hint, text_color="gray55",
-                font=ctk.CTkFont(size=11), anchor="w", justify="left",
-            ).grid(row=0, column=0, columnspan=4, sticky="w")
+                ctk.CTkLabel(
+                    frame,
+                    text="No sections detected yet — press 🔍 Auto-detect Sections above, or let the monitor\n"
+                         "run (it learns section names automatically). You can still type a name and press Enter.",
+                    text_color="gray55", font=ctk.CTkFont(size=11), anchor="w", justify="left",
+                ).grid(row=0, column=0, columnspan=4, sticky="w")
             return
         families = self._matching_families(index, query)
         matches = self._matching_sections(index, query)
