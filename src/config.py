@@ -774,6 +774,26 @@ def _load_bingo_configs(raw: dict[str, Any], errors: list[str]) -> tuple[TicketP
         preferences = TicketPreferences()
         bingo_configs = [preferences]
 
+    # Soft check: a config scoped to an event that no longer exists is kept (it
+    # simply never matches) rather than erroring, so removing an event can never
+    # brick startup — but warn loudly so a typo'd/stale scope is noticeable.
+    known_event_ids = {
+        str(ev.get("event_id", "")).strip().upper()
+        for ev in (raw.get("events") or [])
+        if isinstance(ev, dict)
+    }
+    for pref in bingo_configs:
+        unknown = [
+            eid for eid in pref.event_ids if str(eid).strip().upper() not in known_event_ids
+        ]
+        if unknown:
+            logger.warning(
+                "bingo config %r is scoped to unknown event id(s) %s — it will not "
+                "match any configured event until they are re-added",
+                pref.name,
+                ", ".join(repr(e) for e in unknown),
+            )
+
     return preferences, bingo_configs
 
 

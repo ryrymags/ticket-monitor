@@ -48,6 +48,10 @@ class TicketPreferences:
     # Human-friendly label for this BINGO category.
     name: str = "BINGO"
 
+    # Event IDs (from the events list) this config applies to.
+    # Empty (the default) = applies to every event, including ones added later.
+    event_ids: list[str] = field(default_factory=list)
+
     # ── Back-compat alias ────────────────────────────────────────────────────
     # config.yaml may still have the old key name; from_dict() handles both.
     # We store the canonical value in require_preferred_only.
@@ -60,6 +64,16 @@ class TicketPreferences:
 
     def section_keywords(self) -> list[str]:
         return [s.strip().upper() for s in self.preferred_sections if s.strip()]
+
+    def applies_to_event(self, event_id: str) -> bool:
+        """True if this config should be evaluated for the given event.
+
+        An empty event_ids list means the config is global (all events).
+        Comparison is case-insensitive so hand-edited YAML can't silently
+        mismatch on event-ID casing.
+        """
+        scoped = [str(e).strip().upper() for e in self.event_ids if str(e).strip()]
+        return not scoped or str(event_id or "").strip().upper() in scoped
 
     def matches(self, listing_groups: list[dict[str, Any]]) -> dict[str, Any]:
         """Evaluate listing groups against user preferences.
@@ -189,6 +203,7 @@ class TicketPreferences:
             "preferred_sections": list(self.preferred_sections),
             "require_preferred_only": self.require_preferred_only,
             "alert_on_any_availability": self.alert_on_any_availability,
+            "event_ids": list(self.event_ids),
         }
 
     @classmethod
@@ -201,6 +216,12 @@ class TicketPreferences:
         # Support old config key name (require_section_match) for back-compat
         require = data.get("require_preferred_only", data.get("require_section_match", False))
 
+        event_ids_raw = data.get("event_ids", [])
+        if isinstance(event_ids_raw, str):
+            event_ids_raw = [e.strip() for e in event_ids_raw.split(",") if e.strip()]
+        elif not isinstance(event_ids_raw, list):
+            event_ids_raw = []
+
         return cls(
             name=str(data.get("name", "BINGO")).strip() or "BINGO",
             min_tickets=max(1, int(data.get("min_tickets", 1))),
@@ -208,4 +229,25 @@ class TicketPreferences:
             preferred_sections=[str(s).strip() for s in sections_raw if str(s).strip()],
             require_preferred_only=bool(require),
             alert_on_any_availability=bool(data.get("alert_on_any_availability", True)),
+            event_ids=[str(e).strip() for e in event_ids_raw if str(e).strip()],
         )
+
+
+def configs_for_event(preferences, event_id: str):
+    """Filter preference config(s) down to those that apply to ``event_id``.
+
+    Accepts a single TicketPreferences, a list/tuple of them, or None (returned
+    as-is). Configs without an ``event_ids`` attribute — or with an empty one —
+    are treated as global, so pre-scoping configs behave exactly as before.
+    """
+    if preferences is None:
+        return None
+    configs = preferences if isinstance(preferences, (list, tuple)) else [preferences]
+    selected = []
+    for pref in configs:
+        if pref is None:
+            continue
+        scoped = [str(e).strip().upper() for e in (getattr(pref, "event_ids", None) or []) if str(e).strip()]
+        if not scoped or str(event_id or "").strip().upper() in scoped:
+            selected.append(pref)
+    return selected

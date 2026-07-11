@@ -60,6 +60,36 @@ def test_empty_history():
     assert count_bingo_in_history([], [_cfg_a()]) == {"total": 0, "per_config": {"A": 0}}
 
 
+def test_event_scoped_config_only_counts_its_own_events():
+    scoped = TicketPreferences(
+        min_tickets=2,
+        max_price_per_ticket=200.0,
+        preferred_sections=["LOGE"],
+        name="Night 2 only",
+        event_ids=["event-2"],
+    )
+    history = [
+        # Same BINGO-worthy listing seen on two different events.
+        {
+            "event_id": "event-1",
+            "listings": [{"section": "LOGE 5", "row": "1", "price": 150.0, "count": 2}],
+        },
+        {
+            "event_id": "event-2",
+            "listings": [{"section": "LOGE 5", "row": "2", "price": 150.0, "count": 2}],
+        },
+    ]
+
+    res = count_bingo_in_history(history, [scoped])
+
+    assert res["total"] == 1  # only the event-2 sighting counts
+    assert res["per_config"]["Night 2 only"] == 1
+
+    # An unscoped config still counts both.
+    res_all = count_bingo_in_history(history, [_cfg_a()])
+    assert res_all["total"] == 2
+
+
 def test_repeat_listings_with_fingerprint_counted_once():
     cfg = _cfg_a()
     entry = {

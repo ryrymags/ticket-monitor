@@ -21,6 +21,7 @@
   "bingo_configs": [
     {
       "alert_on_any_availability": false,
+      "event_ids": [],
       "max_price_per_ticket": 220.0,
       "min_tickets": 2,
       "name": "LOGE pairs",
@@ -32,6 +33,7 @@
     },
     {
       "alert_on_any_availability": true,
+      "event_ids": [],
       "max_price_per_ticket": 130.0,
       "min_tickets": 3,
       "name": "Budget triples",
@@ -115,6 +117,7 @@
   ],
   "preferences": {
     "alert_on_any_availability": false,
+    "event_ids": [],
     "max_price_per_ticket": 220.0,
     "min_tickets": 2,
     "name": "LOGE pairs",

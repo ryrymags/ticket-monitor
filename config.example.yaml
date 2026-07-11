@@ -64,12 +64,19 @@ bingo_configs:
     # When true: send 🟡 orange alerts even when tickets don't meet all criteria.
     alert_on_any_availability: true
 
+    # Event IDs (from the events list above) this config applies to.
+    # Leave as [] (the default) to apply to EVERY event, including ones added
+    # later. Scope it to specific nights to hunt e.g. backup tickets for one show:
+    #   event_ids: ["EXAMPLEEVENT0002"]
+    event_ids: []
+
   - name: "Budget triples"
     min_tickets: 3
     max_price_per_ticket: 125.0
     preferred_sections: []
     require_preferred_only: false
     alert_on_any_availability: true
+    event_ids: []
 
 # Legacy single-config block. The GUI keeps this synced to the first item in
 # bingo_configs for backward compatibility.

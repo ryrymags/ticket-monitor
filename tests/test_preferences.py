@@ -9,7 +9,7 @@ are pinned down here.
 from __future__ import annotations
 
 from src.notifier import COLOR_GREEN, COLOR_ORANGE
-from src.preferences import TicketPreferences
+from src.preferences import TicketPreferences, configs_for_event
 
 
 def _group(count: int, price: float, section: str = "FLOOR", row: str = "A") -> dict:
@@ -131,3 +131,57 @@ def test_bingo_wins_over_orange_when_both_present():
     result = prefs.matches(groups)
     assert result["bingo"] is True
     assert result["bingo_group"]["section"] == "LOGE 5"
+
+
+# ── Event scoping ────────────────────────────────────────────────────────────
+
+
+def test_empty_event_ids_applies_to_every_event():
+    prefs = TicketPreferences()
+    assert prefs.applies_to_event("event-1") is True
+    assert prefs.applies_to_event("") is True
+
+
+def test_scoped_config_applies_only_to_listed_events():
+    prefs = TicketPreferences(event_ids=["event-2"])
+    assert prefs.applies_to_event("event-2") is True
+    assert prefs.applies_to_event("event-1") is False
+
+
+def test_applies_to_event_is_case_insensitive():
+    prefs = TicketPreferences(event_ids=["exampleevent0002"])
+    assert prefs.applies_to_event("EXAMPLEEVENT0002") is True
+
+
+def test_event_ids_round_trip_through_dict():
+    prefs = TicketPreferences(name="Backup night", event_ids=["event-2", "event-3"])
+    restored = TicketPreferences.from_dict(prefs.to_dict())
+    assert restored.event_ids == ["event-2", "event-3"]
+
+
+def test_from_dict_accepts_comma_separated_event_ids():
+    prefs = TicketPreferences.from_dict({"event_ids": "event-1, event-2"})
+    assert prefs.event_ids == ["event-1", "event-2"]
+
+
+def test_from_dict_defaults_to_unscoped():
+    prefs = TicketPreferences.from_dict({"name": "Legacy"})
+    assert prefs.event_ids == []
+    assert prefs.applies_to_event("anything") is True
+
+
+def test_configs_for_event_filters_scoped_configs():
+    global_cfg = TicketPreferences(name="Global")
+    night2_cfg = TicketPreferences(name="Night 2 only", event_ids=["event-2"])
+    configs = [global_cfg, night2_cfg]
+
+    assert configs_for_event(configs, "event-1") == [global_cfg]
+    assert configs_for_event(configs, "event-2") == [global_cfg, night2_cfg]
+
+
+def test_configs_for_event_handles_single_object_and_none():
+    assert configs_for_event(None, "event-1") is None
+    single = TicketPreferences(name="Solo")
+    assert configs_for_event(single, "event-1") == [single]
+    scoped = TicketPreferences(name="Elsewhere", event_ids=["event-9"])
+    assert configs_for_event(scoped, "event-1") == []

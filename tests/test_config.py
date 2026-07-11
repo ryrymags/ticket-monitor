@@ -155,6 +155,52 @@ class TestLoadConfig:
         assert config.preferences.name == "LOGE pairs"
         assert config.bingo_configs[1].min_tickets == 3
 
+    def test_bingo_config_event_scoping_loads(self, tmp_path):
+        path = _write_config(
+            tmp_path,
+            {
+                "bingo_configs": [
+                    {
+                        "name": "Everywhere",
+                        "min_tickets": 2,
+                        "max_price_per_ticket": 220,
+                    },
+                    {
+                        "name": "One night only",
+                        "min_tickets": 1,
+                        "max_price_per_ticket": 300,
+                        "event_ids": ["vvG1IZ9YbmdXqt"],
+                    },
+                ],
+            },
+        )
+        config = load_config(path)
+        assert config.bingo_configs[0].event_ids == []
+        assert config.bingo_configs[0].applies_to_event("vvG1IZ9YbmdXqt") is True
+        assert config.bingo_configs[1].event_ids == ["vvG1IZ9YbmdXqt"]
+        assert config.bingo_configs[1].applies_to_event("some-other-event") is False
+
+    def test_bingo_config_unknown_event_id_warns_but_loads(self, tmp_path, caplog):
+        path = _write_config(
+            tmp_path,
+            {
+                "bingo_configs": [
+                    {
+                        "name": "Stale scope",
+                        "min_tickets": 1,
+                        "max_price_per_ticket": 300,
+                        "event_ids": ["REMOVED_EVENT"],
+                    },
+                ],
+            },
+        )
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="src.config"):
+            config = load_config(path)
+        assert config.bingo_configs[0].event_ids == ["REMOVED_EVENT"]
+        assert "unknown event id" in caplog.text
+
     def test_auto_generates_event_url(self, tmp_path):
         config_data = {
             "discord": {"webhook_url": "https://discord.com/api/webhooks/test"},

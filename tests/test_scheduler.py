@@ -245,6 +245,65 @@ class TestTicketAlerting:
         kwargs = scheduler.notifier.send_ticket_available.call_args.kwargs
         assert kwargs.get("preferences") == prefs
 
+    def test_event_scoped_config_is_filtered_out_for_other_events(self, tmp_path):
+        prefs = [
+            TicketPreferences(
+                min_tickets=2,
+                max_price_per_ticket=200.0,
+                preferred_sections=["FLOOR"],
+                alert_on_any_availability=False,
+                name="Night 2 backups",
+                event_ids=["event-2"],  # scoped to a different event
+            ),
+        ]
+        scheduler = _make_scheduler(
+            tmp_path,
+            _make_config(preferences=prefs[0], bingo_configs=prefs),
+        )
+        event = scheduler.config.events[0]  # event-1
+        # Would be a BINGO for the config — but the config doesn't apply here.
+        listing_groups = [{"section": "FLOOR1", "row": "A", "price": 150.0, "count": 2}]
+
+        scheduler._handle_probe_result(event, _make_result(available=True, listing_groups=listing_groups))
+
+        kwargs = scheduler.notifier.send_ticket_available.call_args.kwargs
+        assert kwargs.get("preferences") == []
+        # No applicable config → not a BINGO → mention gated off (non_bingo disabled).
+        assert kwargs.get("mention") is False
+
+    def test_event_scoped_config_applies_to_its_own_event(self, tmp_path):
+        prefs = [
+            TicketPreferences(
+                min_tickets=2,
+                max_price_per_ticket=200.0,
+                preferred_sections=["LOGE"],
+                alert_on_any_availability=False,
+                name="Global",
+            ),
+            TicketPreferences(
+                min_tickets=2,
+                max_price_per_ticket=200.0,
+                preferred_sections=["FLOOR"],
+                alert_on_any_availability=False,
+                name="Night 1 backups",
+                event_ids=["event-1"],
+            ),
+        ]
+        scheduler = _make_scheduler(
+            tmp_path,
+            _make_config(preferences=prefs[0], bingo_configs=prefs),
+        )
+        event = scheduler.config.events[0]  # event-1
+        listing_groups = [{"section": "FLOOR1", "row": "A", "price": 150.0, "count": 2}]
+
+        scheduler._handle_probe_result(event, _make_result(available=True, listing_groups=listing_groups))
+
+        # BINGO via the scoped config → full ping burst; both configs forwarded.
+        assert scheduler.notifier.send_ticket_available.call_count == 3
+        kwargs = scheduler.notifier.send_ticket_available.call_args.kwargs
+        assert kwargs.get("preferences") == prefs
+        assert kwargs.get("mention") is True
+
     def test_duplicate_signature_is_deduped(self, tmp_path):
         scheduler = _make_scheduler(tmp_path)
         event = scheduler.config.events[0]

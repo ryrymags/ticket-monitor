@@ -321,6 +321,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "preferred_sections": [],
         "require_preferred_only": False,
         "alert_on_any_availability": True,
+        "event_ids": [],
     },
     "bingo_configs": [
         {
@@ -330,6 +331,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "preferred_sections": [],
             "require_preferred_only": False,
             "alert_on_any_availability": True,
+            "event_ids": [],
         }
     ],
     "browser": {
@@ -696,6 +698,9 @@ class TicketMonitorApp(ctk.CTk):
             ev = {"event_id": event_id, "name": name, "date": date, "url": url}
             self._events.append(ev)
             self._refresh_event_rows()
+            # Rebuild the BINGO cards (preserving unsaved edits) so their
+            # applies-to-events pickers include the new event.
+            self._render_bingo_config_cards(self._bingo_configs_from_widgets())
             self._save_config()
             dialog.destroy()
 
@@ -708,6 +713,9 @@ class TicketMonitorApp(ctk.CTk):
             if messagebox.askyesno("Remove Event", f"Remove '{name}'?", parent=self):
                 del self._events[idx]
                 self._refresh_event_rows()
+                # Rebuild the BINGO cards so their applies-to-events pickers drop
+                # the removed event (its id is kept as a stale scope, not widened).
+                self._render_bingo_config_cards(self._bingo_configs_from_widgets())
                 self._save_config()
 
     # ── Preferences Tab ───────────────────────────────────────────────────────
@@ -747,6 +755,7 @@ class TicketMonitorApp(ctk.CTk):
             "preferred_sections": [],
             "require_preferred_only": False,
             "alert_on_any_availability": True,
+            "event_ids": [],
         }
 
     def _configured_bingo_configs(self) -> list[dict[str, Any]]:
@@ -771,6 +780,14 @@ class TicketMonitorApp(ctk.CTk):
         else:
             sections = []
         merged["preferred_sections"] = sections
+        event_ids = merged.get("event_ids", [])
+        if isinstance(event_ids, str):
+            event_ids = [e.strip() for e in event_ids.split(",") if e.strip()]
+        elif isinstance(event_ids, list):
+            event_ids = [str(e).strip() for e in event_ids if str(e).strip()]
+        else:
+            event_ids = []
+        merged["event_ids"] = event_ids
         merged["name"] = str(merged.get("name", "")).strip() or f"BINGO {index + 1}"
         merged["min_tickets"] = max(1, int(merged.get("min_tickets", 1)))
         merged["max_price_per_ticket"] = max(25.0, min(750.0, float(merged.get("max_price_per_ticket", 500.0))))
@@ -845,6 +862,61 @@ class TicketMonitorApp(ctk.CTk):
         ).grid(row=8, column=0, columnspan=2, padx=18, pady=(0, 6), sticky="w")
         ctk.CTkEntry(card, textvariable=sections_var, placeholder_text="e.g. LOGE, FLOOR, PIT", width=300).grid(row=7, column=1, padx=12, pady=(12, 12), sticky="e")
 
+        _divider(card, row=9)
+
+        # ── Applies-to-events picker ─────────────────────────────────────────
+        # Scope this config to specific concerts. Empty event_ids = all events.
+        saved_event_ids = [str(e) for e in cfg.get("event_ids", [])]
+        known_ids = [str(ev.get("event_id", "")) for ev in self._events]
+        # Scopes pointing at removed events are preserved (not silently dropped),
+        # so deleting an event can never widen a config back to "all events".
+        stale_event_ids = [eid for eid in saved_event_ids if eid not in known_ids]
+
+        ctk.CTkLabel(card, text="Applies to events", anchor="w").grid(row=10, column=0, padx=18, pady=(12, 4), sticky="w")
+        ctk.CTkLabel(
+            card,
+            text="Which concerts this config watches. 'All events' also covers events you add later;\n"
+                 "untick it to watch specific nights only (e.g. a backup-tickets config for one show).",
+            text_color="gray55", font=ctk.CTkFont(size=11), anchor="w", justify="left",
+        ).grid(row=11, column=0, columnspan=2, padx=18, pady=(0, 6), sticky="w")
+
+        all_events_var = ctk.BooleanVar(value=not saved_event_ids)
+        events_frame = ctk.CTkFrame(card, fg_color="transparent")
+        events_frame.grid(row=12, column=0, columnspan=2, padx=18, pady=(0, 14), sticky="ew")
+
+        ctk.CTkCheckBox(
+            events_frame, text="All events", variable=all_events_var,
+            command=lambda i=index: self._on_all_events_toggle(i),
+        ).grid(row=0, column=0, pady=(0, 4), sticky="w")
+
+        event_vars: list[tuple[str, Any]] = []
+        event_checkboxes: list[Any] = []
+        if self._events:
+            for j, ev in enumerate(self._events):
+                eid = str(ev.get("event_id", ""))
+                label = str(ev.get("name", "")).strip() or eid or f"Event {j + 1}"
+                date = str(ev.get("date", "")).strip()
+                if date:
+                    label = f"{label}  —  {date}"
+                var = ctk.BooleanVar(value=eid in saved_event_ids)
+                box = ctk.CTkCheckBox(events_frame, text=label, variable=var)
+                box.grid(row=1 + j, column=0, padx=(24, 0), pady=2, sticky="w")
+                if all_events_var.get():
+                    box.configure(state="disabled")
+                event_vars.append((eid, var))
+                event_checkboxes.append(box)
+        else:
+            ctk.CTkLabel(
+                events_frame, text="No events yet — add one in the Events tab to scope this config.",
+                text_color="gray55", font=ctk.CTkFont(size=11), anchor="w",
+            ).grid(row=1, column=0, padx=(24, 0), pady=2, sticky="w")
+        if stale_event_ids:
+            ctk.CTkLabel(
+                events_frame,
+                text=f"⚠ Also scoped to {len(stale_event_ids)} removed event(s) — re-add them or tick 'All events' to clear.",
+                text_color=COLOR_ORANGE, font=ctk.CTkFont(size=11), anchor="w",
+            ).grid(row=1 + max(len(self._events), 1), column=0, padx=(24, 0), pady=(4, 0), sticky="w")
+
         self._bingo_config_widgets.append(
             {
                 "name_var": name_var,
@@ -853,6 +925,10 @@ class TicketMonitorApp(ctk.CTk):
                 "max_price_var": max_price_var,
                 "max_price_label": price_label,
                 "sections_var": sections_var,
+                "all_events_var": all_events_var,
+                "event_vars": event_vars,
+                "event_checkboxes": event_checkboxes,
+                "stale_event_ids": stale_event_ids,
             }
         )
 
@@ -865,6 +941,14 @@ class TicketMonitorApp(ctk.CTk):
         for i, widget in enumerate(self._bingo_config_widgets):
             sections_text = widget["sections_var"].get().strip()
             sections_list = [s.strip() for s in sections_text.split(",") if s.strip()]
+            if widget["all_events_var"].get():
+                event_ids: list[str] = []
+            else:
+                # Selected events plus any scopes to since-removed events; if the
+                # user unticked "All events" but selected nothing, [] falls back
+                # to all events (matching the stored empty-list semantics).
+                event_ids = [eid for eid, var in widget["event_vars"] if var.get() and eid]
+                event_ids.extend(widget["stale_event_ids"])
             configs.append(
                 {
                     "name": widget["name_var"].get().strip() or f"BINGO {i + 1}",
@@ -873,6 +957,7 @@ class TicketMonitorApp(ctk.CTk):
                     "preferred_sections": sections_list,
                     "require_preferred_only": False,
                     "alert_on_any_availability": non_bingo,
+                    "event_ids": event_ids,
                 }
             )
         return configs or [self._blank_bingo_config(0)]
@@ -897,6 +982,12 @@ class TicketMonitorApp(ctk.CTk):
 
     def _on_price_slider(self, index: int, value):
         self._bingo_config_widgets[index]["max_price_label"].configure(text=f"${int(value)}")
+
+    def _on_all_events_toggle(self, index: int):
+        widget = self._bingo_config_widgets[index]
+        state = "disabled" if widget["all_events_var"].get() else "normal"
+        for box in widget["event_checkboxes"]:
+            box.configure(state=state)
 
     # ── Notifications Tab ─────────────────────────────────────────────────────
 

@@ -16,6 +16,7 @@ from .config import EventConfig, MonitorConfig
 from .detector import Detector
 from .models import ProbeSignalType
 from .notifier import DiscordNotifier
+from .preferences import configs_for_event
 from .session_autofix import TicketmasterSessionAutoFixer
 from .state import MonitorState
 from .uptime import UptimeLedger
@@ -952,7 +953,7 @@ class MonitorScheduler:
                 if isinstance(result.raw_indicators, dict)
                 else None
             )
-            preferences = self._ticket_preferences()
+            preferences = self._ticket_preferences(event_id)
             match = DiscordNotifier._ticket_match_status(listing_groups, preferences=preferences)
             is_bingo = match.get("preview_status") == "BINGO"
 
@@ -1019,12 +1020,16 @@ class MonitorScheduler:
             # a new signature and starts its own episode on arrival.
             pass
 
-    def _ticket_preferences(self):
-        return getattr(
+    def _ticket_preferences(self, event_id: str | None = None):
+        preferences = getattr(
             self.config,
             "bingo_configs",
             getattr(self.config, "preferences", None),
         )
+        if event_id is None:
+            return preferences
+        # Configs may be scoped to specific events; unscoped configs apply to all.
+        return configs_for_event(preferences, event_id)
 
     def _start_mention_episode_if_needed(self, event_id: str, now: datetime):
         """Open a ping episode only when none exists for this listing signature.

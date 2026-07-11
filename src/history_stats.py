@@ -122,9 +122,14 @@ def count_bingo_in_history(history: list[dict[str, Any]], configs: list) -> dict
         listings = _entry_listings(entry)
         if not listings:
             continue
+        entry_event_id = str(entry.get("event_id", "") or "")
         matched_any = False
         for cfg in configs:
             name = (str(getattr(cfg, "name", "") or "").strip()) or "BINGO"
+            # Event-scoped configs only score sightings from their own events.
+            scoped = [str(e).strip().upper() for e in (getattr(cfg, "event_ids", None) or []) if str(e).strip()]
+            if scoped and entry_event_id.strip().upper() not in scoped:
+                continue
             try:
                 result = cfg.matches(listings)
             except Exception:

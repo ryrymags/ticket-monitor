@@ -21,6 +21,7 @@
   "bingo_configs": [
     {
       "alert_on_any_availability": true,
+      "event_ids": [],
       "max_price_per_ticket": 9999.0,
       "min_tickets": 1,
       "name": "BINGO",
@@ -92,6 +93,7 @@
   "ntfy_topics": [],
   "preferences": {
     "alert_on_any_availability": true,
+    "event_ids": [],
     "max_price_per_ticket": 9999.0,
     "min_tickets": 1,
     "name": "BINGO",

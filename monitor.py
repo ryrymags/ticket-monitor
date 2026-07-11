@@ -19,6 +19,7 @@ from importlib import metadata
 from src.browser_probe import BrowserProbe, BrowserProbeError
 from src.config import ConfigError, load_config
 from src.notifier import DiscordNotifier, NtfyNotifier
+from src.preferences import configs_for_event
 from src.scheduler import BROWSER_RESTART_REQUEST_FILE, MonitorScheduler
 from src.session_autofix import AutoFixCredentialError, TicketmasterSessionAutoFixer
 from src.state import MonitorState
@@ -403,7 +404,10 @@ def run_test_ticket_alert(config_path: str):
         price_summary="$123.45 - $234.56",
         section_summary="Section 101, Section 102",
         reason="manual_test",
-        preferences=getattr(config, "bingo_configs", getattr(config, "preferences", None)),
+        preferences=configs_for_event(
+            getattr(config, "bingo_configs", getattr(config, "preferences", None)),
+            getattr(event, "event_id", ""),
+        ),
     )
     if not sent:
         print("FAILED: Could not send synthetic ticket alert.")
@@ -466,7 +470,10 @@ def run_test_ticket_alert_matrix(config_path: str):
             listing_summary=sample["listing_summary"],
             listing_groups=sample["listing_groups"],
             mention=True,
-            preferences=getattr(config, "bingo_configs", getattr(config, "preferences", None)),
+            preferences=configs_for_event(
+                getattr(config, "bingo_configs", getattr(config, "preferences", None)),
+                getattr(event, "event_id", ""),
+            ),
         )
         if not sent:
             all_sent = False
