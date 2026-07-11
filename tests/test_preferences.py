@@ -185,3 +185,45 @@ def test_configs_for_event_handles_single_object_and_none():
     assert configs_for_event(single, "event-1") == [single]
     scoped = TicketPreferences(name="Elsewhere", event_ids=["event-9"])
     assert configs_for_event(scoped, "event-1") == []
+
+
+# ── Section-name aliasing (BAL325 ↔ BALCONY 325) ─────────────────────────────
+
+
+def test_canonical_section_key_maps_naming_variants():
+    from src.preferences import canonical_section_key
+
+    assert canonical_section_key("BALCONY 325") == canonical_section_key("BAL325")
+    assert canonical_section_key("Floor 1") == canonical_section_key("FLR1")
+    assert canonical_section_key("General Admission") == "GA"
+    assert canonical_section_key("LOGE 20") == canonical_section_key("loge20")
+    assert canonical_section_key("") == ""
+
+
+def test_dedupe_section_names_keeps_most_descriptive_variant():
+    from src.preferences import dedupe_section_names
+
+    names = ["BAL325", "BALCONY 325", "LOGE20", "loge20", "PIT"]
+    assert dedupe_section_names(names) == ["BALCONY 325", "loge20", "PIT"]
+
+
+def test_bingo_matches_across_naming_conventions():
+    group = {"section": "BALCONY 325", "row": "1", "price": 150.0, "count": 2}
+    prefs = TicketPreferences(
+        min_tickets=2, max_price_per_ticket=300.0, preferred_sections=["BAL325"]
+    )
+    assert prefs.matches([group])["bingo"] is True
+
+    # Reverse direction: long-form keyword, short-form listing.
+    prefs_long = TicketPreferences(
+        min_tickets=2, max_price_per_ticket=300.0, preferred_sections=["BALCONY 325"]
+    )
+    assert prefs_long.matches([{**group, "section": "BAL325"}])["bingo"] is True
+
+
+def test_plain_substring_matching_unchanged():
+    prefs = TicketPreferences(
+        min_tickets=2, max_price_per_ticket=300.0, preferred_sections=["LOGE"]
+    )
+    assert prefs.matches([_group(count=2, price=150.0, section="LOGE 5")])["bingo"] is True
+    assert prefs.matches([_group(count=2, price=150.0, section="FLOOR 1")])["bingo"] is False

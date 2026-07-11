@@ -31,7 +31,7 @@ from tkinter import messagebox, simpledialog
 
 from monitor import run_bootstrap_session
 from src.history_stats import count_bingo_in_history, count_recent_appearances, observed_sections
-from src.preferences import TicketPreferences
+from src.preferences import TicketPreferences, canonical_section_key, dedupe_section_names
 from src.state import summarize_check_stats
 from src.uptime import (
     current_status as uptime_current_status,
@@ -928,55 +928,44 @@ class TicketMonitorApp(ctk.CTk):
         ctk.CTkLabel(card, text="Preferred sections  (optional)", anchor="w").grid(row=7, column=0, padx=18, pady=(12, 4), sticky="w")
         ctk.CTkLabel(
             card,
-            text="Comma-separated section names, e.g. LOGE, FLOOR, PIT. Leave blank to accept any section.",
+            text="Search the sections detected at your event(s) and click to add. Naming variants are\n"
+                 "matched automatically (BAL325 and BALCONY 325 count as the same section).\n"
+                 "No sections added = any section can BINGO.",
             text_color="gray55", font=ctk.CTkFont(size=11), anchor="w", justify="left",
         ).grid(row=8, column=0, columnspan=2, padx=18, pady=(0, 6), sticky="w")
-        ctk.CTkEntry(card, textvariable=sections_var, placeholder_text="e.g. LOGE, FLOOR, PIT", width=300).grid(row=7, column=1, padx=12, pady=(12, 12), sticky="e")
 
-        # ── Detected sections picker ─────────────────────────────────────────
-        # Section names learned from the seat map / past sightings. Ticking a box
-        # adds the exact name to the text field above (which stays the source of
-        # truth); broad keywords typed manually still substring-match as before.
+        # ── Section picker: chips of current keywords + search-to-add ────────
+        # sections_var stays the source of truth (comma-separated keywords, as
+        # saved to YAML); the chips and search results are views over it.
         scope_ids = [str(e) for e in cfg.get("event_ids", [])] or [
             str(ev.get("event_id", "")) for ev in self._events
         ]
         known_map = getattr(self, "_known_sections_map", {}) or {}
-        picker_names: dict[str, str] = {}
+        candidates: list[str] = []
         # "" holds sections from legacy history entries recorded without an
-        # event_id — show those everywhere rather than dropping them.
+        # event_id — offer those everywhere rather than dropping them.
         for eid in scope_ids + [""]:
-            for name in known_map.get(eid, []):
-                picker_names.setdefault(name.upper(), name)
-        current_tokens = {t.strip().upper() for t in sections_var.get().split(",") if t.strip()}
+            candidates.extend(known_map.get(eid, []))
+        picker_names = dedupe_section_names(candidates)
 
-        section_boxes_frame = ctk.CTkFrame(card, fg_color="transparent")
-        section_boxes_frame.grid(row=9, column=0, columnspan=2, padx=18, pady=(0, 10), sticky="ew")
-        if picker_names:
-            ctk.CTkLabel(
-                section_boxes_frame,
-                text="Sections detected at your event(s) — tick to add:",
-                text_color="gray55", font=ctk.CTkFont(size=11), anchor="w",
-            ).grid(row=0, column=0, columnspan=3, pady=(0, 2), sticky="w")
-            shown = sorted(picker_names.values(), key=str.upper)[:60]
-            for j, name in enumerate(shown):
-                var = ctk.BooleanVar(value=name.upper() in current_tokens)
-                ctk.CTkCheckBox(
-                    section_boxes_frame, text=name, variable=var,
-                    font=ctk.CTkFont(size=11), checkbox_width=18, checkbox_height=18,
-                    command=lambda i=index, n=name, v=var: self._toggle_section_keyword(i, n, v),
-                ).grid(row=1 + j // 3, column=j % 3, padx=(0, 14), pady=2, sticky="w")
-            if len(picker_names) > 60:
-                ctk.CTkLabel(
-                    section_boxes_frame, text=f"…and {len(picker_names) - 60} more (type them above)",
-                    text_color="gray55", font=ctk.CTkFont(size=11), anchor="w",
-                ).grid(row=1 + (len(shown) + 2) // 3, column=0, columnspan=3, sticky="w")
-        else:
-            ctk.CTkLabel(
-                section_boxes_frame,
-                text="No sections detected yet — press 🔍 Auto-detect Sections above, or let the monitor\n"
-                     "run (it learns section names automatically as it checks your events).",
-                text_color="gray55", font=ctk.CTkFont(size=11), anchor="w", justify="left",
-            ).grid(row=0, column=0, sticky="w")
+        picker = ctk.CTkFrame(card, fg_color="transparent")
+        picker.grid(row=9, column=0, columnspan=2, padx=18, pady=(0, 10), sticky="ew")
+        picker.grid_columnconfigure(0, weight=1)
+
+        chips_frame = ctk.CTkFrame(picker, fg_color="transparent")
+        chips_frame.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+
+        search_var = ctk.StringVar()
+        search_entry = ctk.CTkEntry(
+            picker, textvariable=search_var, width=320,
+            placeholder_text="🔍  Type to search sections (e.g. LOGE)…",
+        )
+        search_entry.grid(row=1, column=0, sticky="w")
+        search_entry.bind("<Return>", lambda _e, i=index: self._add_section_from_search(i))
+        search_var.trace_add("write", lambda *_a, i=index: self._update_section_results(i))
+
+        results_frame = ctk.CTkFrame(picker, fg_color="transparent")
+        results_frame.grid(row=2, column=0, sticky="ew", pady=(4, 0))
 
         _divider(card, row=10)
 
@@ -1041,12 +1030,18 @@ class TicketMonitorApp(ctk.CTk):
                 "max_price_var": max_price_var,
                 "max_price_label": price_label,
                 "sections_var": sections_var,
+                "search_var": search_var,
+                "chips_frame": chips_frame,
+                "results_frame": results_frame,
+                "picker_names": picker_names,
                 "all_events_var": all_events_var,
                 "event_vars": event_vars,
                 "event_checkboxes": event_checkboxes,
                 "stale_event_ids": stale_event_ids,
             }
         )
+        self._render_section_chips(index)
+        self._update_section_results(index)
 
     def _bingo_configs_from_widgets(self) -> list[dict[str, Any]]:
         # Non-BINGO alerts are governed by a single global switch (alerts.non_bingo_enabled),
@@ -1099,16 +1094,107 @@ class TicketMonitorApp(ctk.CTk):
     def _on_price_slider(self, index: int, value):
         self._bingo_config_widgets[index]["max_price_label"].configure(text=f"${int(value)}")
 
-    def _toggle_section_keyword(self, index: int, name: str, var):
-        """Sync a detected-section checkbox into the free-text sections field."""
+    # ── Section picker (chips + search) ──────────────────────────────────────
+
+    def _section_tokens(self, index: int) -> list[str]:
+        var = self._bingo_config_widgets[index]["sections_var"]
+        return [t.strip() for t in var.get().split(",") if t.strip()]
+
+    def _set_section_tokens(self, index: int, tokens: list[str]):
+        self._bingo_config_widgets[index]["sections_var"].set(", ".join(tokens))
+        self._render_section_chips(index)
+        self._update_section_results(index)
+
+    def _add_section_token(self, index: int, name: str):
+        tokens = self._section_tokens(index)
+        key = canonical_section_key(name)
+        # Alias-aware dupe check: adding "BAL325" when "BALCONY 325" is present is a no-op.
+        if key and not any(canonical_section_key(t) == key for t in tokens):
+            tokens.append(name)
+            self._set_section_tokens(index, tokens)
+
+    def _remove_section_token(self, index: int, name: str):
+        self._set_section_tokens(index, [t for t in self._section_tokens(index) if t != name])
+
+    def _matching_sections(self, index: int, query: str) -> list[str]:
         widget = self._bingo_config_widgets[index]
-        tokens = [t.strip() for t in widget["sections_var"].get().split(",") if t.strip()]
-        if var.get():
-            if not any(t.upper() == name.upper() for t in tokens):
-                tokens.append(name)
-        else:
-            tokens = [t for t in tokens if t.upper() != name.upper()]
-        widget["sections_var"].set(", ".join(tokens))
+        query_key = canonical_section_key(query)
+        if not query_key:
+            return []
+        added = {canonical_section_key(t) for t in self._section_tokens(index)}
+        return [
+            name for name in widget["picker_names"]
+            if query_key in canonical_section_key(name)
+            and canonical_section_key(name) not in added
+        ]
+
+    def _add_section_from_search(self, index: int):
+        """Enter in the search box: add the single match, or the raw text as a keyword."""
+        widget = self._bingo_config_widgets[index]
+        query = widget["search_var"].get().strip()
+        if not query:
+            return
+        matches = self._matching_sections(index, query)
+        self._add_section_token(index, matches[0] if len(matches) == 1 else query)
+        widget["search_var"].set("")
+
+    def _render_section_chips(self, index: int):
+        widget = self._bingo_config_widgets[index]
+        frame = widget["chips_frame"]
+        for child in frame.winfo_children():
+            child.destroy()
+        tokens = self._section_tokens(index)
+        if not tokens:
+            ctk.CTkLabel(
+                frame, text="No preferred sections yet — any section can BINGO.",
+                text_color="gray55", font=ctk.CTkFont(size=11), anchor="w",
+            ).grid(row=0, column=0, sticky="w")
+            return
+        ctk.CTkLabel(
+            frame, text="Watching:", text_color="gray55",
+            font=ctk.CTkFont(size=11), anchor="w",
+        ).grid(row=0, column=0, padx=(0, 8), sticky="w")
+        for j, token in enumerate(tokens):
+            ctk.CTkButton(
+                frame, text=f"{token}  ✕", height=24, width=10,
+                fg_color=COLOR_GRAY, font=ctk.CTkFont(size=11),
+                command=lambda i=index, t=token: self._remove_section_token(i, t),
+            ).grid(row=j // 4, column=1 + j % 4, padx=(0, 6), pady=2, sticky="w")
+
+    def _update_section_results(self, index: int):
+        if index >= len(self._bingo_config_widgets):
+            return  # trace fired while the card is still being built
+        widget = self._bingo_config_widgets[index]
+        frame = widget["results_frame"]
+        for child in frame.winfo_children():
+            child.destroy()
+        query = widget["search_var"].get().strip()
+        if not query:
+            if widget["picker_names"]:
+                hint = f"{len(widget['picker_names'])} section(s) detected at your event(s) — type above to search."
+            else:
+                hint = (
+                    "No sections detected yet — press 🔍 Auto-detect Sections above, or let the monitor\n"
+                    "run (it learns section names automatically). You can still type a name and press Enter."
+                )
+            ctk.CTkLabel(
+                frame, text=hint, text_color="gray55",
+                font=ctk.CTkFont(size=11), anchor="w", justify="left",
+            ).grid(row=0, column=0, columnspan=4, sticky="w")
+            return
+        matches = self._matching_sections(index, query)[:8]
+        for j, name in enumerate(matches):
+            ctk.CTkButton(
+                frame, text=f"＋ {name}", height=24, width=10,
+                fg_color=COLOR_BLUE, font=ctk.CTkFont(size=11),
+                command=lambda i=index, n=name: self._add_section_token(i, n),
+            ).grid(row=j // 4, column=j % 4, padx=(0, 6), pady=2, sticky="w")
+        if not matches:
+            ctk.CTkButton(
+                frame, text=f'＋ Add "{query}" anyway', height=24, width=10,
+                fg_color=COLOR_GRAY, font=ctk.CTkFont(size=11),
+                command=lambda i=index, n=query: self._add_section_token(i, n),
+            ).grid(row=0, column=0, pady=2, sticky="w")
 
     def _on_all_events_toggle(self, index: int):
         widget = self._bingo_config_widgets[index]

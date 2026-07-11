@@ -17,8 +17,72 @@ Secondary (orange) alerts:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
+
+# Ticketmaster names the same section differently across payloads (the seat-map
+# geometry says "BALCONY 325", the listing feed says "BAL325"). Canonicalize the
+# leading word so either convention matches the other.
+_SECTION_PREFIX_ALIASES = {
+    "BALCONY": "BAL",
+    "BALC": "BAL",
+    "MEZZANINE": "MEZZ",
+    "MEZ": "MEZZ",
+    "ORCHESTRA": "ORCH",
+    "ORC": "ORCH",
+    "FLOOR": "FLR",
+    "SECTION": "SEC",
+    "SECT": "SEC",
+    "GENERALADMISSION": "GA",
+    "LOWER": "LWR",
+    "UPPER": "UPR",
+}
+
+
+def canonical_section_key(name: str) -> str:
+    """Normalize a section name so naming variants compare equal.
+
+    Uppercases, strips spaces/punctuation, and maps known long-form prefixes to
+    their listing-feed abbreviations: "BALCONY 325" and "BAL325" → "BAL325".
+    """
+    s = re.sub(r"[^A-Z0-9]", "", str(name).upper())
+    m = re.match(r"([A-Z]+)(.*)", s)
+    if m:
+        prefix, rest = m.groups()
+        s = _SECTION_PREFIX_ALIASES.get(prefix, prefix) + rest
+    return s
+
+
+def dedupe_section_names(names: list[str]) -> list[str]:
+    """Collapse naming variants of the same section into one display name.
+
+    Groups by canonical key and keeps the most descriptive (longest) variant,
+    so ["BAL325", "BALCONY 325"] → ["BALCONY 325"]. Sorted by canonical key.
+    """
+    groups: dict[str, str] = {}
+    for name in names or []:
+        name = str(name).strip()
+        key = canonical_section_key(name)
+        if not key:
+            continue
+        current = groups.get(key)
+        if current is None or (len(name), name) > (len(current), current):
+            groups[key] = name
+    return [groups[k] for k in sorted(groups)]
+
+
+def _keyword_hits_section(keyword_upper: str, section_upper: str) -> bool:
+    """Substring match, tried in both raw and canonical form.
+
+    Raw substring preserves the historical behavior ("LOGE" matches "LOGE 5");
+    the canonical pass makes cross-convention keywords work ("BAL325" matches
+    "BALCONY 325" and vice versa).
+    """
+    if keyword_upper in section_upper:
+        return True
+    key = canonical_section_key(keyword_upper)
+    return bool(key) and key in canonical_section_key(section_upper)
 
 
 @dataclass
@@ -107,7 +171,7 @@ class TicketPreferences:
             if count < min_tix or price > max_price:
                 continue
 
-            in_pref = bool(keywords and any(kw in section for kw in keywords))
+            in_pref = bool(keywords and any(_keyword_hits_section(kw, section) for kw in keywords))
             if not keywords or in_pref:
                 # No section filter → BINGO on count+price alone
                 # OR section filter AND this listing is in a preferred section
