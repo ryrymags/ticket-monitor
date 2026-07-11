@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `(pending)`  2026-07-11 18:19  Section picker polish: sub-scroller, scan result counts, drop 1-char artifacts
+- `(pending)`  2026-07-11 18:28  Recover seat-map sections served from browser cache (Night 2 = 0 sections bug)
+
+- `0914c06`  2026-07-11 18:19  Section picker polish: sub-scroller, scan result counts, drop 1-char artifacts
 
 - `de90f5a`  2026-07-11 18:08  Learn abbreviation pairs (CLB/CLUB) + browsable section list by family
 

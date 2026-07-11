@@ -223,6 +223,11 @@ class BrowserProbe:
         self._single_event_page_event_id: str | None = None
         self._health_page: Any | None = None
         self._last_warmup_at: dict[str, float] = {}
+        # Seat-map sections by geometry URL, remembered for the probe's lifetime.
+        # A map served from the browser's memory cache (second event at the same
+        # venue, same tab session) emits NO network event, so per-check capture
+        # alone would silently miss it — see _merge_cached_map_sections.
+        self._map_sections_by_url: dict[str, set[str]] = {}
         self._cdp_connected = False
         self._started = False
 
@@ -694,6 +699,7 @@ class BrowserProbe:
             # Jittered settle + occasional light scroll — avoids a robotic fixed rhythm.
             page.wait_for_timeout(self._event_dwell_timeout_ms())
             self._human_jitter(page)
+            self._merge_cached_map_sections(page, network_snapshot)
             html = page.content()
             html_lower = html.lower()
             body_text = self._safe_inner_text(page, "body")
@@ -1045,6 +1051,9 @@ class BrowserProbe:
                         len(found),
                         response.url[:120],
                     )
+                # Remember by URL (even when empty) so cache-served repeats of
+                # this map can be recognized without a network event.
+                self._map_sections_by_url[str(response.url)] = set(found)
                 snapshot.venue_sections.update(found)
                 return
             count, signals, prices, sections, listing_groups, sources = self._extract_network_snapshot(data)
@@ -1057,6 +1066,57 @@ class BrowserProbe:
         except Exception:
             # Network event parsing is best-effort.
             return
+
+    def _merge_cached_map_sections(self, page: Any, snapshot: _NetworkSnapshot):
+        """Recover seat-map sections the network listener can't see.
+
+        When the browser serves the geometry from its memory cache (typical for
+        a second event at the same venue within one session) no response event
+        fires. The page's Performance API still lists the resource, so: find map
+        URLs the document actually used, reuse sections captured earlier in this
+        session for the same URL, and as a fallback re-read the payload with an
+        in-page fetch — which the browser answers from cache, no new traffic in
+        the common case. Best-effort throughout.
+        """
+        try:
+            urls = page.evaluate(
+                "() => performance.getEntriesByType('resource').map(e => e.name)"
+            )
+        except Exception:
+            return
+        fetches = 0
+        for url in urls or []:
+            url = str(url)
+            if not any(key in url.lower() for key in self.MAP_KEYWORDS):
+                continue
+            cached = self._map_sections_by_url.get(url)
+            if cached is not None:
+                snapshot.venue_sections.update(cached)
+                continue
+            if fetches >= 2:
+                continue
+            fetches += 1
+            try:
+                data = page.evaluate(
+                    "u => Promise.race(["
+                    "fetch(u).then(r => r.ok ? r.json() : null).catch(() => null),"
+                    "new Promise(res => setTimeout(() => res(null), 5000))"
+                    "])",
+                    url,
+                )
+            except Exception:
+                continue
+            if data is None:
+                continue
+            found = self._extract_venue_sections(data)
+            self._map_sections_by_url[url] = set(found)
+            if found:
+                logger.debug(
+                    "recovered %d venue section name(s) from cached map %s",
+                    len(found),
+                    url[:120],
+                )
+            snapshot.venue_sections.update(found)
 
     @staticmethod
     def _extract_venue_sections(payload: Any) -> set[str]:

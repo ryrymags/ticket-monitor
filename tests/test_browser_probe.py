@@ -1257,3 +1257,59 @@ class TestVenueSectionCapture:
         probe._capture_response(response, snapshot)
         assert snapshot.venue_sections == set()
         assert "LOGE20" in snapshot.sections
+
+
+class _StubMapPage:
+    """Page stub for the cached-map recovery path."""
+
+    def __init__(self, resource_urls, fetch_payloads=None):
+        self._urls = resource_urls
+        self._payloads = fetch_payloads or {}
+        self.fetch_calls = []
+
+    def evaluate(self, script, arg=None):
+        if "performance" in script:
+            return self._urls
+        self.fetch_calls.append(arg)
+        return self._payloads.get(arg)
+
+
+class TestCachedMapRecovery:
+    @staticmethod
+    def _snapshot():
+        return TestVenueSectionCapture._snapshot()
+
+    def test_same_url_reused_from_probe_cache_without_fetch(self):
+        probe = TestVenueSectionCapture._probe()
+        url = "https://mapsapi.tmol.io/maps/geometry/3/event/night1"
+        probe._map_sections_by_url[url] = {"LOGE20", "BAL301"}
+        page = _StubMapPage([url, "https://tm.com/app.js"])
+        snapshot = self._snapshot()
+
+        probe._merge_cached_map_sections(page, snapshot)
+
+        assert snapshot.venue_sections == {"LOGE20", "BAL301"}
+        assert page.fetch_calls == []  # cache hit — no in-page fetch
+
+    def test_unseen_map_url_recovered_via_in_page_fetch(self):
+        probe = TestVenueSectionCapture._probe()
+        url = "https://mapsapi.tmol.io/maps/geometry/3/event/night2"
+        payload = {"segments": [{"name": "CLB204"}, {"name": "CLB205"}]}
+        page = _StubMapPage([url], {url: payload})
+        snapshot = self._snapshot()
+
+        probe._merge_cached_map_sections(page, snapshot)
+
+        assert snapshot.venue_sections == {"CLB204", "CLB205"}
+        assert page.fetch_calls == [url]
+        # Remembered for next time — a later check reuses without fetching.
+        assert probe._map_sections_by_url[url] == {"CLB204", "CLB205"}
+
+    def test_failed_fetch_and_non_map_urls_are_ignored(self):
+        probe = TestVenueSectionCapture._probe()
+        page = _StubMapPage(
+            ["https://mapsapi.tmol.io/maps/geometry/3/event/x", "https://tm.com/img.png"]
+        )  # fetch returns None
+        snapshot = self._snapshot()
+        probe._merge_cached_map_sections(page, snapshot)
+        assert snapshot.venue_sections == set()
