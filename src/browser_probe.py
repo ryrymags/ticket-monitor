@@ -110,6 +110,10 @@ class _NetworkSnapshot:
     # JSON paths whose keys drove availability_count — diagnostic only, so a
     # false-positive "available" can be traced to the exact payload field.
     availability_sources: set[str] = field(default_factory=set)
+    # Section names harvested from the seat-map geometry the page fetches on its
+    # own (mapsapi). These describe the VENUE layout — kept strictly separate from
+    # `sections` (availability payloads) so map data can never look like tickets.
+    venue_sections: set[str] = field(default_factory=set)
 
 
 class BrowserProbe:
@@ -165,6 +169,15 @@ class BrowserProbe:
         "availability",
         "facets",
         "resale",
+    )
+    # Seat-map geometry endpoints the event page fetches on its own (we never
+    # request these ourselves — passive capture only). They enumerate every
+    # section name at the venue, even when the event is sold out.
+    MAP_KEYWORDS = (
+        "mapsapi",
+        "geometry",
+        "seatmap",
+        "placemap",
     )
 
     def __init__(
@@ -731,6 +744,7 @@ class BrowserProbe:
                     "availability_sources": sorted(network_snapshot.availability_sources)[:8],
                     "challenge_pattern": challenge_pattern,
                     "listing_groups": self._listing_groups_debug(network_snapshot.listing_groups),
+                    "venue_sections": sorted(network_snapshot.venue_sections),
                     "page_title": page_title,
                     "retry_after_seconds": retry_after_seconds,
                     "abck_present": abck["abck_present"],
@@ -1011,7 +1025,8 @@ class BrowserProbe:
     def _capture_response(self, response, snapshot: _NetworkSnapshot):
         try:
             url = response.url.lower()
-            if not any(key in url for key in self.NETWORK_KEYWORDS):
+            is_map = any(key in url for key in self.MAP_KEYWORDS)
+            if not is_map and not any(key in url for key in self.NETWORK_KEYWORDS):
                 return
 
             content_type = (response.headers.get("content-type") or "").lower()
@@ -1019,6 +1034,19 @@ class BrowserProbe:
                 return
 
             data = response.json()
+            if is_map:
+                # Map geometry describes the venue, not inventory: harvest the
+                # section names and bail before the availability extractor so
+                # a seat map can never register as available tickets.
+                found = self._extract_venue_sections(data)
+                if found:
+                    logger.debug(
+                        "captured %d venue section name(s) from map payload %s",
+                        len(found),
+                        response.url[:120],
+                    )
+                snapshot.venue_sections.update(found)
+                return
             count, signals, prices, sections, listing_groups, sources = self._extract_network_snapshot(data)
             snapshot.availability_count += count
             snapshot.availability_sources.update(sources)
@@ -1029,6 +1057,44 @@ class BrowserProbe:
         except Exception:
             # Network event parsing is best-effort.
             return
+
+    @staticmethod
+    def _extract_venue_sections(payload: Any) -> set[str]:
+        """Harvest section names from a seat-map geometry payload.
+
+        Geometry JSON nests venue segments (sections) → rows → seats, all with
+        ``name`` fields, so a bare name-grab would also pull in row/seat labels.
+        Heuristics: take explicit section keys anywhere; take ``name`` only under
+        a section/segment ancestor, skipping purely-numeric values (rows/seats)
+        and absurd lengths. Capped so a pathological payload can't balloon state.
+        """
+        sections: set[str] = set()
+
+        def walk(node: Any, path: tuple[str, ...]):
+            if len(sections) >= 300:
+                return
+            if isinstance(node, dict):
+                for k, v in node.items():
+                    lower_key = str(k).lower()
+                    if lower_key in {"section", "sectionname"} and isinstance(v, str):
+                        name = v.strip()
+                        if name:
+                            sections.add(name)
+                    elif (
+                        lower_key == "name"
+                        and isinstance(v, str)
+                        and any("section" in p or "segment" in p for p in path)
+                    ):
+                        name = v.strip()
+                        if name and not name.isdigit() and 2 <= len(name) <= 40:
+                            sections.add(name)
+                    walk(v, path + (lower_key,))
+            elif isinstance(node, list):
+                for item in node:
+                    walk(item, path)
+
+        walk(payload, ())
+        return sections
 
     def _extract_network_snapshot(
         self,

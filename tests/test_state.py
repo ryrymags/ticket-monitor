@@ -367,3 +367,23 @@ class TestTransactionBatching:
 
         assert len(writes) == 1
         assert MonitorState(state_file=state.state_file).get_in_outage_state("e1") is True
+
+
+class TestKnownSections:
+    def test_merge_dedupes_case_insensitively_and_sorts(self, tmp_path):
+        state = MonitorState(state_file=str(tmp_path / "state.json"))
+        assert state.merge_known_sections("ev1", ["LOGE20", "Floor1"]) is True
+        # Same names (any casing) are a no-op; new one merges in.
+        assert state.merge_known_sections("ev1", ["loge20", "FLOOR1"]) is False
+        assert state.merge_known_sections("ev1", ["PIT"]) is True
+        assert state.get_known_sections("ev1") == ["Floor1", "LOGE20", "PIT"]
+
+    def test_sections_survive_reload(self, tmp_path):
+        path = str(tmp_path / "state.json")
+        MonitorState(state_file=path).merge_known_sections("ev1", ["LOGE20"])
+        assert MonitorState(state_file=path).get_known_sections("ev1") == ["LOGE20"]
+
+    def test_empty_and_blank_names_ignored(self, tmp_path):
+        state = MonitorState(state_file=str(tmp_path / "state.json"))
+        assert state.merge_known_sections("ev1", ["", "  ", None]) is False
+        assert state.get_known_sections("ev1") == []

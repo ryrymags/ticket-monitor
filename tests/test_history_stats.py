@@ -187,3 +187,17 @@ def test_count_recent_appearances_collapses_repeats():
     }
     history = [dict(entry), dict(entry), dict(entry)]  # 3 repeat detections → 1
     assert count_recent_appearances(history, now, hours=48) == {"total": 1, "bingo": 1}
+
+
+def test_observed_sections_groups_by_event_and_dedupes():
+    from src.history_stats import observed_sections
+
+    history = [
+        {"event_id": "ev1", "listings": [{"section": "LOGE20", "price": 1, "count": 1}]},
+        {"event_id": "ev1", "listings": [{"section": "loge20"}, {"section": "FLOOR1"}]},
+        {"event_id": "ev2", "listings": [{"section": "PIT"}]},
+        {"event_id": "ev1", "listings": [{"section": "?"}]},  # unknown placeholder skipped
+    ]
+    res = observed_sections(history)
+    assert res["ev1"] == ["FLOOR1", "LOGE20"]
+    assert res["ev2"] == ["PIT"]

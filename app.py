@@ -30,7 +30,7 @@ import tkinter as tk
 from tkinter import messagebox, simpledialog
 
 from monitor import run_bootstrap_session
-from src.history_stats import count_bingo_in_history, count_recent_appearances
+from src.history_stats import count_bingo_in_history, count_recent_appearances, observed_sections
 from src.preferences import TicketPreferences
 from src.state import summarize_check_stats
 from src.uptime import (
@@ -741,11 +741,80 @@ class TicketMonitorApp(ctk.CTk):
         self._bingo_config_widgets: list[dict[str, Any]] = []
 
         btn_row = ctk.CTkFrame(frame, fg_color="transparent")
-        btn_row.grid(row=3, column=0, padx=20, pady=(0, 14), sticky="w")
+        btn_row.grid(row=3, column=0, padx=20, pady=(0, 4), sticky="w")
         ctk.CTkButton(btn_row, text="＋  Add BINGO Config", command=self._add_bingo_config, fg_color=COLOR_GRAY).pack(side="left", padx=(0, 10))
-        ctk.CTkButton(btn_row, text="💾  Save Preferences", command=self._save_config, fg_color=COLOR_BLUE).pack(side="left")
+        ctk.CTkButton(btn_row, text="💾  Save Preferences", command=self._save_config, fg_color=COLOR_BLUE).pack(side="left", padx=(0, 10))
+        ctk.CTkButton(btn_row, text="🔍  Auto-detect Sections", command=self._detect_sections, fg_color=COLOR_GRAY).pack(side="left")
+
+        self._detect_sections_status = ctk.CTkLabel(frame, text="", font=ctk.CTkFont(size=11), text_color="gray55", justify="left")
+        self._detect_sections_status.grid(row=4, column=0, padx=20, pady=(0, 10), sticky="w")
 
         self._render_bingo_config_cards(self._configured_bingo_configs())
+
+    def _known_sections_by_event(self) -> dict[str, list[str]]:
+        """Section names learned per event: seat-map capture (state.json) merged
+        with sections seen in past sightings (ticket_history.json)."""
+        merged: dict[str, dict[str, str]] = {}
+        try:
+            if os.path.exists(STATE_FILE):
+                with open(STATE_FILE, "r", encoding="utf-8") as f:
+                    state = json.load(f)
+                for eid, bucket in (state.get("events") or {}).items():
+                    names = bucket.get("known_sections") if isinstance(bucket, dict) else None
+                    for name in names or []:
+                        name = str(name).strip()
+                        if name:
+                            merged.setdefault(str(eid), {}).setdefault(name.upper(), name)
+        except Exception:
+            pass
+        for eid, names in observed_sections(self._load_history()).items():
+            for name in names:
+                merged.setdefault(eid, {}).setdefault(name.upper(), name)
+        return {eid: sorted(b.values(), key=str.upper) for eid, b in merged.items()}
+
+    def _detect_sections(self):
+        """Auto-detect section names for the pickers. Running monitor = passive
+        collection already happening, so just refresh; otherwise run a one-off
+        scan via monitor.py --detect-sections (single-instance lock keeps the
+        two from ever fighting over the Chrome profile)."""
+        if self._monitor_running_state():
+            self._render_bingo_config_cards(self._bingo_configs_from_widgets())
+            self._detect_sections_status.configure(
+                text="✅  Refreshed. The running monitor learns sections automatically on every check —\n"
+                     "new ones appear here after it visits each event page.",
+                text_color=COLOR_GREEN,
+            )
+            return
+        self._detect_sections_status.configure(
+            text="Scanning your events for section names (opens the monitor browser briefly)...",
+            text_color="gray55",
+        )
+        self.update()
+
+        def run():
+            try:
+                result = subprocess.run(
+                    [python_exe(), "monitor.py", "--detect-sections", "--config", CONFIG_FILE],
+                    capture_output=True, text=True, timeout=300,
+                    cwd=os.path.dirname(os.path.abspath(__file__)),
+                )
+                ok = result.returncode == 0
+                if ok:
+                    msg = "✅  Scan complete — tick the sections you want in each config below."
+                else:
+                    msg = f"❌  Scan failed:\n{(result.stdout + result.stderr)[-300:]}"
+            except Exception as exc:
+                ok = False
+                msg = f"❌  Error: {exc}"
+
+            def apply(m=msg, o=ok):
+                self._detect_sections_status.configure(text=m, text_color=COLOR_GREEN if o else COLOR_RED)
+                self._render_bingo_config_cards(self._bingo_configs_from_widgets())
+
+            # Tk is not thread-safe — marshal UI updates to the main loop.
+            self.after(0, apply)
+
+        threading.Thread(target=run, daemon=True).start()
 
     def _blank_bingo_config(self, index: int) -> dict[str, Any]:
         return {
@@ -799,6 +868,8 @@ class TicketMonitorApp(ctk.CTk):
         for child in self._bingo_cards_frame.winfo_children():
             child.destroy()
         self._bingo_config_widgets = []
+        # One state/history read per render, shared by every card's picker.
+        self._known_sections_map = self._known_sections_by_event()
         for i, cfg in enumerate(configs):
             self._build_bingo_config_card(i, cfg, len(configs) > 1)
 
@@ -862,7 +933,52 @@ class TicketMonitorApp(ctk.CTk):
         ).grid(row=8, column=0, columnspan=2, padx=18, pady=(0, 6), sticky="w")
         ctk.CTkEntry(card, textvariable=sections_var, placeholder_text="e.g. LOGE, FLOOR, PIT", width=300).grid(row=7, column=1, padx=12, pady=(12, 12), sticky="e")
 
-        _divider(card, row=9)
+        # ── Detected sections picker ─────────────────────────────────────────
+        # Section names learned from the seat map / past sightings. Ticking a box
+        # adds the exact name to the text field above (which stays the source of
+        # truth); broad keywords typed manually still substring-match as before.
+        scope_ids = [str(e) for e in cfg.get("event_ids", [])] or [
+            str(ev.get("event_id", "")) for ev in self._events
+        ]
+        known_map = getattr(self, "_known_sections_map", {}) or {}
+        picker_names: dict[str, str] = {}
+        # "" holds sections from legacy history entries recorded without an
+        # event_id — show those everywhere rather than dropping them.
+        for eid in scope_ids + [""]:
+            for name in known_map.get(eid, []):
+                picker_names.setdefault(name.upper(), name)
+        current_tokens = {t.strip().upper() for t in sections_var.get().split(",") if t.strip()}
+
+        section_boxes_frame = ctk.CTkFrame(card, fg_color="transparent")
+        section_boxes_frame.grid(row=9, column=0, columnspan=2, padx=18, pady=(0, 10), sticky="ew")
+        if picker_names:
+            ctk.CTkLabel(
+                section_boxes_frame,
+                text="Sections detected at your event(s) — tick to add:",
+                text_color="gray55", font=ctk.CTkFont(size=11), anchor="w",
+            ).grid(row=0, column=0, columnspan=3, pady=(0, 2), sticky="w")
+            shown = sorted(picker_names.values(), key=str.upper)[:60]
+            for j, name in enumerate(shown):
+                var = ctk.BooleanVar(value=name.upper() in current_tokens)
+                ctk.CTkCheckBox(
+                    section_boxes_frame, text=name, variable=var,
+                    font=ctk.CTkFont(size=11), checkbox_width=18, checkbox_height=18,
+                    command=lambda i=index, n=name, v=var: self._toggle_section_keyword(i, n, v),
+                ).grid(row=1 + j // 3, column=j % 3, padx=(0, 14), pady=2, sticky="w")
+            if len(picker_names) > 60:
+                ctk.CTkLabel(
+                    section_boxes_frame, text=f"…and {len(picker_names) - 60} more (type them above)",
+                    text_color="gray55", font=ctk.CTkFont(size=11), anchor="w",
+                ).grid(row=1 + (len(shown) + 2) // 3, column=0, columnspan=3, sticky="w")
+        else:
+            ctk.CTkLabel(
+                section_boxes_frame,
+                text="No sections detected yet — press 🔍 Auto-detect Sections above, or let the monitor\n"
+                     "run (it learns section names automatically as it checks your events).",
+                text_color="gray55", font=ctk.CTkFont(size=11), anchor="w", justify="left",
+            ).grid(row=0, column=0, sticky="w")
+
+        _divider(card, row=10)
 
         # ── Applies-to-events picker ─────────────────────────────────────────
         # Scope this config to specific concerts. Empty event_ids = all events.
@@ -872,17 +988,17 @@ class TicketMonitorApp(ctk.CTk):
         # so deleting an event can never widen a config back to "all events".
         stale_event_ids = [eid for eid in saved_event_ids if eid not in known_ids]
 
-        ctk.CTkLabel(card, text="Applies to events", anchor="w").grid(row=10, column=0, padx=18, pady=(12, 4), sticky="w")
+        ctk.CTkLabel(card, text="Applies to events", anchor="w").grid(row=11, column=0, padx=18, pady=(12, 4), sticky="w")
         ctk.CTkLabel(
             card,
             text="Which concerts this config watches. 'All events' also covers events you add later;\n"
                  "untick it to watch specific nights only (e.g. a backup-tickets config for one show).",
             text_color="gray55", font=ctk.CTkFont(size=11), anchor="w", justify="left",
-        ).grid(row=11, column=0, columnspan=2, padx=18, pady=(0, 6), sticky="w")
+        ).grid(row=12, column=0, columnspan=2, padx=18, pady=(0, 6), sticky="w")
 
         all_events_var = ctk.BooleanVar(value=not saved_event_ids)
         events_frame = ctk.CTkFrame(card, fg_color="transparent")
-        events_frame.grid(row=12, column=0, columnspan=2, padx=18, pady=(0, 14), sticky="ew")
+        events_frame.grid(row=13, column=0, columnspan=2, padx=18, pady=(0, 14), sticky="ew")
 
         ctk.CTkCheckBox(
             events_frame, text="All events", variable=all_events_var,
@@ -982,6 +1098,17 @@ class TicketMonitorApp(ctk.CTk):
 
     def _on_price_slider(self, index: int, value):
         self._bingo_config_widgets[index]["max_price_label"].configure(text=f"${int(value)}")
+
+    def _toggle_section_keyword(self, index: int, name: str, var):
+        """Sync a detected-section checkbox into the free-text sections field."""
+        widget = self._bingo_config_widgets[index]
+        tokens = [t.strip() for t in widget["sections_var"].get().split(",") if t.strip()]
+        if var.get():
+            if not any(t.upper() == name.upper() for t in tokens):
+                tokens.append(name)
+        else:
+            tokens = [t for t in tokens if t.upper() != name.upper()]
+        widget["sections_var"].set(", ".join(tokens))
 
     def _on_all_events_toggle(self, index: int):
         widget = self._bingo_config_widgets[index]

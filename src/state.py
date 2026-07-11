@@ -207,6 +207,33 @@ class MonitorState:
         self._event(event_id)["last_check"] = _dt_to_iso(datetime.now(timezone.utc))
         self.save()
 
+    # ---- Known venue sections (learned from seat-map/listing payloads) ----
+
+    def get_known_sections(self, event_id: str) -> list[str]:
+        sections = self._event(event_id).get("known_sections", [])
+        return [str(s) for s in sections] if isinstance(sections, list) else []
+
+    def merge_known_sections(self, event_id: str, sections: list[str]) -> bool:
+        """Union newly seen section names into the event's known list.
+
+        Case-insensitive dedupe, original casing kept. Returns True (and saves)
+        only when something new was added, so per-cycle calls are ~free.
+        """
+        existing = self.get_known_sections(event_id)
+        seen = {s.strip().upper() for s in existing}
+        merged = list(existing)
+        added = False
+        for name in sections or []:
+            name = str(name).strip() if name is not None else ""
+            if name and name.upper() not in seen:
+                merged.append(name)
+                seen.add(name.upper())
+                added = True
+        if added:
+            self._event(event_id)["known_sections"] = sorted(merged, key=str.upper)
+            self.save()
+        return added
+
     # ---- Monitor run tracking ----
 
     def get_last_successful_check(self) -> datetime | None:

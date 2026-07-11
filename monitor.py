@@ -382,6 +382,47 @@ def run_version(config_path: str):
     print(json.dumps(details, indent=2, sort_keys=True))
 
 
+def run_detect_sections(config_path: str):
+    """One-off scan: visit each event page once and harvest section names.
+
+    Backs the GUI's 'Auto-detect sections' button. Section names come from the
+    seat-map geometry the page fetches on its own plus any live listings, and
+    are merged into state.json per event. While the monitor is running the same
+    data accrues passively on every check, so this refuses to launch a second
+    browser against the live profile (exit 2 = already running, just refresh)."""
+    config = load_config(config_path)
+    if monitor_lock_is_held():
+        print(
+            "Monitor is running — sections are collected automatically on every "
+            "check; refresh the list instead of scanning."
+        )
+        sys.exit(2)
+
+    state = MonitorState()
+    probe = BrowserProbe.from_config(config)
+    found: dict[str, list[str]] = {}
+    print("Scanning events for section names...")
+    try:
+        probe.start()
+        for ev in config.events:
+            result = probe.check_event(ev.event_id, ev.url)
+            learned: list[str] = []
+            if isinstance(result.raw_indicators, dict):
+                learned = list(result.raw_indicators.get("venue_sections") or [])
+                for group in result.raw_indicators.get("listing_groups") or []:
+                    if isinstance(group, dict) and str(group.get("section", "")).strip():
+                        learned.append(str(group["section"]).strip())
+            state.merge_known_sections(ev.event_id, learned)
+            found[ev.event_id] = state.get_known_sections(ev.event_id)
+            print(f"  {ev.name}: {len(found[ev.event_id])} known section(s)")
+    except BrowserProbeError as exc:
+        print(f"FAILED: {exc}")
+        sys.exit(1)
+    finally:
+        probe.close()
+    print(json.dumps(found, indent=2, sort_keys=True))
+
+
 def run_test_ticket_alert(config_path: str):
     """Send a synthetic ticket-available alert to validate mention + payload formatting."""
     config = load_config(config_path)
@@ -584,6 +625,7 @@ def main():
         action="store_true",
         help="Send 3 synthetic ticket alerts: LOGE bingo, budget bingo, and non-bingo",
     )
+    parser.add_argument("--detect-sections", action="store_true", help="Scan each event once and record venue section names for the GUI picker")
     parser.add_argument("--doctor", action="store_true", help="Validate browser session, probe, and Discord")
     parser.add_argument("--doctor-lite", action="store_true", help="Quick local health check for automation scripts")
     parser.add_argument("--health-json", action="store_true", help="Print machine-readable health JSON")
@@ -614,6 +656,8 @@ def _dispatch(args):
         run_test_ticket_alert(args.config)
     elif args.test_ticket_alert_matrix:
         run_test_ticket_alert_matrix(args.config)
+    elif args.detect_sections:
+        run_detect_sections(args.config)
     elif args.doctor:
         run_doctor(args.config)
     elif args.doctor_lite:

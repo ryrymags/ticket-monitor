@@ -8,7 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changes
 
-- `(pending)`  2026-07-11 12:41  Add per-event scoping to BINGO configs (event_ids + GUI event picker)
+- `(pending)`  2026-07-11 17:41  Learn venue section names automatically + Auto-detect Sections picker
+
+- `819817f`  2026-07-11 12:41  Add per-event scoping to BINGO configs (event_ids + GUI event picker)
 
 - `2de1bea`  2026-07-10 04:07  Add BrowserProbe.from_config factory; dedup 3 identical call sites
 

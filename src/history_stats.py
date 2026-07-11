@@ -95,6 +95,28 @@ def collapse_history(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return rows
 
 
+def observed_sections(history: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """Distinct section names seen in past sightings, keyed by event_id.
+
+    Backfills the GUI's section picker for sightings recorded before the
+    seat-map capture existed. Case-insensitive dedupe, original casing kept.
+    """
+    by_event: dict[str, dict[str, str]] = {}
+    for entry in history or []:
+        if not isinstance(entry, dict):
+            continue
+        event_id = str(entry.get("event_id", "") or "")
+        bucket = by_event.setdefault(event_id, {})
+        for group in _entry_listings(entry):
+            name = str(group.get("section", "")).strip()
+            if name and name != "?":
+                bucket.setdefault(name.upper(), name)
+    return {
+        event_id: sorted(bucket.values(), key=str.upper)
+        for event_id, bucket in by_event.items()
+    }
+
+
 def count_bingo_in_history(history: list[dict[str, Any]], configs: list) -> dict[str, Any]:
     """Count history entries that are a BINGO under the current configs.
 

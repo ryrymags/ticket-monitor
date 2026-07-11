@@ -840,6 +840,18 @@ class MonitorScheduler:
         no_signal = result.signal_type == ProbeSignalType.NONE and http_unhealthy
         blind = result.blocked or result.challenge_detected or no_signal
 
+        # Learn section names for the GUI's preferred-sections picker: venue
+        # sections come from the seat map the page loads itself (even sold out),
+        # listing sections from actual inventory payloads. Merge is a no-op save
+        # once everything has been seen.
+        if isinstance(result.raw_indicators, dict):
+            learned = list(result.raw_indicators.get("venue_sections") or [])
+            for group in result.raw_indicators.get("listing_groups") or []:
+                if isinstance(group, dict) and str(group.get("section", "")).strip():
+                    learned.append(str(group["section"]).strip())
+            if learned:
+                self.state.merge_known_sections(event_id, learned)
+
         # Remember whether this concert was actually visible for uptime purposes.
         # A sold-out/no-inventory page is healthy; a block/challenge page is blind.
         if not blind:

@@ -10,7 +10,8 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 ## 📋 Recent Changes  
   
 <!-- CHANGELOG_START -->
-- `(pending)`  2026-07-11  Add per-event scoping to BINGO configs (event_ids + GUI event picker)
+- `(pending)`  2026-07-11  Learn venue section names automatically + Auto-detect Sections picker
+- `819817f`  2026-07-11  Add per-event scoping to BINGO configs (event_ids + GUI event picker)
 - `2de1bea`  2026-07-10  Add BrowserProbe.from_config factory; dedup 3 identical call sites
 - `2369609`  2026-07-10  Split load_config into per-section helper functions
 - `617933f`  2026-07-10  Add golden characterization tests for load_config
@@ -19,7 +20,6 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 - `d6e7ba2`  2026-07-09  Restore README.md as a file and finalize plan status
 - `5d75f77`  2026-07-09  Record completed audit remediation plan
 - `547ecdc`  2026-07-09  Remove the legacy all-events cycle scheduler mode
-- `d199171`  2026-07-09  Remove vestigial Oracle-VM deploy workflow and Linux systemd setup
 
 Full history: [CHANGELOG.md](CHANGELOG.md)
 <!-- CHANGELOG_END -->  
@@ -161,11 +161,21 @@ In the **Preferences** tab:
 | Tickets needed together | Minimum number of seats that must be available in the same group |
 | Max price per ticket | Only BINGO if face value is at or below this amount |
 | Preferred sections | Comma-separated section names, e.g. LOGE, FLOOR, PIT (optional) |
+| Applies to events | Which of your events this config watches ("All events" by default) |
 | Require preferred section | If on, only BINGO when a preferred section is available |
 | Also alert on non-matching | Get an orange 🟡 alert even when tickets don't match your preferences |
   
   
 Click **Add BINGO Config** to watch for another category of tickets. Every config is checked for a BINGO; if more than one matches at once, the first matching config is the one named in Discord.  
+
+### 🔍 Finding section names — you don't have to guess
+
+Every venue abbreviates sections differently (GA, GA1, FLR, FLOOR, PIT…), and Ticketmaster's sold-out page won't tell you. The monitor solves this two ways:
+
+- **Auto-detect Sections button** — press it in the Preferences tab and the monitor visits each event page once, reads the seat map the page loads, and lists every section name at your venue. Checkboxes then appear under each config: tick the sections you want and they're added for you.
+- **Passive learning** — while the monitor runs, it automatically remembers every section name it sees (from the seat map and from real listings), so the checkbox list keeps growing on its own. If the monitor is already running, the button just refreshes the list — no extra scan needed.
+
+Typed keywords still work and match as substrings (e.g. `LOGE` matches `LOGE20`), so a rough guess is fine to start with.  
   
 > **Tip:** Turn on "Also alert on non-matching" — you'll always know when anything is available, even if it's not exactly what you wanted.  
 

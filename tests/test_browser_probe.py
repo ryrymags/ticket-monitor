@@ -1195,3 +1195,65 @@ class TestFromConfig:
         assert probe.headless is True
         # Non-overridden fields still come from config.
         assert probe.session_mode == config.browser_session_mode
+
+
+class TestVenueSectionCapture:
+    """Passive seat-map geometry capture → venue_sections (never availability)."""
+
+    @staticmethod
+    def _snapshot():
+        from src.browser_probe import _NetworkSnapshot
+
+        return _NetworkSnapshot(
+            availability_count=0, signals=set(), prices=[], sections=set(), listing_groups={}
+        )
+
+    @staticmethod
+    def _probe() -> BrowserProbe:
+        return BrowserProbe(storage_state_path="unused.json", headless=True)
+
+    def test_map_geometry_fills_venue_sections_only(self):
+        probe = self._probe()
+        snapshot = self._snapshot()
+        payload = {
+            "pages": [
+                {
+                    "segments": [
+                        # Nested segments are rows/seats: numeric names skipped.
+                        {"name": "LOGE20", "segments": [{"name": "14"}, {"name": "15"}]},
+                        {"name": "FLOOR1"},
+                    ]
+                }
+            ]
+        }
+        response = _FakeNetworkResponse(
+            "https://mapsapi.tmol.io/maps/geometry/3/event/abc", payload
+        )
+        probe._capture_response(response, snapshot)
+        assert snapshot.venue_sections == {"LOGE20", "FLOOR1"}
+        # Map data must never register as inventory.
+        assert snapshot.availability_count == 0
+        assert snapshot.sections == set()
+        assert snapshot.listing_groups == {}
+
+    def test_extract_venue_sections_explicit_keys_anywhere(self):
+        probe = self._probe()
+        payload = {"anything": [{"section": "PIT"}, {"sectionName": "GA2"}]}
+        assert probe._extract_venue_sections(payload) == {"PIT", "GA2"}
+
+    def test_extract_venue_sections_ignores_unrelated_names(self):
+        probe = self._probe()
+        # "name" outside a section/segment ancestry (e.g. event/venue name) skipped.
+        payload = {"event": {"name": "Example Artist"}, "venue": {"name": "Example Venue"}}
+        assert probe._extract_venue_sections(payload) == set()
+
+    def test_non_map_availability_urls_unaffected(self):
+        probe = self._probe()
+        snapshot = self._snapshot()
+        response = _FakeNetworkResponse(
+            "https://www.ticketmaster.com/api/quickpicks/abc",
+            {"offers": [{"section": "LOGE20", "row": "14", "price": 100.0, "count": 2}]},
+        )
+        probe._capture_response(response, snapshot)
+        assert snapshot.venue_sections == set()
+        assert "LOGE20" in snapshot.sections

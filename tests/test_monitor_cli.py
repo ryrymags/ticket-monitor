@@ -117,3 +117,53 @@ def test_doctor_refuses_live_persistent_profile(monkeypatch, capsys):
 
     assert exc.value.code == 1
     assert "owns the Chrome profile" in capsys.readouterr().out
+
+
+class _FakeSectionProbe:
+    def __init__(self, sections_by_event: dict[str, list[str]]):
+        self._sections = sections_by_event
+        self.closed = False
+
+    def start(self):
+        pass
+
+    def close(self):
+        self.closed = True
+
+    def check_event(self, event_id, _url):
+        return SimpleNamespace(
+            raw_indicators={
+                "venue_sections": self._sections.get(event_id, []),
+                "listing_groups": [{"section": "FLOOR1", "row": "A", "price": 100.0, "count": 2}],
+            }
+        )
+
+
+def test_detect_sections_merges_into_state(monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)  # state.json lands in tmp
+    config = _config()
+    config.events[0].event_id = "ev1"
+    probe = _FakeSectionProbe({"ev1": ["LOGE20", "GA2"]})
+    monkeypatch.setattr(monitor, "load_config", lambda _p: config)
+    monkeypatch.setattr(monitor, "monitor_lock_is_held", lambda: False)
+    monkeypatch.setattr(
+        monitor.BrowserProbe, "from_config", staticmethod(lambda _c, **_k: probe)
+    )
+
+    monitor.run_detect_sections("config.yaml")
+
+    from src.state import MonitorState
+
+    known = MonitorState(state_file=str(tmp_path / "state.json")).get_known_sections("ev1")
+    assert set(known) == {"LOGE20", "GA2", "FLOOR1"}
+    assert probe.closed is True
+    assert "LOGE20" in capsys.readouterr().out
+
+
+def test_detect_sections_refuses_while_monitor_running(monkeypatch, capsys):
+    monkeypatch.setattr(monitor, "load_config", lambda _p: _config())
+    monkeypatch.setattr(monitor, "monitor_lock_is_held", lambda: True)
+    with pytest.raises(SystemExit) as exc:
+        monitor.run_detect_sections("config.yaml")
+    assert exc.value.code == 2
+    assert "collected automatically" in capsys.readouterr().out

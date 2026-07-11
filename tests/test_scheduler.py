@@ -1910,3 +1910,25 @@ class TestStateWriteBatching:
         # The whole check (outcome tally, mention episode, timestamps) lands in
         # ONE merge-save instead of a dozen.
         assert len(writes) == 1
+
+
+class TestKnownSectionLearning:
+    def test_probe_result_sections_merge_into_state(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        event = scheduler.config.events[0]
+        result = _make_result(available=False)
+        result.raw_indicators["venue_sections"] = ["LOGE20", "FLOOR1"]
+
+        scheduler._handle_probe_result(event, result)
+
+        known = scheduler.state.get_known_sections(event.event_id)
+        assert "LOGE20" in known and "FLOOR1" in known
+
+    def test_listing_sections_also_learned(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        event = scheduler.config.events[0]
+        listing_groups = [{"section": "BALCONY301", "row": "6", "price": 120.0, "count": 3}]
+
+        scheduler._handle_probe_result(event, _make_result(available=True, listing_groups=listing_groups))
+
+        assert "BALCONY301" in scheduler.state.get_known_sections(event.event_id)
