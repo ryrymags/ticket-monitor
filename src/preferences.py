@@ -215,6 +215,17 @@ class TicketPreferences:
     # Empty (the default) = applies to every event, including ones added later.
     event_ids: list[str] = field(default_factory=list)
 
+    # When False, the Discord ticket message still posts (History/dedup rely on
+    # it) but the @-mention burst is suppressed for this config's BINGOs.
+    # Independent of ntfy_topics — the two are separate opt-outs.
+    notify_discord_ping: bool = True
+
+    # ntfy routing for this config's BINGOs. None (default/absent in YAML) =
+    # push to every configured ntfy topic, including ones added later. An
+    # explicit list restricts to those topics; an explicit [] means "no ntfy
+    # push for this config" (e.g. a private BINGO friends shouldn't see).
+    ntfy_topics: list[str] | None = None
+
     # ── Back-compat alias ────────────────────────────────────────────────────
     # config.yaml may still have the old key name; from_dict() handles both.
     # We store the canonical value in require_preferred_only.
@@ -367,6 +378,8 @@ class TicketPreferences:
             "require_preferred_only": self.require_preferred_only,
             "alert_on_any_availability": self.alert_on_any_availability,
             "event_ids": list(self.event_ids),
+            "notify_discord_ping": self.notify_discord_ping,
+            "ntfy_topics": None if self.ntfy_topics is None else list(self.ntfy_topics),
         }
 
     @classmethod
@@ -385,6 +398,18 @@ class TicketPreferences:
         elif not isinstance(event_ids_raw, list):
             event_ids_raw = []
 
+        # None must survive round-trips (it means "all topics, incl. future ones"),
+        # while [] is an explicit opt-out — so no falsy-collapsing here.
+        ntfy_topics_raw = data.get("ntfy_topics", None)
+        if ntfy_topics_raw is None:
+            ntfy_topics: list[str] | None = None
+        elif isinstance(ntfy_topics_raw, str):
+            ntfy_topics = [t.strip() for t in ntfy_topics_raw.split(",") if t.strip()]
+        elif isinstance(ntfy_topics_raw, list):
+            ntfy_topics = [str(t).strip() for t in ntfy_topics_raw if str(t).strip()]
+        else:
+            ntfy_topics = None
+
         return cls(
             name=str(data.get("name", "BINGO")).strip() or "BINGO",
             min_tickets=max(1, int(data.get("min_tickets", 1))),
@@ -393,6 +418,8 @@ class TicketPreferences:
             require_preferred_only=bool(require),
             alert_on_any_availability=bool(data.get("alert_on_any_availability", True)),
             event_ids=[str(e).strip() for e in event_ids_raw if str(e).strip()],
+            notify_discord_ping=bool(data.get("notify_discord_ping", True)),
+            ntfy_topics=ntfy_topics,
         )
 
 

@@ -672,3 +672,108 @@ class TestDiscordRateLimitRetry:
 
         assert notifier._send(embeds=[{"title": "t"}], retries=0) is False
         assert sleeps == []
+
+
+class TestPerConfigNtfyRouting:
+    """Per-BINGO-config notification routing: topic subsets + decoupled gates."""
+
+    @staticmethod
+    def _bingo_group():
+        return [{"section": "LOGE20", "row": "1", "price": 100.0, "count": 2}]
+
+    @staticmethod
+    def _pref(**kwargs):
+        return TicketPreferences(
+            name="Cfg", min_tickets=1, max_price_per_ticket=500.0, **kwargs
+        )
+
+    def test_send_ticket_topics_subset_posts_only_those(self):
+        from src.notifier import NtfyNotifier
+        ntfy = NtfyNotifier(topics=["friends", "me"])
+        with patch.object(ntfy.session, "post") as mock_post:
+            mock_post.return_value = MagicMock(status_code=200)
+            ntfy.send_ticket(title="t", message="m", event_url="u", is_bingo=True, topics=["me"])
+        assert mock_post.call_count == 1
+        assert mock_post.call_args[1]["json"]["topic"] == "me"
+
+    def test_send_ticket_topics_empty_is_noop(self):
+        from src.notifier import NtfyNotifier
+        ntfy = NtfyNotifier(topics=["friends", "me"])
+        with patch.object(ntfy.session, "post") as mock_post:
+            assert ntfy.send_ticket(title="t", message="m", event_url="u", is_bingo=True, topics=[]) is True
+        mock_post.assert_not_called()
+
+    def test_send_ticket_topics_none_broadcasts_to_all(self):
+        from src.notifier import NtfyNotifier
+        ntfy = NtfyNotifier(topics=["friends", "me"])
+        with patch.object(ntfy.session, "post") as mock_post:
+            mock_post.return_value = MagicMock(status_code=200)
+            ntfy.send_ticket(title="t", message="m", event_url="u", is_bingo=True, topics=None)
+        assert mock_post.call_count == 2
+
+    def test_private_config_routes_to_its_topic_only(self):
+        from src.notifier import NtfyNotifier
+        ntfy = NtfyNotifier(topics=["friends", "me"])
+        notifier = DiscordNotifier(webhook_url="https://test", ntfy=ntfy)
+        prefs = [self._pref(ntfy_topics=["me"])]
+        with patch.object(notifier, "_send", return_value=True), \
+             patch.object(ntfy.session, "post") as mock_post:
+            mock_post.return_value = MagicMock(status_code=200)
+            notifier.send_ticket_available(
+                event_name="E", event_date="2030-01-01", event_url="https://tm/event/X",
+                signal_type="network", signal_confidence=1.0, price_summary=None,
+                section_summary=None, reason="signature_changed",
+                listing_groups=self._bingo_group(), mention=True, preferences=prefs,
+                record_history=False,
+            )
+        assert mock_post.call_count == 1
+        assert mock_post.call_args[1]["json"]["topic"] == "me"
+
+    def test_stale_topic_reference_intersected_away(self):
+        from src.notifier import NtfyNotifier
+        ntfy = NtfyNotifier(topics=["friends"])
+        notifier = DiscordNotifier(webhook_url="https://test", ntfy=ntfy)
+        prefs = [self._pref(ntfy_topics=["removed-topic"])]
+        with patch.object(notifier, "_send", return_value=True), \
+             patch.object(ntfy.session, "post") as mock_post:
+            notifier.send_ticket_available(
+                event_name="E", event_date="2030-01-01", event_url="https://tm/event/X",
+                signal_type="network", signal_confidence=1.0, price_summary=None,
+                section_summary=None, reason="signature_changed",
+                listing_groups=self._bingo_group(), mention=True, preferences=prefs,
+                record_history=False,
+            )
+        mock_post.assert_not_called()
+
+    def test_ntfy_allowed_false_blocks_push_even_for_bingo(self):
+        from src.notifier import NtfyNotifier
+        ntfy = NtfyNotifier(topics=["friends"])
+        notifier = DiscordNotifier(webhook_url="https://test", ntfy=ntfy)
+        with patch.object(notifier, "_send", return_value=True), \
+             patch.object(ntfy, "send_ticket") as mock_ticket:
+            notifier.send_ticket_available(
+                event_name="E", event_date="2030-01-01", event_url="https://tm/event/X",
+                signal_type="network", signal_confidence=1.0, price_summary=None,
+                section_summary=None, reason="signature_changed",
+                listing_groups=self._bingo_group(), mention=True, ntfy_allowed=False,
+                preferences=[self._pref()], record_history=False,
+            )
+        mock_ticket.assert_not_called()
+
+    def test_ntfy_allowed_true_pushes_even_without_discord_mention(self):
+        """The decoupling: a ping-suppressed config still gets its ntfy push."""
+        from src.notifier import NtfyNotifier
+        ntfy = NtfyNotifier(topics=["me"])
+        notifier = DiscordNotifier(webhook_url="https://test", ping_user_id="42", ntfy=ntfy)
+        prefs = [self._pref(notify_discord_ping=False, ntfy_topics=["me"])]
+        with patch.object(notifier, "_send", return_value=True) as mock_send, \
+             patch.object(ntfy, "send_ticket") as mock_ticket:
+            notifier.send_ticket_available(
+                event_name="E", event_date="2030-01-01", event_url="https://tm/event/X",
+                signal_type="network", signal_confidence=1.0, price_summary=None,
+                section_summary=None, reason="signature_changed",
+                listing_groups=self._bingo_group(), mention=False, ntfy_allowed=True,
+                preferences=prefs, record_history=False,
+            )
+        mock_ticket.assert_called_once()
+        assert mock_send.call_args[1]["content"] == ""  # no Discord ping text

@@ -314,3 +314,29 @@ def test_single_letter_artifacts_excluded_from_pickers():
     # "A" is a row letter that leaked into old history — as a keyword it would
     # substring-match nearly everything, so pickers must never offer it.
     assert dedupe_section_names(["A", "LOGE20", "B"]) == ["LOGE20"]
+
+
+# ── Notification routing (per-config Discord ping + ntfy topics) ─────────────
+
+
+def test_notification_routing_defaults():
+    prefs = TicketPreferences.from_dict({"name": "Legacy"})
+    assert prefs.notify_discord_ping is True
+    assert prefs.ntfy_topics is None  # None = all topics, incl. future ones
+
+
+def test_ntfy_topics_none_empty_and_list_round_trip_distinctly():
+    for value in (None, [], ["just-me"], ["friends", "just-me"]):
+        prefs = TicketPreferences(name="X", ntfy_topics=value)
+        restored = TicketPreferences.from_dict(prefs.to_dict())
+        assert restored.ntfy_topics == value, value
+
+
+def test_notify_discord_ping_round_trip():
+    prefs = TicketPreferences(name="Quiet", notify_discord_ping=False)
+    assert TicketPreferences.from_dict(prefs.to_dict()).notify_discord_ping is False
+
+
+def test_ntfy_topics_accepts_comma_separated_string():
+    prefs = TicketPreferences.from_dict({"ntfy_topics": "friends, just-me"})
+    assert prefs.ntfy_topics == ["friends", "just-me"]

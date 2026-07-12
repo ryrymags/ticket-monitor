@@ -737,7 +737,9 @@ def _load_updates(updates: dict[str, Any], errors: list[str]) -> dict[str, Any]:
     }
 
 
-def _load_bingo_configs(raw: dict[str, Any], errors: list[str]) -> tuple[TicketPreferences, list[TicketPreferences]]:
+def _load_bingo_configs(
+    raw: dict[str, Any], errors: list[str], ntfy_topics: list[str] | None = None
+) -> tuple[TicketPreferences, list[TicketPreferences]]:
     """Ticket preferences (configurable BINGO rules)."""
     preferences_raw = raw.get("preferences", {}) or {}
     bingo_configs_raw = raw.get("bingo_configs")
@@ -792,6 +794,21 @@ def _load_bingo_configs(raw: dict[str, Any], errors: list[str]) -> tuple[TicketP
                 "match any configured event until they are re-added",
                 pref.name,
                 ", ".join(repr(e) for e in unknown),
+            )
+
+    # Same soft check for ntfy routing: a config pushing to a topic that isn't
+    # configured just no-ops for that topic at send time — warn, don't block.
+    known_topics = {str(t).strip() for t in (ntfy_topics or []) if str(t).strip()}
+    for pref in bingo_configs:
+        if pref.ntfy_topics is None:
+            continue
+        unknown_topics = [t for t in pref.ntfy_topics if t.strip() not in known_topics]
+        if unknown_topics:
+            logger.warning(
+                "bingo config %r references ntfy topic(s) %s that aren't in "
+                "ntfy.topics — no push will be sent for those until they're added",
+                pref.name,
+                ", ".join(repr(t) for t in unknown_topics),
             )
 
     return preferences, bingo_configs
@@ -928,7 +945,9 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
     updates_watch_globs = updates_values["updates_watch_globs"]
 
     # Ticket preferences (configurable BINGO rules)
-    preferences, bingo_configs = _load_bingo_configs(raw, errors)
+    preferences, bingo_configs = _load_bingo_configs(
+        raw, errors, ntfy_topics=ntfy_values["ntfy_topics"]
+    )
 
     # Logging
     logging_values = _load_logging(logging_cfg, errors)

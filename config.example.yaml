@@ -17,7 +17,10 @@ discord:
 # alerts fan out here, throttled to match Discord's @-mention burst (no spam).
 ntfy:
   enabled: false                             # Set true to turn on phone pushes
-  topic: "bingo-tix-CHANGE-ME"               # UNGUESSABLE name — anyone who knows it can read alerts
+  # One or more UNGUESSABLE topic names — anyone who knows one can read its alerts.
+  # Multiple topics let you route per BINGO config (e.g. one topic for friends,
+  # one just for you — see bingo_configs[].ntfy_topics below).
+  topics: ["bingo-tix-CHANGE-ME"]
   priority: "high"                           # urgent/high/default/low/min
   # "Open in Safari" button uses the plain event URL; the notification BODY tap uses
   # this deep link to open the Ticketmaster APP on the event (AppsFlyer OneLink —
@@ -69,6 +72,16 @@ bingo_configs:
     # later. Scope it to specific nights to hunt e.g. backup tickets for one show:
     #   event_ids: ["EXAMPLEEVENT0002"]
     event_ids: []
+
+    # Notification routing for this config's BINGOs.
+    # notify_discord_ping: false = the Discord message still posts, but without
+    #   the @mention burst (quiet on your phone, still in the paper trail).
+    # ntfy_topics: null (or omitted) = push to ALL configured ntfy topics,
+    #   including ones added later. A list = only those topics. [] = no ntfy
+    #   push at all — e.g. a private BINGO your friends shouldn't hear about:
+    #   ntfy_topics: ["bingo-tix-just-me"]
+    notify_discord_ping: true
+    ntfy_topics: null
 
   - name: "Budget triples"
     min_tickets: 3

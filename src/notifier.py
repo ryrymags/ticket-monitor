@@ -71,8 +71,10 @@ class NtfyNotifier:
         message: str,
         event_url: str,
         is_bingo: bool,
+        topics: list[str] | None = None,
     ) -> bool:
-        """Push a ticket alert to every configured topic. No-op if disabled.
+        """Push a ticket alert. topics=None broadcasts to every configured
+        topic; a list restricts to that subset ([] = no-op). No-op if disabled.
 
         Default action — body tap (``click``) — targets the app deep link (OneLink)
         when configured: ntfy opens the body tap in real Safari, where the OneLink's
@@ -90,7 +92,7 @@ class NtfyNotifier:
             "clear": False,
         }]
         return self._post(title=title, message=message, priority=priority,
-                          tags=tags, click=click_url, actions=actions)
+                          tags=tags, click=click_url, actions=actions, topics=topics)
 
     def _build_deep_link(self, event_url: str) -> str:
         """Render the configured deep-link template, or "" if unconfigured/invalid.
@@ -127,17 +129,25 @@ class NtfyNotifier:
         )
 
     def _post(self, *, title: str, message: str, priority: str,
-              tags: list[str], click: str, actions: list[dict] | None = None) -> bool:
+              tags: list[str], click: str, actions: list[dict] | None = None,
+              topics: list[str] | None = None) -> bool:
         """Publish via ntfy's JSON format (one POST to the base URL per topic).
 
         JSON avoids the comma/semicolon escaping pitfalls of the header form when
-        URLs are embedded in click/actions.
+        URLs are embedded in click/actions. topics=None means all configured
+        topics; an explicit list restricts to that subset ([] = quiet success).
         """
         if not self.enabled:
             return True
+        target_topics = (
+            self.topics if topics is None
+            else [t.strip() for t in topics if t and str(t).strip()]
+        )
+        if not target_topics:
+            return True
         priority_int = self._PRIORITY_MAP.get(str(priority).lower(), 4)
         all_ok = True
-        for topic in self.topics:
+        for topic in target_topics:
             payload: dict[str, Any] = {
                 "topic": topic,
                 "title": title,
@@ -209,6 +219,7 @@ class DiscordNotifier:
         listing_summary: str | None = None,
         listing_groups: list[dict[str, Any]] | None = None,
         mention: bool = True,
+        ntfy_allowed: bool = True,
         preferences=None,
         record_history: bool = True,
     ) -> bool:
@@ -300,12 +311,15 @@ class DiscordNotifier:
 
         # Fan out to ntfy (friends' phones) — BINGOs only, ever. Yellow non-BINGO
         # sightings and all operational notices stay Discord-only; an ntfy push must
-        # always mean "buy now". Gated on `mention` too so friends get the same burst
-        # cadence as the Discord @-ping (loud at first, ≤1/min, then quiet after the
-        # episode). Sent BEFORE the Discord webhook: this is the channel someone acts
-        # on from a lock screen, so it must not wait behind Discord's round-trip and
-        # retries. Guarded so a push failure can never break the Discord path.
-        if self.ntfy is not None and mention and is_bingo:
+        # always mean "buy now". `ntfy_allowed` is the scheduler's cadence gate —
+        # normally it tracks the Discord @-ping burst, but it is independent so a
+        # config can suppress the Discord ping and still push (or vice versa). The
+        # matched config can also restrict WHICH topics get the push (a private
+        # BINGO shouldn't hit friends' topics). Sent BEFORE the Discord webhook:
+        # this is the channel someone acts on from a lock screen, so it must not
+        # wait behind Discord's round-trip and retries. Guarded so a push failure
+        # can never break the Discord path.
+        if self.ntfy is not None and ntfy_allowed and is_bingo:
             try:
                 ntfy_title = f"🟢 {status_label}: {event_name}"
                 ntfy_body = self._ntfy_body(match.get("label", ""), groups, matched_group)
@@ -314,6 +328,7 @@ class DiscordNotifier:
                     message=ntfy_body,
                     event_url=event_url,
                     is_bingo=bool(is_bingo),
+                    topics=self._resolve_ntfy_topics(match.get("config")),
                 )
             except Exception as _ntfy_exc:
                 logger.debug("ntfy push skipped: %s", _ntfy_exc)
@@ -904,6 +919,19 @@ class DiscordNotifier:
             and int(left.get("count", 0)) == int(right.get("count", 0))
         )
 
+    def _resolve_ntfy_topics(self, matched_pref) -> list[str] | None:
+        """Per-config ntfy routing: None = broadcast to every configured topic
+        (default/back-compat); a list = restrict to that subset, intersected
+        with what's actually configured so a reference to a removed topic
+        silently no-ops instead of erroring."""
+        if matched_pref is None:
+            return None
+        override = getattr(matched_pref, "ntfy_topics", None)
+        if override is None:
+            return None
+        configured = set(self.ntfy.topics) if self.ntfy is not None else set()
+        return [t for t in override if t in configured]
+
     @staticmethod
     def _preference_configs(preferences) -> list[Any]:
         if preferences is None:
@@ -1006,6 +1034,7 @@ class DiscordNotifier:
             "matched_group": matched_group,
             "unknown_row": isinstance(matched_group, dict) and str(matched_group.get("row", "")) == "?",
             "config_name": str(getattr(pref, "name", "") or "").strip(),
+            "config": pref,
             "should_notify": bool(result.get("matched")),
         }
 

@@ -968,13 +968,20 @@ class MonitorScheduler:
             preferences = self._ticket_preferences(event_id)
             match = DiscordNotifier._ticket_match_status(listing_groups, preferences=preferences)
             is_bingo = match.get("preview_status") == "BINGO"
+            matched_config = match.get("config")
+            discord_ping_enabled = (
+                bool(getattr(matched_config, "notify_discord_ping", True))
+                if matched_config is not None
+                else True
+            )
 
-            # @-mention policy: a BINGO always pings. A non-BINGO detection pings only
-            # when the "alert on all tickets" toggle is on. The webhook message + local
-            # History entry are posted for EVERY detection regardless — only the ping is
-            # gated. A new episode gets MENTION_PINGS_PER_EPISODE rapid pings, then the
-            # listing goes silent for good (see the constants block for the rationale).
-            mention_allowed = is_bingo or self.config.alerts_non_bingo_enabled
+            # @-mention policy: a BINGO pings unless its config opted out of the
+            # Discord ping. A non-BINGO detection pings only when the "alert on
+            # all tickets" toggle is on. The webhook message + local History
+            # entry are posted for EVERY detection regardless — only the ping is
+            # gated. A new episode gets MENTION_PINGS_PER_EPISODE rapid pings,
+            # then the listing goes silent for good (see the constants block).
+            mention_allowed = (is_bingo and discord_ping_enabled) or self.config.alerts_non_bingo_enabled
             if mention_allowed:
                 # A genuinely new listing (new signature) starts a fresh ping episode.
                 # The same listing reappearing/lingering NEVER re-pings — that is what
@@ -994,6 +1001,11 @@ class MonitorScheduler:
                 if i > 0:
                     self._interruptible_sleep(MENTION_PING_SPACING_SECONDS)
                 mention_this = pings_remaining > 0
+                # ntfy normally rides the ping burst cadence, but stays alive for
+                # a ping-suppressed config's genuinely NEW listing (first send of
+                # a fresh signature) — and only then, so silent cooldown re-posts
+                # never re-push phones.
+                ntfy_this = mention_this or (i == 0 and decision.reason == "signature_changed")
                 reason = decision.reason if (i == 0 and decision.should_alert) else "attention_burst"
                 sent = self.notifier.send_ticket_available(
                     event_name=event_cfg.name,
@@ -1007,6 +1019,7 @@ class MonitorScheduler:
                     listing_summary=result.listing_summary,
                     listing_groups=listing_groups,
                     mention=mention_this,
+                    ntfy_allowed=ntfy_this,
                     preferences=preferences,
                     # Repeat pings are the same sighting — one History row, not three.
                     record_history=(i == 0),

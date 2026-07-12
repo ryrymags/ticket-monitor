@@ -316,7 +316,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "ntfy": {
         "enabled": False,
-        "topic": "",
+        "topics": [],
         "priority": "high",
     },
     "events": [],
@@ -328,6 +328,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "require_preferred_only": False,
         "alert_on_any_availability": True,
         "event_ids": [],
+        "notify_discord_ping": True,
+        "ntfy_topics": None,
     },
     "bingo_configs": [
         {
@@ -338,6 +340,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "require_preferred_only": False,
             "alert_on_any_availability": True,
             "event_ids": [],
+            "notify_discord_ping": True,
+            "ntfy_topics": None,
         }
     ],
     "browser": {
@@ -839,6 +843,8 @@ class TicketMonitorApp(ctk.CTk):
             "require_preferred_only": False,
             "alert_on_any_availability": True,
             "event_ids": [],
+            "notify_discord_ping": True,
+            "ntfy_topics": None,
         }
 
     def _configured_bingo_configs(self) -> list[dict[str, Any]]:
@@ -871,6 +877,16 @@ class TicketMonitorApp(ctk.CTk):
         else:
             event_ids = []
         merged["event_ids"] = event_ids
+        merged["notify_discord_ping"] = bool(merged.get("notify_discord_ping", True))
+        # None ("all topics, incl. future ones") must survive, distinct from [].
+        ntfy_topics = merged.get("ntfy_topics", None)
+        if isinstance(ntfy_topics, str):
+            ntfy_topics = [t.strip() for t in ntfy_topics.split(",") if t.strip()]
+        elif isinstance(ntfy_topics, list):
+            ntfy_topics = [str(t).strip() for t in ntfy_topics if str(t).strip()]
+        elif ntfy_topics is not None:
+            ntfy_topics = None
+        merged["ntfy_topics"] = ntfy_topics
         merged["name"] = str(merged.get("name", "")).strip() or f"BINGO {index + 1}"
         merged["min_tickets"] = max(1, int(merged.get("min_tickets", 1)))
         merged["max_price_per_ticket"] = max(25.0, min(750.0, float(merged.get("max_price_per_ticket", 500.0))))
@@ -1038,6 +1054,68 @@ class TicketMonitorApp(ctk.CTk):
                 text_color=COLOR_ORANGE, font=ctk.CTkFont(size=11), anchor="w",
             ).grid(row=1 + max(len(self._events), 1), column=0, padx=(24, 0), pady=(4, 0), sticky="w")
 
+        _divider(card, row=14)
+
+        # ── Notification routing ─────────────────────────────────────────────
+        ctk.CTkLabel(card, text="Notifications", anchor="w").grid(row=15, column=0, padx=18, pady=(12, 4), sticky="w")
+        ctk.CTkLabel(
+            card,
+            text="The Discord message always posts (it feeds History). These control the extra\n"
+                 "pings: the Discord @mention and which ntfy topics get a phone push.",
+            text_color="gray55", font=ctk.CTkFont(size=11), anchor="w", justify="left",
+        ).grid(row=16, column=0, columnspan=2, padx=18, pady=(0, 6), sticky="w")
+
+        notify_frame = ctk.CTkFrame(card, fg_color="transparent")
+        notify_frame.grid(row=17, column=0, columnspan=2, padx=18, pady=(0, 14), sticky="ew")
+
+        discord_ping_var = ctk.BooleanVar(value=bool(cfg.get("notify_discord_ping", True)))
+        ctk.CTkCheckBox(
+            notify_frame, text="Discord @ping", variable=discord_ping_var,
+        ).grid(row=0, column=0, pady=(0, 4), sticky="w")
+
+        saved_ntfy_topics = cfg.get("ntfy_topics", None)  # None = all topics
+        available_topics = self._current_ntfy_topics()
+        # Scopes to since-removed topics are preserved (visible, not dropped) so
+        # a private config can't silently widen back to everyone's topics.
+        stale_ntfy_topics = (
+            [t for t in saved_ntfy_topics if t not in available_topics]
+            if saved_ntfy_topics is not None
+            else []
+        )
+
+        all_ntfy_topics_var = ctk.BooleanVar(value=saved_ntfy_topics is None)
+        ctk.CTkCheckBox(
+            notify_frame, text="All ntfy topics (including ones added later)",
+            variable=all_ntfy_topics_var,
+            command=lambda i=index: self._on_all_ntfy_topics_toggle(i),
+        ).grid(row=1, column=0, pady=(0, 4), sticky="w")
+
+        ntfy_topic_vars: list[tuple[str, Any]] = []
+        ntfy_topic_checkboxes: list[Any] = []
+        if available_topics:
+            for j, topic in enumerate(available_topics):
+                var = ctk.BooleanVar(
+                    value=saved_ntfy_topics is not None and topic in saved_ntfy_topics
+                )
+                box = ctk.CTkCheckBox(notify_frame, text=f"ntfy: {topic}", variable=var)
+                box.grid(row=2 + j, column=0, padx=(24, 0), pady=2, sticky="w")
+                if all_ntfy_topics_var.get():
+                    box.configure(state="disabled")
+                ntfy_topic_vars.append((topic, var))
+                ntfy_topic_checkboxes.append(box)
+        else:
+            ctk.CTkLabel(
+                notify_frame,
+                text="No ntfy topics configured — add them in the Notifications tab.",
+                text_color="gray55", font=ctk.CTkFont(size=11), anchor="w",
+            ).grid(row=2, column=0, padx=(24, 0), pady=2, sticky="w")
+        if stale_ntfy_topics:
+            ctk.CTkLabel(
+                notify_frame,
+                text=f"⚠ Also routed to {len(stale_ntfy_topics)} removed topic(s) — re-add or untick to clear.",
+                text_color=COLOR_ORANGE, font=ctk.CTkFont(size=11), anchor="w",
+            ).grid(row=2 + max(len(available_topics), 1), column=0, padx=(24, 0), pady=(4, 0), sticky="w")
+
         self._bingo_config_widgets.append(
             {
                 "name_var": name_var,
@@ -1055,6 +1133,11 @@ class TicketMonitorApp(ctk.CTk):
                 "event_vars": event_vars,
                 "event_checkboxes": event_checkboxes,
                 "stale_event_ids": stale_event_ids,
+                "notify_discord_ping_var": discord_ping_var,
+                "all_ntfy_topics_var": all_ntfy_topics_var,
+                "ntfy_topic_vars": ntfy_topic_vars,
+                "ntfy_topic_checkboxes": ntfy_topic_checkboxes,
+                "stale_ntfy_topics": stale_ntfy_topics,
             }
         )
         self._render_section_chips(index)
@@ -1077,6 +1160,13 @@ class TicketMonitorApp(ctk.CTk):
                 # to all events (matching the stored empty-list semantics).
                 event_ids = [eid for eid, var in widget["event_vars"] if var.get() and eid]
                 event_ids.extend(widget["stale_event_ids"])
+            if widget["all_ntfy_topics_var"].get():
+                ntfy_topics = None
+            else:
+                # Unlike event scoping, an empty selection here stays an explicit
+                # [] (no ntfy at all) — that IS the private-config use case.
+                ntfy_topics = [t for t, var in widget["ntfy_topic_vars"] if var.get() and t]
+                ntfy_topics.extend(widget["stale_ntfy_topics"])
             configs.append(
                 {
                     "name": widget["name_var"].get().strip() or f"BINGO {i + 1}",
@@ -1086,6 +1176,8 @@ class TicketMonitorApp(ctk.CTk):
                     "require_preferred_only": False,
                     "alert_on_any_availability": non_bingo,
                     "event_ids": event_ids,
+                    "notify_discord_ping": bool(widget["notify_discord_ping_var"].get()),
+                    "ntfy_topics": ntfy_topics,
                 }
             )
         return configs or [self._blank_bingo_config(0)]
@@ -1320,6 +1412,12 @@ class TicketMonitorApp(ctk.CTk):
         for box in widget["event_checkboxes"]:
             box.configure(state=state)
 
+    def _on_all_ntfy_topics_toggle(self, index: int):
+        widget = self._bingo_config_widgets[index]
+        state = "disabled" if widget["all_ntfy_topics_var"].get() else "normal"
+        for box in widget["ntfy_topic_checkboxes"]:
+            box.configure(state=state)
+
     # ── Notifications Tab ─────────────────────────────────────────────────────
 
     def _build_notifications_tab(self):
@@ -1405,26 +1503,38 @@ class TicketMonitorApp(ctk.CTk):
 
         _divider(ntfy_frame, row=1)
 
-        # Topic
-        _field_label(ntfy_frame, "Topic", row=2)
+        # Topics (one or more). Each BINGO config can then choose which topics
+        # get its pushes (Preferences tab), e.g. a private topic just for you.
+        _field_label(ntfy_frame, "Topics", row=2)
         ctk.CTkLabel(
             ntfy_frame,
-            text="An UNGUESSABLE name — anyone who knows it can read your alerts.\n"
-                 "Subscribers open the ntfy app and add this exact topic.",
+            text="UNGUESSABLE names — anyone who knows a topic can read its alerts.\n"
+                 "Subscribers open the ntfy app and add the exact topic. You can add several\n"
+                 "(e.g. one for friends, one just for you) and route BINGO configs per topic.",
             text_color="gray55", font=ctk.CTkFont(size=11), justify="left",
         ).grid(row=3, column=0, columnspan=2, padx=18, pady=(0, 8), sticky="w")
-        self._ntfy_topic_var = ctk.StringVar()
-        ctk.CTkEntry(ntfy_frame, textvariable=self._ntfy_topic_var, placeholder_text="e.g. bingo-tix-a1B2c3D4").grid(row=2, column=1, padx=12, pady=(12, 4), sticky="ew")
+        # Comma-joined source of truth; chips + entry are views over it.
+        self._ntfy_topics_var = ctk.StringVar()
+        self._ntfy_topic_chips_frame = ctk.CTkFrame(ntfy_frame, fg_color="transparent")
+        self._ntfy_topic_chips_frame.grid(row=4, column=0, columnspan=2, padx=18, pady=(0, 4), sticky="ew")
+        self._ntfy_new_topic_var = ctk.StringVar()
+        new_topic_entry = ctk.CTkEntry(
+            ntfy_frame, textvariable=self._ntfy_new_topic_var,
+            placeholder_text="e.g. bingo-tix-a1B2c3D4 — press Enter to add",
+        )
+        new_topic_entry.grid(row=2, column=1, padx=12, pady=(12, 4), sticky="ew")
+        new_topic_entry.bind("<Return>", lambda _e: self._add_ntfy_topic())
+        self._render_ntfy_topic_chips()
 
-        _divider(ntfy_frame, row=4)
+        _divider(ntfy_frame, row=5)
 
         # Priority
-        _field_label(ntfy_frame, "Priority", row=5)
+        _field_label(ntfy_frame, "Priority", row=6)
         self._ntfy_priority_var = ctk.StringVar(value="high")
         ctk.CTkOptionMenu(
             ntfy_frame, variable=self._ntfy_priority_var,
             values=["urgent", "high", "default", "low", "min"],
-        ).grid(row=5, column=1, padx=12, pady=(12, 12), sticky="e")
+        ).grid(row=6, column=1, padx=12, pady=(12, 12), sticky="e")
 
         btn_row = ctk.CTkFrame(frame, fg_color="transparent")
         btn_row.grid(row=7, column=0, padx=20, pady=(0, 14), sticky="w")
@@ -1433,6 +1543,63 @@ class TicketMonitorApp(ctk.CTk):
 
         self._discord_status_label = ctk.CTkLabel(frame, text="", font=ctk.CTkFont(size=11))
         self._discord_status_label.grid(row=8, column=0, padx=20, pady=0, sticky="w")
+
+    # ── ntfy topics editor ────────────────────────────────────────────────────
+
+    def _current_ntfy_topics(self) -> list[str]:
+        """Configured ntfy topics, from the live editor when it exists.
+
+        Falls back to config.yaml values because the Preferences tab (whose
+        cards need the topic list) is built BEFORE the Notifications tab
+        creates the editor var.
+        """
+        var = getattr(self, "_ntfy_topics_var", None)
+        if var is not None:
+            return [t.strip() for t in var.get().split(",") if t.strip()]
+        ntfy = self._cfg.get("ntfy", {})
+        topics = ntfy.get("topics")
+        if isinstance(topics, list) and topics:
+            return [str(t).strip() for t in topics if str(t).strip()]
+        single = str(ntfy.get("topic", "")).strip()
+        return [single] if single else []
+
+    def _add_ntfy_topic(self):
+        name = self._ntfy_new_topic_var.get().strip()
+        if not name or "," in name:
+            return
+        topics = self._current_ntfy_topics()
+        if name not in topics:
+            topics.append(name)
+            self._ntfy_topics_var.set(", ".join(topics))
+        self._ntfy_new_topic_var.set("")
+        self._render_ntfy_topic_chips()
+        # Config cards show a checkbox per topic — keep them in sync
+        # (preserving unsaved edits, same as when events change).
+        self._render_bingo_config_cards(self._bingo_configs_from_widgets())
+
+    def _remove_ntfy_topic(self, name: str):
+        topics = [t for t in self._current_ntfy_topics() if t != name]
+        self._ntfy_topics_var.set(", ".join(topics))
+        self._render_ntfy_topic_chips()
+        self._render_bingo_config_cards(self._bingo_configs_from_widgets())
+
+    def _render_ntfy_topic_chips(self):
+        frame = self._ntfy_topic_chips_frame
+        for child in frame.winfo_children():
+            child.destroy()
+        topics = self._current_ntfy_topics()
+        if not topics:
+            ctk.CTkLabel(
+                frame, text="No topics yet — type one above and press Enter.",
+                text_color="gray55", font=ctk.CTkFont(size=11), anchor="w",
+            ).grid(row=0, column=0, sticky="w")
+            return
+        for j, topic in enumerate(topics):
+            ctk.CTkButton(
+                frame, text=f"{topic}  ✕", height=24, width=10,
+                fg_color=COLOR_GRAY, font=ctk.CTkFont(size=11),
+                command=lambda t=topic: self._remove_ntfy_topic(t),
+            ).grid(row=j // 3, column=j % 3, padx=(0, 6), pady=2, sticky="w")
 
     def _test_discord(self):
         self._save_config()
@@ -3046,8 +3213,13 @@ class TicketMonitorApp(ctk.CTk):
         ntfy = self._cfg.get("ntfy", {})
         self._ntfy_enabled_var.set(bool(ntfy.get("enabled", False)))
         topics = ntfy.get("topics")
-        topic = topics[0] if isinstance(topics, list) and topics else str(ntfy.get("topic", ""))
-        self._ntfy_topic_var.set(topic)
+        if isinstance(topics, list) and topics:
+            topics_list = [str(t).strip() for t in topics if str(t).strip()]
+        else:
+            single = str(ntfy.get("topic", "")).strip()
+            topics_list = [single] if single else []
+        self._ntfy_topics_var.set(", ".join(topics_list))
+        self._render_ntfy_topic_chips()
         self._ntfy_priority_var.set(str(ntfy.get("priority", "high")) or "high")
 
         self._render_bingo_config_cards(self._configured_bingo_configs())
@@ -3080,12 +3252,13 @@ class TicketMonitorApp(ctk.CTk):
         cfg.setdefault("alerts", {})
         cfg["alerts"]["non_bingo_enabled"] = bool(self._non_bingo_var.get())
 
-        # ntfy push. GUI is authoritative for the single-topic form.
+        # ntfy push. GUI is authoritative for the multi-topic list; the legacy
+        # single `topic` key is fully migrated away on save.
         cfg.setdefault("ntfy", {})
         cfg["ntfy"]["enabled"] = bool(self._ntfy_enabled_var.get())
-        cfg["ntfy"]["topic"] = self._ntfy_topic_var.get().strip()
+        cfg["ntfy"]["topics"] = self._current_ntfy_topics()
         cfg["ntfy"]["priority"] = self._ntfy_priority_var.get().strip() or "high"
-        cfg["ntfy"].pop("topics", None)
+        cfg["ntfy"].pop("topic", None)
 
         # BINGO configs. Keep legacy preferences in sync with the first config.
         bingo_configs = self._bingo_configs_from_widgets()

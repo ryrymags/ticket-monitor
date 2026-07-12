@@ -85,6 +85,8 @@ bingo_configs:
     preferred_sections: []
     require_preferred_only: false
     alert_on_any_availability: true
+    notify_discord_ping: false
+    ntfy_topics: ["bingo-tix-maximal-two"]
 
 preferences:
   name: "LOGE pairs"

@@ -25,6 +25,8 @@
       "max_price_per_ticket": 9999.0,
       "min_tickets": 1,
       "name": "BINGO",
+      "notify_discord_ping": true,
+      "ntfy_topics": null,
       "preferred_sections": [],
       "require_preferred_only": false
     }
@@ -97,6 +99,8 @@
     "max_price_per_ticket": 9999.0,
     "min_tickets": 1,
     "name": "BINGO",
+    "notify_discord_ping": true,
+    "ntfy_topics": null,
     "preferred_sections": [],
     "require_preferred_only": false
   },

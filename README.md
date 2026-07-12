@@ -10,7 +10,8 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 ## 📋 Recent Changes  
   
 <!-- CHANGELOG_START -->
-- `(pending)`  2026-07-11  Recover seat-map sections served from browser cache (Night 2 = 0 sections bug)
+- `(pending)`  2026-07-11  Per-BINGO-config notification routing: multiple ntfy topics + Discord ping toggle
+- `0fb893c`  2026-07-11  Recover seat-map sections served from browser cache (Night 2 = 0 sections bug)
 - `0914c06`  2026-07-11  Section picker polish: sub-scroller, scan result counts, drop 1-char artifacts
 - `de90f5a`  2026-07-11  Learn abbreviation pairs (CLB/CLUB) + browsable section list by family
 - `08848bf`  2026-07-11  Add section-family picker options + fix progressive search matching
@@ -19,7 +20,6 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 - `819817f`  2026-07-11  Add per-event scoping to BINGO configs (event_ids + GUI event picker)
 - `2de1bea`  2026-07-10  Add BrowserProbe.from_config factory; dedup 3 identical call sites
 - `2369609`  2026-07-10  Split load_config into per-section helper functions
-- `617933f`  2026-07-10  Add golden characterization tests for load_config
 
 Full history: [CHANGELOG.md](CHANGELOG.md)
 <!-- CHANGELOG_END -->  
@@ -101,7 +101,10 @@ the same ==ntfy:== block in ==config.yaml== directly:
 ```
 ntfy:
   enabled: true
-  topic: "bingo-tix-SOMETHING-UNGUESSABLE"   # treat like a password — anyone with it can read alerts
+  # One or more topics — treat like passwords, anyone with one can read its alerts.
+  # Add several (e.g. friends + a private one) and route each BINGO config to
+  # specific topics in the Preferences tab.
+  topics: ["bingo-tix-SOMETHING-UNGUESSABLE"]
   priority: "high"
   app_deep_link: "https://ticketmaster.onelink.me/7u25/edpUS?deep_link_value={url_encoded}&af_force_deeplink=true&is_retargeting=true"
 
@@ -162,6 +165,8 @@ In the **Preferences** tab:
 | Max price per ticket | Only BINGO if face value is at or below this amount |
 | Preferred sections | Comma-separated section names, e.g. LOGE, FLOOR, PIT (optional) |
 | Applies to events | Which of your events this config watches ("All events" by default) |
+| Notifications: Discord @ping | Untick to keep this config's BINGOs off your phone — the Discord message still posts (History keeps working), just without the @mention |
+| Notifications: ntfy topics | Which ntfy topics get this config's pushes. "All topics" by default; pick a subset — or none — for a private config your friends shouldn't hear about |
 | Require preferred section | If on, only BINGO when a preferred section is available |
 | Also alert on non-matching | Get an orange 🟡 alert even when tickets don't match your preferences |
   

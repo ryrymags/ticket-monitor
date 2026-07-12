@@ -1932,3 +1932,57 @@ class TestKnownSectionLearning:
         scheduler._handle_probe_result(event, _make_result(available=True, listing_groups=listing_groups))
 
         assert "BALCONY301" in scheduler.state.get_known_sections(event.event_id)
+
+
+class TestPerConfigNotificationRouting:
+    def _prefs(self, **kwargs):
+        return [
+            TicketPreferences(
+                min_tickets=1, max_price_per_ticket=500.0, name="Private", **kwargs
+            )
+        ]
+
+    def test_ping_suppressed_bingo_sends_once_with_ntfy(self, tmp_path):
+        prefs = self._prefs(notify_discord_ping=False)
+        scheduler = _make_scheduler(
+            tmp_path, _make_config(preferences=prefs[0], bingo_configs=prefs)
+        )
+        event = scheduler.config.events[0]
+
+        scheduler._handle_probe_result(event, _make_result(available=True))
+
+        # No mention burst — single message, no ping, ntfy still fires.
+        scheduler.notifier.send_ticket_available.assert_called_once()
+        kwargs = scheduler.notifier.send_ticket_available.call_args.kwargs
+        assert kwargs.get("mention") is False
+        assert kwargs.get("ntfy_allowed") is True
+
+    def test_ping_suppressed_cooldown_repost_has_no_ntfy(self, tmp_path):
+        prefs = self._prefs(notify_discord_ping=False)
+        config = _make_config(
+            preferences=prefs[0], bingo_configs=prefs, alerts_ticket_cooldown_seconds=1
+        )
+        scheduler = _make_scheduler(tmp_path, config)
+        event = scheduler.config.events[0]
+
+        scheduler._handle_probe_result(event, _make_result(available=True))
+        scheduler.notifier.send_ticket_available.reset_mock()
+
+        # Same listing after cooldown → re-post for the History trail only.
+        later = datetime.now(timezone.utc) + timedelta(seconds=5)
+        scheduler._handle_probe_result(event, _make_result(available=True), now=later)
+
+        scheduler.notifier.send_ticket_available.assert_called_once()
+        kwargs = scheduler.notifier.send_ticket_available.call_args.kwargs
+        assert kwargs.get("ntfy_allowed") is False
+
+    def test_default_config_burst_keeps_ntfy_on_every_ping(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        event = scheduler.config.events[0]
+
+        scheduler._handle_probe_result(event, _make_result(available=True))
+
+        assert scheduler.notifier.send_ticket_available.call_count == 3
+        for call in scheduler.notifier.send_ticket_available.call_args_list:
+            assert call.kwargs.get("mention") is True
+            assert call.kwargs.get("ntfy_allowed") is True

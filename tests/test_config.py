@@ -326,3 +326,48 @@ class TestLoadConfig:
         path = _write_config(tmp_path, {"alerts.event_check_stale_seconds": 0})
         with pytest.raises(ConfigError):
             load_config(path)
+
+    def test_bingo_config_unknown_ntfy_topic_warns_but_loads(self, tmp_path, caplog):
+        path = _write_config(
+            tmp_path,
+            {
+                "ntfy": {"enabled": True, "topics": ["friends"]},
+                "bingo_configs": [
+                    {
+                        "name": "Private",
+                        "min_tickets": 1,
+                        "max_price_per_ticket": 300,
+                        "ntfy_topics": ["not-configured"],
+                    },
+                ],
+            },
+        )
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="src.config"):
+            config = load_config(path)
+        assert config.bingo_configs[0].ntfy_topics == ["not-configured"]
+        assert "ntfy topic" in caplog.text
+
+    def test_bingo_config_ntfy_routing_loads(self, tmp_path):
+        path = _write_config(
+            tmp_path,
+            {
+                "ntfy": {"enabled": True, "topics": ["friends", "me"]},
+                "bingo_configs": [
+                    {"name": "Shared", "min_tickets": 1, "max_price_per_ticket": 300},
+                    {
+                        "name": "Private",
+                        "min_tickets": 1,
+                        "max_price_per_ticket": 300,
+                        "notify_discord_ping": False,
+                        "ntfy_topics": ["me"],
+                    },
+                ],
+            },
+        )
+        config = load_config(path)
+        assert config.bingo_configs[0].ntfy_topics is None
+        assert config.bingo_configs[0].notify_discord_ping is True
+        assert config.bingo_configs[1].ntfy_topics == ["me"]
+        assert config.bingo_configs[1].notify_discord_ping is False
