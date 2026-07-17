@@ -12,8 +12,10 @@ state.json.lock
 state.json.bak.*
 state *.json
 ticket_history.json
+ticket_history *.json
 ticket_history.backup-*.json
 uptime_log.json
+uptime_log *.json
 uptime_log_*.json
 uptime_log.pre-fix-backup-*.json
 .uptime-*.tmp

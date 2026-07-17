@@ -10,16 +10,16 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 ## 📋 Recent Changes  
   
 <!-- CHANGELOG_START -->
-- `(pending)`  2026-07-11  Per-BINGO-config notification routing: multiple ntfy topics + Discord ping toggle
-- `0fb893c`  2026-07-11  Recover seat-map sections served from browser cache (Night 2 = 0 sections bug)
-- `0914c06`  2026-07-11  Section picker polish: sub-scroller, scan result counts, drop 1-char artifacts
-- `de90f5a`  2026-07-11  Learn abbreviation pairs (CLB/CLUB) + browsable section list by family
-- `08848bf`  2026-07-11  Add section-family picker options + fix progressive search matching
-- `80ca6e3`  2026-07-11  Dedupe section naming variants + search-to-add section picker
-- `0c251b2`  2026-07-11  Learn venue section names automatically + Auto-detect Sections picker
-- `819817f`  2026-07-11  Add per-event scoping to BINGO configs (event_ids + GUI event picker)
-- `2de1bea`  2026-07-10  Add BrowserProbe.from_config factory; dedup 3 identical call sites
-- `2369609`  2026-07-10  Split load_config into per-section helper functions
+- `(pending)`  2026-07-17  Sanitize public history and add privacy checks
+- `b078b65`  2026-07-11  Per-BINGO-config notification routing: multiple ntfy topics + Discord ping toggle
+- `155afde`  2026-07-11  Recover seat-map sections served from browser cache (Night 2 = 0 sections bug)
+- `b57dec2`  2026-07-11  Section picker polish: sub-scroller, scan result counts, drop 1-char artifacts
+- `5a360c5`  2026-07-11  Learn abbreviation pairs (CLB/CLUB) + browsable section list by family
+- `029eaae`  2026-07-11  Add section-family picker options + fix progressive search matching
+- `861a85d`  2026-07-11  Dedupe section naming variants + search-to-add section picker
+- `1d868d5`  2026-07-11  Learn venue section names automatically + Auto-detect Sections picker
+- `f327635`  2026-07-11  Add per-event scoping to BINGO configs (event_ids + GUI event picker)
+- `1b72455`  2026-07-10  Add BrowserProbe.from_config factory; dedup 3 identical call sites
 
 Full history: [CHANGELOG.md](CHANGELOG.md)
 <!-- CHANGELOG_END -->  
@@ -303,6 +303,26 @@ python monitor.py --doctor
 
 ---
   
+## 🔒 Public-repository safety
+
+This repository is safe to clone and fork, but your local runtime data is not meant to be published.
+Keep `config.yaml`, `secrets/`, `logs/`, state/history JSON files, browser profiles, webhook URLs,
+notification topics, and real event IDs out of Git. The example configuration and tests use synthetic data.
+
+CI runs two safeguards on every push and pull request:
+
+- `scripts/check_public_safety.py` rejects tracked runtime files and high-confidence personal data.
+- Gitleaks scans the full Git history for credentials and tokens.
+
+Run the local privacy check before publishing changes:
+
+```bash
+python scripts/check_public_safety.py
+python scripts/check_public_safety.py --history
+```
+
+---
+
 ## ↩️ Reverting to a Previous Version  
   
 Every commit is tracked in git. To undo something:  

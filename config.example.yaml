@@ -124,9 +124,10 @@ browser:
   per_event_poll_max_seconds: 120       # 60-120s per event — floors under 45s trip bot detection
   per_event_min_gap_between_checks_seconds: 60   # Global floor between ANY two checks (all events share it)
   per_event_max_gap_between_checks_seconds: 120  # Randomized 60-120s gap keeps request volume low & human
-  event_weights:                        # Soft priority; higher weight gets earlier randomized due times
-    "EXAMPLEEVENT0001": 2               # primary example weight
-    "EXAMPLEEVENT0002": 1               # secondary example weight
+  event_weights: {}                     # Optional event-ID-to-weight map; empty = uniform priority
+  # event_weights:
+  #   "EXAMPLEEVENT0001": 2
+  #   "EXAMPLEEVENT0002": 1
   headless: true
   reuse_event_tabs: true
   single_event_page: true               # Reuse one active event tab and navigate it between events
