@@ -4,11 +4,13 @@ All notable changes to Ticket Monitor are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 <!-- CHANGELOG_START -->
-## [Unreleased] — 2026-07-17
+## [Unreleased] — 2026-07-18
 
 ### Changes
 
-- `(pending)`  2026-07-17 10:25  Sanitize public history and add privacy checks
+- `(pending)`  2026-07-18 03:38  Move platform launcher/setup scripts into installers/ folder
+
+- `215680a`  2026-07-17 10:25  Sanitize public history and add privacy checks
 
 - `b078b65`  2026-07-11 22:45  Per-BINGO-config notification routing: multiple ntfy topics + Discord ping toggle
 

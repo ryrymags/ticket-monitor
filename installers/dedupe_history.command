@@ -13,23 +13,24 @@
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
 
 # Prefer the project venv; fall back to system python3 (the de-duper only needs
 # the standard library, so it works either way).
-if [ -x "$SCRIPT_DIR/venv/bin/python3" ]; then
-    PY="$SCRIPT_DIR/venv/bin/python3"
+if [ -x "$REPO_ROOT/venv/bin/python3" ]; then
+    PY="$REPO_ROOT/venv/bin/python3"
 elif command -v python3 >/dev/null 2>&1; then
     PY="python3"
 else
-    echo "❌  Could not find python3. Run setup_mac.command first."
+    echo "❌  Could not find python3. Run installers/setup_mac.command first."
     read -p "Press Enter to close..."
     exit 1
 fi
 
 echo "🧹  De-duping ticket history..."
 echo ""
-"$PY" "$SCRIPT_DIR/scripts/dedupe_history.py"
+"$PY" "$REPO_ROOT/scripts/dedupe_history.py"
 EXIT_CODE=$?
 
 echo ""

@@ -5,10 +5,11 @@
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
 
 # Check setup has been run
-if [ ! -d "$SCRIPT_DIR/venv" ]; then
+if [ ! -d "$REPO_ROOT/venv" ]; then
     echo "Setup hasn't been run yet."
     echo "Please double-click  setup_mac.command  first."
     read -p "Press Enter to close..."
@@ -16,9 +17,9 @@ if [ ! -d "$SCRIPT_DIR/venv" ]; then
 fi
 
 # Check tkinter is available in the venv Python (not system Python)
-"$SCRIPT_DIR/venv/bin/python3" -c "import tkinter" 2>/dev/null
+"$REPO_ROOT/venv/bin/python3" -c "import tkinter" 2>/dev/null
 if [ $? -ne 0 ]; then
-    PY_MINOR=$("$SCRIPT_DIR/venv/bin/python3" -c "import sys; print(sys.version_info.minor)" 2>/dev/null)
+    PY_MINOR=$("$REPO_ROOT/venv/bin/python3" -c "import sys; print(sys.version_info.minor)" 2>/dev/null)
     echo "❌  tkinter is not installed."
     echo ""
     echo "Fix it by running this in Terminal:"
@@ -30,8 +31,8 @@ if [ $? -ne 0 ]; then
 fi
 
 # Activate the venv from THIS project (not any other)
-source "$SCRIPT_DIR/venv/bin/activate"
-python3 "$SCRIPT_DIR/app.py"
+source "$REPO_ROOT/venv/bin/activate"
+python3 "$REPO_ROOT/app.py"
 
 EXIT_CODE=$?
 if [ $EXIT_CODE -ne 0 ]; then

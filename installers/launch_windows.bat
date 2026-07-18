@@ -4,12 +4,13 @@ REM Ticket Monitor — Windows Launcher
 REM Double-click this file to open the Ticket Monitor app.
 REM =============================================================================
 
-cd /d "%~dp0"
+REM This script lives in installers\; operate from the repo root one level up.
+cd /d "%~dp0.."
 title Ticket Monitor
 
 if not exist "venv\" (
     echo Setup hasn't been run yet.
-    echo Please double-click  setup_windows.bat  first.
+    echo Please double-click  installers\setup_windows.bat  first.
     pause
     exit /b 1
 )

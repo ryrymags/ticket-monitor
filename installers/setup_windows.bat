@@ -4,7 +4,8 @@ REM Ticket Monitor — Windows Setup Script
 REM Double-click this file to set up the monitor for the first time.
 REM =============================================================================
 
-cd /d "%~dp0"
+REM This script lives in installers\; operate from the repo root one level up.
+cd /d "%~dp0.."
 title Ticket Monitor — Setup
 
 echo.
@@ -88,7 +89,7 @@ echo ║           Setup Complete! 🎉             ║
 echo ╚══════════════════════════════════════════╝
 echo.
 echo Next steps:
-echo   1. Double-click  launch_windows.bat  to open the app
+echo   1. Double-click  installers\launch_windows.bat  to open the app
 echo   2. Add your concert URL in the Events tab
 echo   3. Set your preferences and Discord webhook
 echo   4. Log in to Ticketmaster in the Login tab

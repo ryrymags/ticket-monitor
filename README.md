@@ -10,7 +10,8 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 ## 📋 Recent Changes  
   
 <!-- CHANGELOG_START -->
-- `(pending)`  2026-07-17  Sanitize public history and add privacy checks
+- `(pending)`  2026-07-18  Move platform launcher/setup scripts into installers/ folder
+- `215680a`  2026-07-17  Sanitize public history and add privacy checks
 - `b078b65`  2026-07-11  Per-BINGO-config notification routing: multiple ntfy topics + Discord ping toggle
 - `155afde`  2026-07-11  Recover seat-map sections served from browser cache (Night 2 = 0 sections bug)
 - `b57dec2`  2026-07-11  Section picker polish: sub-scroller, scan result counts, drop 1-char artifacts
@@ -19,7 +20,6 @@ A friendly desktop app that watches Ticketmaster's Face Value Exchange 24/7 and 
 - `861a85d`  2026-07-11  Dedupe section naming variants + search-to-add section picker
 - `1d868d5`  2026-07-11  Learn venue section names automatically + Auto-detect Sections picker
 - `f327635`  2026-07-11  Add per-event scoping to BINGO configs (event_ids + GUI event picker)
-- `1b72455`  2026-07-10  Add BrowserProbe.from_config factory; dedup 3 identical call sites
 
 Full history: [CHANGELOG.md](CHANGELOG.md)
 <!-- CHANGELOG_END -->  
@@ -57,10 +57,10 @@ Click the green **Code** button on GitHub → **Download ZIP** → unzip somewhe
 
 **Step 3 — Run Setup (once)**  
 
-| Platform | Double-click...   |
-| -------- | ----------------- |
-| Mac      | setup_mac.command |
-| Windows  | setup_windows.bat |
+| Platform | Double-click...              |
+| -------- | ---------------------------- |
+| Mac      | installers/setup_mac.command |
+| Windows  | installers/setup_windows.bat |
   
   
 This installs all dependencies. Takes about 1–2 minutes. You only need to do this once.  
@@ -70,10 +70,10 @@ This installs all dependencies. Takes about 1–2 minutes. You only need to do t
 
 **Step 4 — Open the app**  
 
-| Platform | Double-click...    |
-| -------- | ------------------ |
-| Mac      | launch_mac.command |
-| Windows  | launch_windows.bat |
+| Platform | Double-click...               |
+| -------- | ----------------------------- |
+| Mac      | installers/launch_mac.command |
+| Windows  | installers/launch_windows.bat |
   
 
 ---
@@ -114,7 +114,7 @@ ntfy:
 [Android](https://play.google.com/store/apps/details?id=io.heckel.ntfy)) → tap **＋ Subscribe to topic**   
 → enter your exact topic name → allow notifications.  
   
-**Test it:** double-click ==test_notifications.command== (or run ==python monitor.py --test-ticket-alert==).   
+**Test it:** double-click ==installers/test_notifications.command== (or run ==python monitor.py --test-ticket-alert==).   
 It sends a sample alert to Discord **and** everyone subscribed.  
   
 When a BINGO hits, everyone gets **3 pushes in quick succession** (matching Discord's   
@@ -208,7 +208,7 @@ Once you've set up your events, Discord, and logged in:
 2. Click **▶ Start Monitor**  
 3. You'll see live logs in the app and get Discord alerts when tickets appear  
   
-> **Mac 24/7 note:** ==setup_mac.command== installs a launchd background monitor that runs under   
+> **Mac 24/7 note:** ==installers/setup_mac.command== installs a launchd background monitor that runs under   
 > 
 > ==caffeinate -i -s==, so screen lock and display sleep are okay. Full system sleep,   
 > 
@@ -243,10 +243,10 @@ Once you've set up your events, Discord, and logged in:
 → Double-check your Webhook URL — it should start with ==https://discord.com/api/webhooks/==.  
   
 **App won't open on Mac**   
-→ Right-click ==launch_mac.command== → Open → click Open in the dialog.  
+→ Right-click ==installers/launch_mac.command== → Open → click Open in the dialog.  
   
 **Monitor crashes repeatedly**   
-→ Re-run ==setup_mac.command== / ==setup_windows.bat== to reinstall dependencies, then try again.  
+→ Re-run ==installers/setup_mac.command== / ==installers/setup_windows.bat== to reinstall dependencies, then try again.  
   
 **Getting "activity paused" / blocked a lot (staying healthy)**   
 Ticketmaster's Akamai bot wall scores your **home IP + account together**, so the goal is to   

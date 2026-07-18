@@ -14,22 +14,23 @@
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
 
 # Check setup has been run
-if [ ! -d "$SCRIPT_DIR/venv" ]; then
+if [ ! -d "$REPO_ROOT/venv" ]; then
     echo "Setup hasn't been run yet."
-    echo "Please double-click  setup_mac.command  first."
+    echo "Please double-click  installers/setup_mac.command  first."
     read -p "Press Enter to close..."
     exit 1
 fi
 
 # Activate the venv from THIS project (not any other)
-source "$SCRIPT_DIR/venv/bin/activate"
+source "$REPO_ROOT/venv/bin/activate"
 
 echo "📨  Sending a sample ticket alert to Discord and ntfy..."
 echo ""
-python3 "$SCRIPT_DIR/monitor.py" --test-ticket-alert
+python3 "$REPO_ROOT/monitor.py" --test-ticket-alert
 EXIT_CODE=$?
 
 echo ""

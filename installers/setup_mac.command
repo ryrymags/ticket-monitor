@@ -4,16 +4,18 @@
 # Double-click this file to set up the monitor for the first time.
 # =============================================================================
 
-# Change to the folder this script lives in (so relative paths work)
+# This script lives in installers/; operate from the repo root one level up
+# so relative paths to venv/, requirements.txt, etc. resolve correctly.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
 
 echo ""
 echo "╔══════════════════════════════════════════╗"
 echo "║         Ticket Monitor — Setup           ║"
 echo "╚══════════════════════════════════════════╝"
 echo ""
-echo "Setting up in: $SCRIPT_DIR"
+echo "Setting up in: $REPO_ROOT"
 echo ""
 
 # ── Find the best Python 3 (prefer Homebrew 3.12+ which bundles Tk 8.6+) ─────
@@ -132,7 +134,7 @@ echo ""
 
 # ── Activate and install packages ────────────────────────────────────────────
 echo "⏳  Installing Python packages (this may take a minute)..."
-source "$SCRIPT_DIR/venv/bin/activate"
+source "$REPO_ROOT/venv/bin/activate"
 pip install --quiet --upgrade pip
 pip install --quiet -r requirements.txt
 
@@ -177,7 +179,7 @@ echo "║           Setup Complete! 🎉             ║"
 echo "╚══════════════════════════════════════════╝"
 echo ""
 echo "Next steps:"
-echo "  1. Double-click  launch_mac.command  to open the app"
+echo "  1. Double-click  installers/launch_mac.command  to open the app"
 echo "  2. Add your concert URL in the Events tab"
 echo "  3. Set your preferences and Discord webhook"
 echo "  4. Hit Start Monitor — and relax!"

@@ -2,7 +2,7 @@
 # Post-commit hook — regenerates CHANGELOG.md and README 'Recent Changes',
 # then folds the update into the just-made commit via --amend.
 #
-# Install: run  scripts/install_hooks.sh  (or re-run setup_mac.command)
+# Install: run  scripts/install_hooks.sh  (or re-run installers/setup_mac.command)
 
 # Guard against re-entrancy: amend would re-trigger this hook without the guard
 LOCK=".git/.changelog_lock"
